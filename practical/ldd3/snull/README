@@ -1,0 +1,44 @@
+Assigning IP Numbers
+The snull module creates two interfaces. These interfaces are different from a simple
+loopback, in that whatever you transmit through one of the interfaces loops back to
+the other one, not to itself. It looks like you have two external links, but actually
+your computer is replying to itself.
+Unfortunately, this effect can’t be accomplished through IP number assignments
+alone, because the kernel wouldn’t send out a packet through interface A that was
+directed to its own interface B. Instead, it would use the loopback channel without
+passing through snull. To be able to establish a communication through the snull
+interfaces, the source and destination addresses need to be modified during data
+transmission. In other words, packets sent through one of the interfaces should be
+received by the other, but the receiver of the outgoing packet shouldn’t be recognized
+as the local host. The same applies to the source address of received packets.
+To achieve this kind of “hidden loopback,” the snull interface toggles the least significant
+bit of the third octet of both the source and destination addresses; that is, it
+changes both the network number and the host number of class C IP numbers. The
+net effect is that packets sent to network A (connected to sn0, the first interface)
+appear on the sn1 interface as packets belonging to network B.
+To avoid dealing with too many numbers, let’s assign symbolic names to the IP numbers
+involved:
+• snullnet0 is the network that is connected to the sn0 interface. Similarly,
+snullnet1 is the network connected to sn1. The addresses of these networks
+should differ only in the least significant bit of the third octet. These networks
+must have 24-bit netmasks.
+• local0 is the IP address assigned to the sn0 interface; it belongs to snullnet0.
+The address associated with sn1 is local1. local0 and local1 must differ in the
+least significant bit of their third octet and in the fourth octet.
+• remote0 is a host in snullnet0, and its fourth octet is the same as that of local1.
+Any packet sent to remote0 reaches local1 after its network address has been
+modified by the interface code. The host remote1 belongs to snullnet1, and its
+fourth octet is the same as that of local0.
+
+
+/etc/networks
+snullnet0  192.168.254.0
+snullnet1  192.168.255.0
+
+
+
+/etc/hosts
+192.168.254.88  local0
+192.168.254.99  remote0
+192.168.255.99  local1
+192.168.255.88  remote1
