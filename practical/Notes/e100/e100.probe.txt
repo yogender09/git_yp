@@ -1,0 +1,96 @@
+e100 PCI NIC driver.
+
+static struct pci_driver e100_driver = {
+        .name =         DRV_NAME,
+        .id_table =     e100_id_table,
+        .probe =        e100_probe,
+        .remove =       e100_remove,
+#ifdef CONFIG_PM
+        /* Power Management hooks */
+        .suspend =      e100_suspend,
+        .resume =       e100_resume,
+#endif
+        .shutdown =     e100_shutdown,
+        .err_handler = &e100_err_handler,
+};
+
+e100_init(){
+* pci_register_driver(&e100_driver);
+PCI driver discover the PCI devices by pci_register_driver().
+Its actually other way around PCI layer do the basic probing 
+of a divice and the see the description of DEIVCE_ID and give
+it to the appropriate driver.
+}
+
+e100_probe(pci_dev *pdev...){
+struct net_device *netdev;
+struct nic *private_data
+ netdev = alloc_etherdev(sizeof(struct nic));
+alloc_etherdev will give register your driver with network subsystem.
+alloc_etherdev will create a network device for every device found in
+probe. Which is a net_device structure in a list mentioned by network
+subsystem. This API is specific to ethernet drivers.
+
+initializing the struct nic's private_data, provide the net_device_ops 
+and ethtool_ops.
+
+nic = netdev_priv(netdev);
+netif_napi_add(netdev, &nic->napi, e100_poll, E100_NAPI_WEIGHT); 
+
+netdev_priv() will give you the private data of your driver from netdev
+struct. netif_napi_add(), This will initialize the net_napi structure
+with weight and poll function.
+
+pci_enable_device()
+before touching and device registers, the driver needs to enable the
+PCI device by calling pci_enable_device(). This will:
+- wake up the device if it is suspended state,
+- allocate I/O and memory regions of the device (if BIOS did not)
+- allocate an IRQ (if BIOS did not).
+
+pci_resource_flags()
+This will give the PCI BAR registers flag which tells which type of
+mapping is there for devices register. IORESOURCE_MEM is type we are
+interested in.
+
+pci_set_dma_mask()
+This call will query that if the Machine PCI controller support the 
+DMA addressing issues your device have e.g. your device might work
+24 bit addresses but PCI controller on machine does not have support
+for 24 bit addresses. So, it is better to check the controller 
+functionality of the Machine in your probe.
+
+SET_NETDEV_DEV()
+SET_NETDEV_DEV() is to have the link of the PCI layer in your net_device.
+
+pci_iomap()
+pci_iomap() will provide the virtual address for the BAR register in 
+your PCI device to the driver which is recommended to use over direct 
+access of the physical address of your devices registers.
+eg. BAR's which may have your csr
+
+e100_get_defaults()
+Will set the RFDs and Command blocks(cbs) and initialize devices private
+data structure. Also setup the MII setting for future usage.
+
+e100_hw_reset()
+For reseting the device, before setting the device as PCI bus master 
+capability.
+
+pci_set_master()
+pci_set_master() will enable DMA by setting up the bus master bit in the 
+PCI_COMMAND register. It also set the latency timer value if bogus'ed by
+BIOS.
+
+e100_alloc -> pci_alloc_consistent()
+pci_alloc_consistent() will give consistent DMAable memory with 
+no-coherency issue.
+
+e100_eeprom_load
+loading e2prom to drivers cache and check the checksum. to get the MAC
+of the device. than copied it to the net_device's dev_addr.
+
+register_netdev()
+register_netdev() is to complete the registration of driver in network
+layer.
+}.
