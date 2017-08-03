@@ -1,0 +1,175 @@
+Rsvp Nsr Transit Devtest Plan
+Safaa Hasan
+Jan, 2009
+
+1.  INTRODUCTION
+
+This document describes the devtest extended test plan for RSVP non-stop routing functionality for transit nodes.
+
+RLI         : 3167
+Tracking PR : 66381
+Functional spec : sw-projects/os/nsr/rsvp-funcspec.txt
+
+As this exercise is carried in parallel to systesat testing, the main goal is to avoid rerunning of same tests. 
+It is mainly aimed toward widening the test coverage and to break the code!
+
+2.  SETUP
+
+
+  Ingress/R0            R1             R4                    R5
+  +--------+        +--------+       +--------+       +----------+
+  |pro10-d +--------+pro10-b +-------+pro10-e |-------+  pro10-c |
+  +---+----+        +---+----+       +----+---+       +----------+
+       \                |                 |             /
+         \              | R2              | R3        /
+           \        +---+----+       +----+---+     /
+             +----  |pro10-mx+-------+pro10-f | -- +
+                    +--------+       +--------+
+                         
+
+
+The device under test is a dual-RE m10i  or mx 240
+
+typical config used on a transit router:
+
+chassis {
+    redundancy {
+        graceful-switchover;
+    }
+}
+interfaces {
+..........
+}
+routing-options {
+    nonstop-routing;
+}
+protocols {
+    rsvp {
+        traceoptions {
+            file rsvp.log size 1m;
+            flag state;
+            flag error;
+            flag event;
+            flag nsr-synchronization;
+        }
+        refresh-time 60;
+        interface all {
+            aggregate;
+            reliable;
+            hello-interval 10;
+        }
+    }
+    mpls {
+        interface all;
+    }
+
+}
+
+3. TEST CASES
+
+3.1 Basic transit NSR testing.
+
+ Basic test:
+   To be run on all tests:
+     To assure basic RSVP state replication to standby and zero traffic loss on switch-over.
+      Test Steps:
+        1. In the setup shown above, configure an LSP from R0 to R5.
+        2. Configure graceful-switchover and nonstop-routing on the DUT.
+        3. On standby look at various RSVP states like:
+             - interface state
+             - neighbor state
+             - session state
+        4. They all should be identical to the one on the master.
+        5. Time stamps are allowed to be different.
+        6. Run switch-over through 
+                "request chassis routing-engine master switch no-confirm"
+        7. send ping traffic from r0 to r5 with ttl 2 option.
+    Success Criteria: States should be identical on standby before and after the switchover with zero traffic loss over the lsp.
+    
+
+3.1.1 Functionality over transit/egress  
+    Goal: Verify that Basic test is Passing on transit/penultimate/egress.
+    Test Steps:
+      1-	Run switch over on R1/R2/R3/R5.
+      2-	Verify that Basic test is passing.
+
+3.1.2 Restore functionality after restart routing
+     Goal: Verify NSR functionality restore after restart routing
+         1- Run "restart routing immediate" on R1/r2/R3/r5.
+         2- Verify NSR state restoration after rpd restart.
+
+3.1.3 RRO functionality after switch over
+    Goal: Verify that transit router is behaving correctly after switch over
+    Test Steps:
+        1-	Run switch over on R1/R2/R3/R5
+        2-	Verify that ingress is behaving and displaying the right info.
+    
+3.1.4 Switch over penultimate with penultimate-null
+     Goal: Verify Basic testing with penultimate-null
+     Test Steps:
+        1- set "mpls penultimate-null" on R3.
+        2- Verify Basic test on R3 and R5.
+
+ 3.1.5 Switch over under aggregate interface 
+      Goal: Verify basic testing under aggregate interface.
+       Test Steps:
+         1- Configure aggregate interface between R1 and R4.
+         2- Set R0-R5 LSP to go strictly through R1/R4/R3.
+         3- Verify Switch over Basic functionality on R1.
+
+
+3.2 Killing kernel:
+
+3.2.1 Kill rpd successive times to freeze rpd 
+    Goal: To force switch over through rpd thrashing.
+    Test Steps:
+        1- On each of the R0/R1/R2/r3/R5, configure 
+            -set system processes routing failover other-routing-engine
+        2- On master, execute unix shell "kill -9 <rpd>. Repeat multi times to force switch over.
+        3- Assure no crash, traffic resume and NSR primary/standby functionality after the switch over.
+
+3.3 Backup testing:
+    Goal: Verify functionality under LSP with different protection styles.
+  
+    Set the lsp from R0 to R5 to go strictly through R1/R2/R3
+
+ 3.3.1 Repeat 3.1 and 3.2 using  lsp fast reorute
+
+3.3.2 repeat 3.1 and 3.2 using lsp link protection.
+
+3.3.3 repeat 3.1 and 3.2 using lsp standby.
+
+3.3.4 repeat 3.1 and 3.2 using FR/LP/standby combined.
+
+
+3.4 scaling tests:
+    Goal: Verify functionality under large number of LSPs
+ 3.4.1 Multi lsp test:
+     -Configure 3k LSPs from R2 to R5 with strict path through R1/R3/R5
+     -Repeat 3.1 and 3.2
+ 3.4.2 large lsp test:
+      -As in 3.4.1 but with 10k LSPs.
+
+
+3.5 Memory leak test:
+     Goal: Verify no memory leak after switch over.
+    - Repeat 3.4.1 over night. 
+    - Verify no memory leak.
+
+
+
+Filed PRs:
+Number 	Synopsis 	Severity
+415351  	rpd core in rsvp_standby_get_txpath_id 	major
+418356  	pfeman resync failure on NSR switchover with aggregate
+                    interface 	major
+418301  	RPD core in tlv_decode_rsvp_msg_repl_0 	major
+416327  	RPD core in rsvp_longwait under RSVP NSR 	major
+414304  	Penultimate transit sends wrong RRO protction flag after
+                switch over under nsr rsvp 	major
+416364  	NSR switchover on transit box might create lsp traffic black
+                hole on penultimate box 	major
+414651  	NSR RSVP on master RE may provide wrong info when backup RE is
+                running non supported 9.0 	minor
+415801  	Issue on ingress after NSR switch over on transit box through
+                RPD kill 	major

@@ -1,0 +1,1049 @@
+
+                        NSR: BFD state replication
+                        
+                    Functional and Design Specification
+
+                      Nitin Bahadur <nitinb@juniper.net>
+
+$Id: bfd-nsr-funcspec.txt,v 1.5 2007/08/01 19:27:12 nitinb Exp $
+
+Copyright (C) 2006, Juniper Networks, Inc.
+
+NOTICE: This document contains proprietary and confidential
+information of Juniper Networks, Inc. and must not be distributed
+outside of the company without the permission of Juniper Networks
+engineering.
+
+
+1.  INTRODUCTION
+
+This feature is part of the NSR project. This document details the requirements
+associated with supporting BFD state replication to support NSR for routing 
+protocols. Design framework and details are also described in this document.
+
+Tracks: 
+    NPI Program: 326 JUNOS Non-Stop Routing (NSR)
+    RLI 2726: NSR: BFD state replication
+    PR: 94592
+
+When NSR is configured, routing protocols replicate their protocol state from 
+the master to the backup RE. This allows for the protocols to be ready on the
+backup in case of a planned or unplanned RE-switchover. Routing protocols use
+BFD for fast liveliness detection of their neighbors. When a BFD session goes
+down, the routing protocols treat it as a neighbor down event and accordingly
+perform operations in their protocol state machinery.
+
+Currently, BFDD does not run on the backup RE and consequently it does not 
+replicate it's session state between from the master to the backup RE. As a
+result, on a switchover, the neighbors will stop receiving BFD packets (until
+the bfd sessions are reprogrammed on the new master) and they will treat it as
+a neighbor down event. This is a major shortcoming in the use of BFD for
+routing protocols for liveliness detection.
+
+The solution to the issue is that BFD session should survive during a NSR 
+supported RE switchover. BFD session state should be maintained across both 
+REs via some form of replication. This would enable use of BFD by routing
+protocols across RE switchovers.
+
+
+2.  FUNCTIONALITY
+
+This section discusses the functionality that will be provided by this
+feature. 
+
+2.1 Goals
+---------
+
+1) Maintain BFD session state between the 2 RE's when NSR is configured.
+2) On a switchover, ppmd on the new master RE should immediately start sending
+   packets for all RE-based BFD sessions.
+3) On a switchover, for all PFE-based BFD sessions, the sessions should not be
+   affected and should continue to operate as before.
+
+No user visible behavior shall be changed on the master and backup REs. All
+BFD CLI commands shall be available on the backup RE. The session state as
+observed on the master and backup RE might be inconsitent for the short
+duration during which replication is in progress.
+
+Routing protocols to be supported as part of BFD NSR:
+
+1) Static routes (single-hop and multi-hop)
+2) OSPF
+3) ISIS
+4) BGP
+5) PIM
+6) RIP
+
+Protocols that do not implement NSR will not get any benefit from this
+feature. However whenever NSR is implemented for those protocols, they will be
+able to use the BFD NSR feature.
+
+This feature shall be supported on all dual-RE M/T series platforms.
+
+Replication of MPLS-OAM BFD sessions is dependent on LDP and RSVP OAM
+state replication. Since  MPLS-OAM state is not replicated today; such 
+BFD sessions will flap on RE switchover.
+
+BFD NSR for sessions in logical router context will not be supported. The
+support is not lacking from a BFD perspective, but from a protocol view-point.
+RPD protocols currently don't support NSR across logical routers and hence
+NSR for BFD sessions might not work as expected for logical routers.
+
+BFD NSR will develop a mirroring infrastructure based off eventlib. This is an
+internal engineering deliverable for other projects that require a mirroring
+infrastructure [RLI 4566].
+
+
+Support for Graceful Restart helper mode
+----------------------------------------
+If a BFD client protocol (OSPF, ISIS, BGP) is in graceful restart helper mode,
+it will not bring down the adjacency provided the restarting node sends and 
+receives bfd packets during graceful-restart.
+
+
+2.2 CLI Config
+--------------
+
+2.2.1   Enabling BFD NSR
+------------------------
+
+BFD NSR will be enabled via with the "nonstop-routing" statement at
+the [edit routing-options] hierarchy level. No additional config is required 
+to enable BFD NSR.
+
+
+2.2.2   BFD NSR Tracing
+-----------------------
+New traceoptions have been added to trace NSR-related activity.
+
+[top]
+set protocols bfd traceoptions flag ?
+
+Possible completions:
++   nsr-synchronization Trace NSR synchronization events
++   nsr-packet          Trace packet activity of NSR
+
+
+2.2.3   PPMD Tracing
+--------------------
+PPMD tracing will be modified to use traceoptions. The traceoptions will be
+hidden under "set routing options ppm". These are for internal use only.
+The following hidden hierarchy is being added:
+
+root@pro9-d1# set routing-options ppm traceoptions ?
+Possible completions:
++ apply-groups         Groups from which to inherit configuration data
++ apply-groups-except  Don't inherit configuration data from these groups
+> file                 Trace file information
+> flag                 Trace flag information
+
+root@pro9-d1# set routing-options ppm traceoptions flag ?
+Possible completions:
+  all                  Trace everything
+  distribute           Trace distribution activity
+  error                Trace all errors
+  event                Trace all events
+  packet               Trace all packets
+  pipe                 Trace pipe messages
+  pipe-detail          Trace pipe messages in detail
+
+
+2.3 CLI Commands
+----------------
+
+2.3.1 show bfd session
+----------------------
+Existing "show bfd session" commands have been enhanced to display if a bfd 
+session has been replicated to the backup RE. A *replicated* flag has been
+added.
+
+root@pro9-e> show bfd session detail   
+                                                          Transmit
+Address              State     Interface     Detect Time  Interval   Multiplier
+5.5.4.1              Up        so-0/2/2.1         23.040     3.840       3
+ Client Static, TX interval 0.015, RX interval 0.015, multiplier 3
+! Session up time 04:19:19, previous down time 00:00:10, replicated
+ Local diagnostic NbrSignal, remote diagnostic CtlExpire
+ Remote state Up, version 1
+
+root@pro9-e> show bfd session extensive   
+
+Address              State     Interface     Detect Time  Interval   Multiplier
+5.5.4.1              Up        so-0/2/2.1          23.040     3.840       3
+ Client Static, TX interval 0.015, RX interval 0.015, multiplier 3
+! Session up time 04:21:17, previous down time 00:00:10, replicated
+ Local diagnostic NbrSignal, remote diagnostic CtlExpire
+ Remote state Up, version 1
+ Min async interval 0.015, min slow interval 1.000
+ Adaptive async TX interval 0.030, RX interval 0.015
+ Local min TX interval 0.030, minimum RX interval 0.015, multiplier 3
+ Remote min TX interval 7.680, min RX interval 3.840, multiplier 3
+ Local discriminator 1, remote discriminator 201
+ Echo mode disabled/inactive
+
+XML output change:
+
+<rpc-reply xmlns:junos="http://xml.juniper.net/junos/8.3I0/junos">
+    <bfd-session-information xmlns="http://xml.juniper.net/junos/8.3I0/junos-bfd" junos:style="detail">
+        <session-brief>
+            <session-neighbor>5.5.4.1</session-neighbor>
+            <session-state>Up</session-state>
+            <session-interface>so-0/2/2.1</session-interface>
+            <session-detection-time>23.040</session-detection-time>
+            <session-transmission-interval> 3.840</session-transmission-interval>
+            <session-adaptive-multiplier>   3</session-adaptive-multiplier>
+        </session-brief>
+        <session-detail>
+            <client>Static</client>
+            <client-transmission-interval>0.015</client-transmission-interval>
+            <client-reception-interval>0.015</client-reception-interval>
+            <client-multiplier>3</client-multiplier>
+        </session-detail>
+        <session-detail>
+            <session-up-time>04:22:54</session-up-time>
+            <previous-down-time>00:00:10</previous-down-time>
++           <replicated/>
+            <local-diagnostic>NbrSignal</local-diagnostic>
+            <remote-diagnostic>CtlExpire</remote-diagnostic>
+            <session-version>1</session-version>
+            <remote-state> Remote state Up, </remote-state>
+        </session-detail>
+
+
+On the master RE, the flag "replicated" implies that the bfd session has been
+replicated over to the backup. On the backup RE, it implies that the bfd
+session state information has been replicated from the master. It could happen
+that there are bfd sessions on the backup (created by clients of bfd) which 
+haven't been replicated yet from the master RE. Such sessions would not have
+the "replicated" flag set.
+
+2.3.2 show bfd session replication
+----------------------------------
+
+New set of hidden commands are being added to track sessions being actively
+replicated or un-replicated.
+
+cli> show bfd session ?
+Possible completions:
+  <[Enter]>            Execute this command
+  address              Show BFD session with specific neighbor address
+  brief                Display brief output (default)
+  detail               Display detailed output
+  discriminator        Show BFD session with specific local discriminator
+  extensive            Display extensive output
++  replication          Show sessions involved in replication
+  summary              Display summary output
+  |                    Pipe through a command
+
+cli> show bfd session replication ?
+Possible completions:
+  <[Enter]>           Show BFD sessions queued for replication
+  add                 Show BFD sessions queued for replication addition
+  completed           Show BFD sessions which have been replicated
+  delete              Show BFD sessions queued for replication delete
+  update              Show BFD sessions queued for replication update
+  
+The output of all the above commands will have the same format as the 
+"show bfd session brief" command.
+
+2.3.3 show bfd replication
+--------------------------
+
+New set of hidden commands are being added to track information about the
+bfd replication process.
+
+cli> show bfd ?
+Possible completions:
++  replication          Show information regarding bfd replication
+  session              Show all BFD sessions
+
+cli> show bfd replication ?
+Possible completions:
+  queue                Show data-mirroring queues
+  registered-database  Show registerd databases for mirroring
+  session              Show session replication database
+  statistics           Show Show replication statistics
+
+Output of 
+   "show bfd replication queue" and 
+   "show bfd replication registered-database"
+   "show bfd replication statistics"
+shall be the same as output of 
+   "show mirror-data queue",
+   "show mirror-data statistics" and
+   "show mirror-data registered-database" respectively.
+
+cli> show bfd replication session
+
+Address              Interface     Discriminator   Replication state
+192.168.8.66         so-0/2/2.0          1         Synchronized
+192.168.8.64         so-0/2/2.1          2         Not replicated
+
+Replication states can be one of the following:
+1) Not replicated
+2) Synchronized
+3) Adding
+4) Deleting
+5) Updating
+
+
+2.3.4 clear bfd replication
+---------------------------
+
+New set of hidden commands are being added to clear information about the
+bfd replication process.
+
+cli> clear bfd ?
+Possible completions:
+  adaptation           Clear BFD adaptation
++  replication          Clear information regarding bfd replication
+  session              Clear BFD sessions
+
+cli> clear bfd replication ?
+Possible completions:
+  statistics           Clear BFD replication statistics
+  
+cli> clear bfd replication statistics
+
+
+cli> clear bfd replication statistics | display xml
+<rpc-reply xmlns:junos="http://xml.juniper.net/junos/8.3I0/junos">
+    <bfd-replication-statistics>
+xmlns="http://xml.juniper.net/junos/8.3I0/junos-bfd">
+    </bfd-replication-statistics>
+    <cli>
+        <banner></banner>
+    </cli>
+</rpc-reply>
+
+
+2.3.5 clear bfd commands
+------------------------
+
+The "clear bfd" commands will not be available on the backup RE. Clearing
+state on the backup is not allowed.
+
+
+2.4 Non Goals
+-------------
+
+NSR and Graceful-restart are mutually exclusive. This feature does not support
+BFD state replication with Graceful-restart.
+
+
+2.5 BFD NSR and Control plane independence
+------------------------------------------
+
+With BFD NSR, BFD sessions that are delegated to the PFE will now transmit
+packets with the C-bit set, indicating that the sessions are control plane
+indepedent.
+
+
+3.  CAVEATS
+
+1) When a switchover happens, ppmd on new master will start transmission of bfd
+   packets (for RE-based BFD sessions). If the bfd session detection time is
+   lower than the RE switchover time, then those bfd sessions will time out on
+   the neighbor. So for RE based BFD sessions, it is recommended to adjust the
+   bfd session detection times to a value higher than the RE switchover time.
+
+2) It is not guaranteed that BFD session state on the new master (after a
+   RE-switchover) will be exactly the same as that on the old master. This is
+   because session state might be in the process of being replicated over at
+   the time of the RE-switchover. For session that are stable and have been in
+   the "UP" state for sometime, there should be no such discrepancies.
+
+3) It is not guaranteed that bfd session state will be maintained across of
+   rapid RE-switchovers (i.e. 1 RE-switchover followed by another
+   RE-switchover). Session state replication must complete before the backup-RE
+   can take over the responsibilities of the master-RE.
+
+4) If BFD session state is not the same on the backup RE (for any of the above
+   reasons) and a switchover happens, BFD sessions might flap.
+
+5) MPLS-OAM BFD session replication is dependent on MPLS-OAM replication. If
+   the latter is not available at the time of release of this RLI, then such
+   BFD sessions will flap.
+
+6) NSR for BFD sessions across logical routers might not work as expected
+   due to lack of protocol support.
+
+7) BFD NSR for RIP is dependent on RIP NSR which is scheduled for 9.0.
+
+
+4.  OTHER REQUIREMENTS
+
+It is recommended that clients of BFD program bfd on the backup RE also.
+However, this is not required. If the clients do not program bfd on the
+backup, then it is required that do program bfd immediately after the
+switchover. If the client fails to establish the session within a
+stipulated period of time after the RE-switchover, the BFD session will
+be destroyed.
+
+
+[=== Everything from here down is internal (white box) documentation
+and should not be documented or related to customers without a
+specific need. (e.g. customer support workarounds for critical issues,
+performance targets where the performance is the feature, etc.) ===]
+
+
+5.  IMPLEMENTATION DETAILS
+
+5.1 Introduction
+----------------
+
+BFD high availability feature is comprised of 4 sub-features:
+1) BFD NSR
+2) BFD ISSU
+3) BFD support for Graceful restart in helper mode.
+4) BFD support for Graceful restart
+
+For RLI 2726, we shall implement 1) and 3). Infrastructure support for 
+implementing 4) will be provided.
+
+BFD NSR is applicable when NSR is configured on a box. When a dual-RE
+machine is configured with NSR, BFD session state will be mirrored on the
+standby RE and the BFD sessions will maintain session state across RE 
+switchovers. The concept of "maintain session state" is important as this also
+implies that BFD sessions in protocol states other in "UP", (eg. INIT) will be
+in the same state on the standby. So in case of switchover, the peer will not
+see a BFD protocol state change (see Section 3. CAVEATS). On a switchover, 
+the new master will continue to maintain sessions and the peers should not
+notice any change. Since BFD NSR works off mirroring, single RE machine
+restarts will result in a BFD session flap.
+
+One of the key highlights for BFD session state maintenance across RE
+switchovers is the use of bfd sessions distributed to the PFE. If a session
+is distributed to the PFE, only then can we guarantee that bfd packets will
+continue to be sent while the switchover is taking place. If non-distributed
+BFD sessions are to be kept alive during switchover, one must ensure that the
+session failure detection time is greater than the RE switchover time.
+
+Currently, the following bfd sessions are not distributed to the PFE:
+1) Multi-hop sessions
+2) Tunnel encapsulated sessions
+3) BFD sessions over AE and IRB interfaces
+
+
+The rest of this section describes the design for implementing various BFD
+high availability features. Note that only BFD NSR is relavant for RLI 2726.
+
+
+5.2 BFD and NSR design
+----------------------
+
+NSR works by recreating client protocol state on the standby. Thus, all 
+clients of BFD will program bfdd on the standby RE also. So, when a switchover
+takes place, bfdd on standby is ready to go with all session state information.
+For this to work seamlessly, the following things are needed.
+
+1) BFD packets MUST be sent out with same port number when a switchover happens.
+   To ensure this, we need to reserve some ports from the draft specified range.
+   1 port for single-hop and 1 port for multi-hop BFD are needed.
+
+2) Even though clients program bfdd on standby, bfdd needs to have the most 
+   up-to-date session information for bfd sessions running on the master. This
+   will be made possible by use of mirroring. We shall mirror the bfd session
+   state between master and standby RE. By default all bfd sessions will be
+   mirrored.
+
+When a bfd session is first mirrored to the standby RE, 2 cases exist.
+
+a) The session already exists on the standby. In such a case, the mirrored
+   session params will be saved in the session and ppmd will be programmed 
+   with the *mirrored* params.
+b) If the session did not exist on the standby, a client-less session will be
+   created and ppmd will be programmed with the mirrored session params. Whenever
+   a client creates a new session which matches an exiting mirrored session, we
+   shall attach the client to the existing session. Client params will not be
+   used to re-program ppmd.
+
+When switchover happens, 2 cases exist for mirrored bfd sessions.
+
+a) The session already has a client attached to it. In such a case, we are fine.
+   We re-evaluate the bfd client params and re-program ppmd if need be.
+b) The session has no client attached to it. In such a case, we start a timer
+   for the session and if no client attaches to that session before timer
+   expiry, we bring down the session. Note that sessions which are in hold-down
+   state will NOT get mirrored over to the new standby. Bringing a session down
+   would involve stopping the ppmd programming, sending an ADMINDOWN BFD
+   packet and then terminating the bfd sesison.
+
+When switchover happens, 2 cases exist for bfd sessions on standby.
+
+a) The session was mirrored from the master. In such a case, we have already
+   programmed ppmd, so we are fine.
+b) We did not receive any mirrored state from master. In such a case, we
+   immediately go ahead and program ppmd and try to bring the session up.
+
+
+Logic for mirroring of bfd sessions
+
+The good thing about bfd sessions is that bfd session state can be
+mirrored without any dependency. Also multiple BFD sessions are
+independent of each other. So failure to mirror state of 1 session
+does not imply that we should treat other sessions with suspicion.
+
+1) Master generates list of bfd sessions that need to be mirrored and
+   queues them up for mirroring. A mirror end_of_db msg is attached to the end
+   of this list.
+2) New sessions that come up are added after the "mirror end_of_db" msg.
+3) Backup creates the sessions as they are received from the master. 
+   bfdd on standby can immediately start programming ppmd; without waiting
+   for the "mirror end_of_db" msg.    
+4) If mastership changes before the most recent UP state change for a 
+   session is mirrored, then the bfd session might go down.
+5) If mastership changes before the most recent DOWN state change for a
+   session is mirrored, then the bfd session will stay up. But it is
+   likely to go down again (for the same reason it went down previously)
+   and so this case is unimportant.
+
+
+Procedure for informing bfd clients on standby regarding session state update
+
+1) If the session exists when the client programs bfdd, then current
+   session state is returned to client (currently works this way).
+
+2) If mirrored session info is received after clients have programmed
+   bfdd, then all clients are immediately updated with the state.
+
+3) As and when bfdd state changes are mirrored onto the standby, these
+   changes get reflected by sending them to clients.
+
+ 
+Notes:
+1) No client state needs to be saved. Client state can be reconstructed
+   when the clients reconnect to bfdd.
+
+2) SNMP traps are never sent on standby bfdd.
+
+3) Adaptation algorithm is never run on standby RE. The adaptation parameters
+   are however replicated to the standby so that the standby is aware of
+   transmit/receive timer changes happening on the master.
+
+4) Poll state changes are not mirrored to standby. In other words, when we
+   send out packets with a Poll-bit, we don't mirror that information onto the
+   standy. Only when the effect of the poll is seen (i.e. timer change on
+   receipt of Final), do we update the mirror with the new params.
+
+
+5.3 BFD and NSR implementation details
+--------------------------------------
+
+5.3.1 BFDD changes
+------------------
+
+New fields being added to bfdd client state:
+
+ - refresh_deadtime (time in msec)
+   This interval represents the time for which bfdd should keep a session
+   alive in case of disconnect from rpd (due to rpd-restart or any other
+   reason). Used for graceful-restart and GRES.
+   
+New fields being added to bfdd session state:
+ - refresh_deadtime (time in msec)
+   Maximum time based off the client refresh_deadtimes
+
+ - replicated (flag value)
+   On the master it indicates if a session has been replicated to the primary
+   or not. On the standby it indicates if a session has been learnt from the
+   master or not.
+    
+ - mirror state
+   Fields to link the session struct for mirroring.
+
+A session will be replicated only after it has finished the versioning
+holdown.
+
+Handling of local discriminators on backup:
+
+    Backup RE will never allocate discriminators for a session. Sessions will
+    be created without a discriminator....because we might be soon receiving
+    mirrored information for that session (with a discriminator). When linking
+    of mirrored data to a session is done, the local discr from the mirrored
+    data will be copied into the session. On switchover, sessions without a
+    valid discr will be allocated a new discr.
+
+    show_bfd_session_by_addr() will have to be modified to account for the
+    fact that a session on backup might not be in the discr patricia tree.
+
+    On the backup, mpls-oam MUST create sessions with a valid discr
+    (replicated from the master). Session create requests of type 
+    BFD_SN_CTRL_FLAG_GET without a valid discr not be supported.
+
+Fields that will be mirrored only at initial session create time.
+
+    /* Basic parameters */
+
+    bfdd_source_key bfdd_ses_source_key; /* Source key */
+    bfdd_src_dst_key  bfdd_ses_src_dst_key; /* Src dst key */
+
+    char *bfdd_ses_if_name;             /* Interface name */
+    ifl_idx_t bfdd_ses_if_index;        /* Interface index */
+
+    /* Local state information */
+
+    u_int32_t bfdd_ses_local_discr;     /* Local discriminator (and key!) */
+    bfd_ctl_hdr bfdd_ses_last_pgm_pkt;  /* Last programmed packet, contains
+                                           all local state info */
+
+    time_t bfdd_ses_up_tstamp;          /* Timestamp of when session came up */
+    time_t bfdd_ses_down_tstamp;        /* Ditto for when it went down */
+
+    /* Flags */
+    u_int32_t bfdd_ses_flags;           /* Various session flags, 
+                                           see Appendix I for details. */
+
+    /* Control protocol parameters */
+
+    u_int32_t bfdd_ses_min_async_ivl;   /* Desired async Tx interval */
+    u_int32_t bfdd_ses_adapt_async_ivl; /* Adaptive Tx interval */
+    u_int32_t bfdd_ses_cur_tx_ivl;      /* Current Tx interval */
+    u_int32_t bfdd_ses_adapt_mult;      /* Adaptive multiplier */
+
+    u_int32_t bfdd_ses_last_adapt_rx_ivl; /* Previous value of above */
+
+    /* Echo protocol parameters */
+
+    u_int32_t bfdd_ses_min_echo_ivl;    /* Desired echo Tx interval */
+    u_int32_t bfdd_ses_echo_tx_ivl;     /* Agreed echo Tx interval */
+    u_int32_t bfdd_ses_echo_mult;       /* Echo detect multiplier */
+
+    /* Neighbor parameters */
+
+    bfd_ctl_hdr bfdd_ses_last_rcvd_pkt  /* Last packet seen from neighbor */
+
+    bfd_tnl_encap_t *tnl_encap;         /* Tunnel encaps */
+    u_int8_t bfdd_ses_min_rx_ttl;       /* TTL for multi-hop session */
+    u_int32_t logical_rtr_id;           /* Logical router ID */
+
+The replication of the above fields is to allow a BFD session to continue 
+operation headless (without any attached client) on the backup on a switchover.
+This will be advantageous in cases of graceful-restart (with or without GRES
+(wherein rpd will not be pre-programming bfd on backup). It will also help 
+cases in NSR in which bfd session state on backup has been mirrored but the 
+client protocol (eg. OSPF hasn't come around to programming bfd and a 
+switchover takes place.
+
+
+Fields that can change and will be mirrored on subsequent change.
+
+    u_int32_t bfdd_ses_local_discr;     /* Key for discriminating sessions. */
+
+    u_int32_t bfdd_ses_cur_tx_ivl;      /* Current Tx interval */
+    u_int32_t bfdd_ses_adapt_async_ivl; /* Adaptive Tx interval */
+    u_int32_t bfdd_ses_adapt_mult;      /* Adaptive multiplier */
+    u_int32_t bfdd_ses_last_adapt_rx_ivl; /* Previous value of above */
+
+    bfdd_session_state bfdd_ses_state;  /* Current session state */
+    bfd_diag bfdd_ses_local_diag;       /* Local session diagnostic */
+    u_int32_t bfdd_ses_min_echo_rx_ivl; /* Required echo Rx interval */
+    u_int32_t bfdd_ses_echo_tx_ivl;     /* Agreed echo Tx interval */
+    u_int32_t bfdd_ses_echo_mult;       /* Echo detect multiplier */
+
+    bfd_ctl_hdr bfdd_ses_last_rcvd_pkt  /* Last packet seen from neighbor */
+
+    bfd_tnl_encap_t *tnl_encap;         /* Tunnel encaps */
+    u_int8_t bfdd_ses_min_rx_ttl;       /* TTL for multi-hop session */
+
+    time_t bfdd_ses_up_tstamp;          /* Timestamp of when session came up */
+    time_t bfdd_ses_down_tstamp;        /* Ditto for when it went down */
+
+The number of fields rapidly changing is very few, and basically limited to
+the time when the session is transitioning between UP and DOWN states.
+
+For all other fields that are not actively replicated to the backup, see
+Appendix II.
+
+When is a session state replicated ?
+
+  A session state is replicated on a trigger of the following events:
+
+  1) A new packet arrives from ppmd..this implies something has changed on
+     the remote side.
+  2) Adj down is received from ppmd..this will change local session state.
+  3) Clear adaptation cli command is issued...this may change tx/rx intervals.
+  4) Clients re-program existing session with updated parameters.
+
+5.3.1.1 Infastructure work items
+--------------------------------
+
+ - Combine all booleans in bfdd_struct into 32-bit flags for ease in mirroring.
+   Provide easy access APIs for these flags.
+ - Add new TLVs
+ - Support client-less bfd sessions on backup. Allow linking of clients
+   to such sessions.
+ - Use unique identifier when programming ppmd (not a pointer)
+ - CLI commands to display bfd replication information
+ - Config commands for replication tracing
+
+5.3.1.2 Backup RE infrastructure work items
+-------------------------------------------
+
+ - Start bfd on backup RE.
+ - Disable running of adaptation algorithm
+ - Disable SNMP trap generation
+ - Allow creation of dummy connections for mirrored sessions (if need be)
+ - Splice incoming new client connection with existing dummy connection
+ 
+5.3.1.3 Mirroring work items
+----------------------------
+
+Master RE:
+  - Wait for mirror connect from backup
+  - Queue mirror operations on connect
+  - Perform updates to existing sessions on change of bfd session fields
+  - Delete mirror operation/session on session delete
+  - Cleanup mirror state on backup connection failure
+
+Backup RE:
+  - Establish mirror session with master
+  - Create/delete/modify sessions based on mirrored info
+  - Program ppmd using mirrored bfd params
+
+On switchover:
+  - Re-negotiate bfd params for mirrored sessions based on client params and
+    mirrored params
+  - Hold-down client-less sessions for a while and then delete them
+    eventaully.
+  - Program ppmd immediately for non-mirrored sessions
+  
+
+5.3.2 PPMD changes
+------------------
+
+BFDD on the backup RE will program PPMD as and when BFD sessions are setup on
+the backup RE. PPMD will however supress packet transmission until mastership
+changes. On a switchover, ppmd will perform the following for all RE-based BFD
+sessions.
+
+1) Start transmission of packets
+2) Start adjacency timers
+
+For sessions which desire distribution to the PFE, ppmd will save this
+information in the xmit/adj/interface/stats entries. When switchover happens,
+ppmd will perform the following tasks:
+
+1) Start transmission of packets on all xmit entries.
+2) Start a 5 second timer to wait for all PFE's to connect to it.
+3) On timer expiry, attempt to distribute the xmit/adj/interface/stats entries.
+   If distribution succeeds, the local transmission of packets by ppmd will
+   cease (current behavior). If distribution fails, the adjacency timers will
+   be started (current behavior). The distribution will be attempted for all
+   protocols (not just bfdd).
+
+PPMD tracing will be cleaned up to use traceoptions. See Section 2.2.3 for more
+details.
+
+5.3.3 PPMAN changes
+-------------------
+
+PPMAN is the periodic packet transmission thread that runs on the PFE.
+Currently, after a disconnect with ppmd, ppman starts a refresh timer for all
+entries waiting for them to be refreshed. If the entries do not get refreshed
+within a certain time, they get deleted. By refresh we mean that ppmd attempts
+to create them again. We will need to add some stats to ppman to keep track of
+number of xmit/adj/intf/stats entries that were refreshed on a re-connect
+to ppmd. This will help us track issues with bfd sessions which failed to get
+replicated correctly on the backup and thus were not refreshed after a 
+switchover.
+
+
+5.3.4 RPD changes
+-----------------
+
+5.3.4.1 Infrastructure changes
+------------------------------
+
+BFD NSR will make use of the mirroring functionality developed for rpd. To
+facilitate that, the mirroring code will need to be moved into a library
+in juniper/lib/libmirror/
+Currently, the mirror code is centered around "tasks" and rpd style. It would
+be abstracted so that non-task and non-rpd-style based implementations
+can also make use of it. The non-task based implementation would be based off
+eventlib and jtimers. The mirror show commands will also need to be
+modified to not rely explicitly on rpd-style UI handling. Details regarding
+libmirror can be found in [LIBMIRROR-FUNCSPEC]
+
+RPD on backup currently does not connect to bfdd (since bfdd does not run on
+backup). RPD will need to be modified to connect to bfdd on backup if NSR is 
+enabled.
+
+RPD on backup will treat bfd session state of DOWN as ADMIN_DOWN so that it
+does not affect the protocol state machinery due to the DOWN notifcation.
+
+5.3.4.2 Protocol changes
+------------------------
+
+Protocols will need to be modified to not take any action on bfd session down
+events on the backup. BFD needs to send these notifications so that protocols
+can keep track of whether the bfd session is UP or DOWN.
+
+We will need to make sure that all protocols are programming bfdd on the
+backup RE. In other words check for any specific actions protocols are taking
+w.r.t. bfd on the backup.
+
+BFD session mirroring will work only if the session programming performed by
+the protocols is identical on both the REs. We would need to investigate this
+behavior.
+
+5.3.5 Kernel changes
+--------------------
+
+A BFD session must always send packets using the same UDP source port. 
+This implies that on a RE-switchover, the BFD packets must be sent
+out on the port the previous master was using. It is not guaranteed by the RE
+kernel that the same port will be avilable for usage by bfdd on the backup RE.
+
+The only way to guarantee port availability is to pre-reserve the port and thus
+prevent other applications from using it. To enable this:
+
+1) IPPORT_HIFIRSTAUTO will be incremented from 49152 to 49160 
+2) BFD shall use port-number 49152 for both single-hop and multi-hop sessions 
+3) The range 49153 to 49159 (inclusive) shall be reserved for future use.
+
+
+5.4 BFD and ISSU Design Sketch
+------------------------------
+
+ISSU (in service software upgrade) provides the ability to upgrade softwre
+with minimal disruption in terms of traffic. From a BFD perspective, this
+means that BFD sessions should remain UP during the upgrade so that the peer
+does not treat the DUT as down.
+
+BFD sessions can be kept UP by increasing the detection time before the
+upgrade and then scaling it back to the old values after the upgrade. This is
+simple for RE-based sessions since we can mirror the BFD state over to the
+standby RE before the upgrade start. The standby RE can then take
+responsibility of the BFD sessions after the switchover. 
+
+For PFE-based BFD sessions, this is tricky as it involves reprogramming the
+PFE after it comes back up. PPMD (on the RE running the new software version)
+will need to reprogram all the bfd sessions when the PFE connects to it (after
+ISSU reboot).
+
+
+5.5 BFD and Graceful restart helper mode design/implementation
+--------------------------------------------------------------
+
+When 2 peers are running protocols with graceful restart configured,
+it is required that both peers keep adjacencies up when the other peer
+goes into graceful restart mode. The node that is restarting is in
+"graceful restart active mode" while the node that is still up and
+peering is in "graceful restart helper mode". When the protocol is
+using BFD for fast failure detection, it is important that BFD and
+the protocol work together to make sure that when a peer restarts,
+and there is a BFD session failure; BFD provides a hint to the clients
+whether or not to abort any graceful restart they may be helping. Note that
+this will only help the case where the peer node is undergoing a *planned
+restart* wherein it signals to the protocol of it's planned restart before
+going down. In all other cases, a BFD session down will be treated by the
+protocol as a neighbor down event.
+
+BFD protocol packets have a Control-Independent bit "C-bit" which
+peers set to indicate that bfd packet forwarding is independent
+of control plane state. When the C-bit is *NOT* set by a peer, then
+it means that a failure in BFD session can be related to a forwarding
+plane failure or a control plane failure. In such a case, BFD cannot
+help a client protocol with graceful restart (since BFD cannot distinguish if
+it's a forwarding plane failure or not) and thus cannot provide any hint to
+the client whether or not to abort graceful restart. 
+
+It's only when the C-bit is set by the peer, can we safely assume that control
+plane failure/restart will not affect forwarding. A BFD session failure
+implies a forwarding plane failure and clients should abort graceful restart
+since forwarding plane is also down. Thus, BFD can help graceful
+restart helper mode detect forwarding plane failures only when the peer BFD 
+session is control-indepedent.
+
+To achieve the desired effect, protocols will need to look at the control
+flags in a session state msg having a session_state of DOWN. 
+When a bfdd session flaps, 2 cases exist.
+
+1) If the bfd peer did not set the C-bit, BFD_SN_CTRL_FLAG_FATE will
+   *NOT* be sent in the BFDP_TLV_CTRL_FLAGS in session_state msg to the client.
+2) If the bfd peer did set the C-bit, BFD_SN_CTRL_FLAG_FATE will be
+   sent in the BFDP_TLV_CTRL_FLAGS in session_state msg to the client.
+
+When the client protocol receives a bfd session_state msg with the
+BFD_SN_CTRL_FLAG_FATE flag set, it should abort any graceful restart it is 
+currently supporting. If the flag is not set and the protocol knows that the
+peer is restarting, then the protocol will ignore the bfd session down event.
+Note that it is only the clients of BFD who can make the decision of whether 
+or not to ignore a session down event notification.
+
+
+5.6 BFD and Graceful Restart design 
+-----------------------------------
+
+When supporting graceful restart, protocols use a higher timeout value after
+which they declare their sessions down. This implies that in case of RPD
+restart or RE-switchover, BFD should continue to keep the session alive for
+the same timeout value. Once that timer expires, we need to communicate the
+failure to the peer and can safely bring down the bfd session.
+
+To enable the above clients will program bfdd with a new parameter, 
+refresh_deadtime (time in msec).  This interval will specify how long the bfd
+session should be kept alive on the PFE in case of a RE-failure or PFE
+disconnect from ppmd. The interval also represent how long BFDD should keep
+the session alive in case of a process (e.g. rpd) restart. The refresh_deadtime
+parameter. If no refresh_deadtime is specified or if the specified value is 0,
+then the bfd session will be torn down immediately if bfdd's communication with
+client process is lost.
+
+If RE switchover on rpd process restart is configured, then the BFD NSR
+mechanisms will be used to help graceful restart of rpd on the other RE.
+On a RE switchover, bfdd will (by default) keep the session up for 15 seconds.
+If rpd is able to program bfdd within that interval, the bfd sessions will be
+kept up and otherwise the sessions would be taken down.
+
+
+6.  PERFORMANCE
+
+Performance testing for number of bfd sessions supported for switchover shall
+be performed as part of RLI 5130.
+
+
+7.  COMPATIBILITY ISSUES
+
+Both the master and backup RE must support the BFD NSR feature for BFD state
+replication to work. Failure to do so will just disable the feature and will
+not cause any negative side-effects.
+
+
+8.  SECURITY ISSUES
+
+9.  Graceful RE Switchover (GRES), Hobson Impact
+
+10.  NOTES
+
+11.  GLOSSARY
+
+AE    - Aggregated ethernet
+BFD   - Bidirection forwarding detection
+BFDD  - Bidirection forwarding detection daemon
+IRB   - Integrated routing and bridging
+PPMAN - Periodic packet manager (runs on PFE)
+PPMD  - Periodic packet management daemon (runs on RE)
+RPD   - Routing protocols daemon
+
+
+12.  REVIEW COMMENTS
+
+Review meeting was held on Mon Jan 22nd 2007 at 10:30am in Shore. Attendees
+were Ina, Shivani, Ravi, Antoine, Aman and Nitin. Nischal provided comments
+offline.
+
+Ina and Nischal commented on providing a CLI command to replication state of
+bfd sessions. "show bfd replication session" has been added to that effect.
+
+It was recommended to change traceoptions from "replication" to
+nsr-sycnronization" to keep in sync with NSR terminology. In case if
+bfd replication is going to be used for non-NSR cases, new traceoptions can be
+added as deemed fit.
+
+It was recommended to reduce number of parameters replicated and to decipher
+them based on received packets data. The number of parameters being
+replicated has now been reduced and the spec has been updated to reflect the
+same 
+
+
+13. REFERENCES
+
+[BFD-FUNCSPEC] - BFD functional spec,
+                 sw-projects/routing/misc/liveness-detection/funcspec.txt
+[BFD-IETF-DRAFT]  - BFD Specification, draft-ietf-bfd-base-05.txt  
+[DISTRIB-PPMD] - Distributed ppmd functional spec, 
+                 sw-projects/routing/misc/distrib-ppmd/ppmd_pfe_distribute.txt
+[ISSU-FUNCSPEC] - ISSU working specification, sw-projects/os/issu/issu.txt
+[LIBMIRROR-FUNCSPEC] - Libmirror functional spec,
+             sw-projects/os/libmirror/data_persistency_redundancy_func_spec.txt
+[MIRROR-API] - Mirroring API sw-projects/os/nsr/mirror-subsystem-api.txt
+
+
+
+APPENDIX I: BFD Session flags
+-----------------------------
+BFD session flags that will be replicated
+
+boolean bfdd_ses_remote_heard;      /* v0, true if a IHU flag from nbr */
+boolean bfdd_ses_demand_mode;       /* Demand mode flag */
+boolean bfdd_ses_echo_mode_active;  /* Echo mode is active */
+boolean bfdd_ses_mhop;              /* Multihop session */
+boolean bfdd_ses_rtlookup;          /* Session needs route lookup */
+
+All other flags will not be replicated.
+
+
+APPENDIX II: BFD session field that are not actively replication
+---------------------------------------------------------------
+
+    bfdd_ses_remote_discr:
+    bfdd_ses_version:
+    bfdd_ses_state:
+    bfdd_ses_local_diag:
+        Not copied over. All derivable from bfdd_ses_last_pgm_pkt
+
+    bfdd_ses_conf_version:
+    bfdd_ses_adaptation:
+    bfdd_ses_high_tx_ivl:
+    bfdd_ses_high_detection_time:
+    bfdd_ses_logical_rtr_id:
+        These are client specific parameters.
+
+    bfdd_ses_flap_tstamp:
+    bfdd_ses_flap_count:
+        Backup will start flap detection only on mastership
+        swithcover.
+
+
+    bfdd_ses_min_async_ivl: 
+        This needs to be set by the client. We will initialize it to the
+        bfdd_ses_cur_tx_ivl on the backup.
+
+    bfdd_ses_min_slow_ivl:
+        max(session->bfdd_ses_adapt_async_ivl, BFD_SLOW_IVL)
+
+    bfdd_ses_min_tx_ivl:
+        if (session->bfdd_ses_state == BFDD_STATE_UP &&
+            !session->bfdd_ses_echo_mode_active) {
+            bfdd_ses_min_tx_ivl = session->bfdd_ses_adapt_async_ivl;
+        } else {
+            bfdd_ses_min_tx_ivl = session->bfdd_ses_min_slow_ivl;
+        }
+
+    bfdd_ses_next_tx_ivl:
+        Always set to bfdd_ses_min_tx_ivl
+
+    bfdd_ses_mult:
+        Always set to bfdd_ses_adapt_mult
+
+    bfdd_ses_min_rx_ivl:
+        Set to bfdd_ses_adapt_rx_ivl
+        
+    bfdd_ses_adapt_rx_ivl:
+        Set to bfdd_ses_last_adapt_rx_ivl. 
+        Generally both the values will be same, but in the case where a poll
+        is in progress, bfdd_ses_adapt_rx_ivl will be greater than 
+        bfdd_ses_last_adapt_rx_ivl.
+        If we switchover before receiving a Final from the peer, then the new
+        master will continue to use the value of bfdd_ses_last_adapt_rx_ivl.
+        The newer bfdd_ses_adapt_rx_ivl will be lost, but it's a corner case
+        tradeoff.
+
+    bfdd_ses_detection_time:
+        Derivable from various parameters.
+
+    bfdd_ses_min_echo_rx_ivl:
+        Derived from bfdd_ses_last_rcvd_pkt
+
+    bfdd_ses_min_echo_ivl:
+        If the interval is greater than what the peer desires, then obviously
+        our setting is higher. Else the peer's setting is higher and we are
+        using that.
+
+        if (bfdd_ses_min_echo_ivl >  bfdd_ses_min_echo_rx_ivl)
+            bfdd_ses_min_echo_ivl = bfdd_ses_echo_tx_ivl;
+
+    bfdd_ses_last_tx_ivl:
+        Set to bfdd_ses_cur_tx_ivl

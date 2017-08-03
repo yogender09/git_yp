@@ -1,0 +1,357 @@
+$Id: ldp-design.txt,v 1.1 2007/03/13 01:29:52 shivania Exp $
+
+		Design of LDP synchronization for NSR 
+		======================================	
+
+    Required background:
+    This document assumes familiarity with the NSR base spec
+[BASE_SPEC], as well as with the IGP nsr documents, [IGP_DESIGN]. 
+Common MPLS issues are tracked in [MPLS_COMMON]. Because LDP is
+TCP-based like BGP, it shares some of the concepts from [BGP_DESIGN]
+and relies on the socket replication API from [SOCK_API].
+
+     Design goals:
+- enabling synchronization should not slow down the operation of the
+primary.
+- sessions should not be dropped on switchover. However, it is
+acceptable to withdraw labels for specific FECs, and send new labels,
+if there is an inconsistency in the outlib between different
+sessions. Sessions that were not synchronized before switchover may be dropped.
+- adjacencies associated with active sessions should not be dropped on
+switchover (other adjacencies may be dropped, we don't care about them)
+- the primary and secondary should be able to run different versions
+of the software (compatibility between software versions)
+
+     This document describes the top-level design of LDP support of
+NSR. The details of the APIs, data structures etc are in [LDP_IMPL].
+
+1. Introduction
+=============== 
+
+   For the purpose of synchronization, there are three main areas of work:
+- 1) Synchronizing the initial state. 
+- 2) Synchronizing the ongoing state. 
+- 3) Switchover. This is the work that must happen on the secondary
+when the switchover happens. 
+   Each of these will be discussed in its own section below. 
+
+   To achieve synchronization, there are several channels of
+communication between primary and secondary. 
+- the internal routing socket (IRS)
+- the TCP replication socket (JSR). fpr each session 
+- a channel for kernel-state replication
+
+   Related information may arrive on all/any of these channels, at different
+times. This means that one cannot rely on temporal dependencies
+between events. For example, a message associated with a particular 
+interface may arrive on the IRS before the kernel on the secondary has 
+found out about that interface. Much of the work that needs to be done
+on the secondary is to figure out how to handle such situations.
+
+   The way socket replication works is that it guarantees that a
+message is first _written_ to the replication socket and only then
+written to the wire. The socket will fill and block the primary if the
+secondary does not read it. For this reason, reading from the JSR on
+the secondary must always be done, otherwise the secondary will block
+the primary. 
+
+   Most information that must be synchronized for LDP is associated
+with a session (peer). Therefore, it makes sense to drive the sync state off
+LDP peers.
+
+   
+2. Synchronizing initial information 
+======================================
+
+   Most of the interesting information that must be synched is tied to
+a peer. Thus, the discussion focuses on synchronizing peers. The
+secondary must know when the sync for a particular peer is
+complete. This information is necessary in case the switchover happens
+before sync is complete, in which case the secondary should drop the
+unsynched peer.
+
+   Synchronization only makes sense for peers that are established (active).
+We don't care about the other ones, because they do not impact forwarding.
+
+2.1 Starting synchronization between primary and secondary
+-----------------------------------------------------------
+
+   LDP is based on incremental updates just like BGP. Thus, just like
+for BGP, the primary must perform two tasks on behalf of the secondary:
+- a) inform the secondary of which sessions are established, so that 
+the secondary can request socket replication; 
+- b) act as a server for initial bring-up synchronization.
+
+   The secondary is the one who is responsible for initiating
+communication  with the primary over the IRS. As a result of
+communication over the IRS, one or more JSR are created (details on
+how this is done in [LDP_IMPL]), depending on how many peers are being
+synchronized.
+
+    It is assumed that at the time sync with a peer starts, all
+relevant instance and interface information is available on the
+secondary (this property is ensured via negotiation between primary
+and secondary on which peers to sync, see [LDP_IMPL]). Thus, the issue
+of unavailable kernel information (interfaces, table, instances) 
+at the time of the initial sync is avoided.
+
+2.2 Who initiates the sync for a particular session
+---------------------------------------------------
+   There are two models for synchronizing sessions. The first is a push
+model, where the primary pushes information to the secondary
+unsolicited. The second is a pull model, where the secondary pulls the
+information from the primary.
+
+   LDP implements a pull model, where the secondary asks for
+replication of either all or specific sessions from the primary. This
+model is consistent with a client-server model where the
+secondary is the client and the primary is the server. Apart from 
+this aesthetic consideration, a pull model allows for the following 
+important properties:
+- the secondary has control over when to ask for synchronization for a
+particular session. For example, the secondary can ask for sync for a 
+session when all necessary info (such as ifinfo) is available on the
+secondary, rather than having to reject sync attempts from the primary.
+- the secondary can throttle sync requests for misbehaving sessions
+that keep resynchronizing too often (one case where this may happen is
+different software versions on primary and secondary, where the
+secondary keeps closing the session because of a malformed packet)
+
+   Note that a pull model implies that a) the primary communicates to the
+secondary via an out-of-bound mechanism (such as the IRS) when a new
+session arrives that is a candidate for synchronization or when it is
+closed, and b) the secondary informs the primary via the IRS when a
+session is closed on the secondary (so that the primary can keep 
+track of unsynched sessions).
+
+   When it comes up, the secondary informs the primary it is
+interested in synchronization and requests sync for all available
+sessions. After initial sync, new sessions to network peers can be
+handled in one of two ways:
+- be brought up at the same time on primary and secondary (Thus, a
+session is only established if it is set up on both primary and
+secondary). In this case, no extra communication is needed on the IRS
+to inform the secondary that a new session is up. This approach
+eliminates the need for initial sync for new sessions, but the
+drawback is that failure to set up the session on the secondary
+(e.g. because of a missing interface) will affect the operation on the
+primary towards the network peer). Another drawback is the extra
+complexity in the ldp-init state machine
+- be brought up on the primary. Then, the primary informs the
+secondary over the IRS that a new session is available. The secondary
+will ask for synchronization of the new session whenever it is ready
+to do so. 
+	
+   The sync state of a session is maintained on both the primary and
+the secondary. The possible states are: synched, not synched,
+in_process. Only synched and in_process are valid states on the
+secondary. The secondary destroys half-baked sessions, if switchover 
+happens before sync is complete. 
+
+   Note that this model implies that at the time of switchover, there
+may be sessions on the primary, which do not exist on the
+secondary. Such sessions will time out after the switchover.
+
+2.3 Synchronizing initial information
+--------------------------------------
+
+   Note that initial sync may be triggered in two cases:
+- 1) initial sync at the time the secondary first comes up
+- 2) sync of a session that came up on the primary after the secondary
+is already running, or following the closing of the session on the 
+secondary for a previously synched session (e.g. following an error in
+the parsing of a protocol packet)
+
+   One of the biggest challenges is that initial sync should not block the
+primary. While doing initial sync, the primary is required to continue
+to process incoming and outgoing messages to peers on the
+network. From the primary's point of view, this means that the sync
+must be done as a background job. From the secondary's point of view,
+this means that while processing sync messages, it must continue to
+read the JSRs (otherwise, the sockets will get full and will block the 
+primary).
+
+   What information must be synchronized for a peer?
+- 1) session info and all adjacencies associated with it
+- 2) addresses received on the session
+- 3) router-id
+- 4) input and output databases (inlib and outlib)
+The first three can be synched over the IRS before the JSR is
+created. The router-id sync is taken care of by the infrastructure,
+through the mirroring API. The inlib and outlib must be synched in-flight (so
+information will arrive on both the IRS and the JSR)
+
+   Thus, what happens is that the inlib and outlib are changing while
+they are being synched. This has two consequences: 
+- a) the primary must know when it finished synching, and inform the 
+secondary (the secondary needs this info in order to drop half-baked 
+sessions in the event that switchover happens before sync over IRS is 
+complete) 
+- b) the secondary must always believe info on the JSR as more recent,
+and cache info received on the JSR that may be required to "cancel"
+info received on the IRS. 
+
+   An easy way to accomplish both goals above is to send label-map
+messages over the IRS for the inlib and the outlib. After finishing
+both inlib and outlib, the primary can declare sync-complete for a
+peer. The secondary will receive messages on both IRS and JSR. On the
+IRS, the messages received are the moral equivalent of label-map
+(either incoming or outgoing). On the JSR, label-map, label-withdraw
+and label-release will be received. The secondary must
+believe the messages on the JSR as more recent and cache the ones that
+can potentially cancel the ones on the IRS. The cached messages will 
+be processed after sync-complete. (Note that when saying "caching
+messages" this does not necessarily mean actually caching the message,
+just capturing the state conveyed by the message, more details in [LDP_IMPL])
+   Based on the messages arriving on the IRS and JSR, the inlib and
+outlib is built for each session. Building the inlib is
+straightforward, because the incoming label must be placed in the lib
+for the session. However, to build the outlib one must know what
+outgoing label was assigned by the primary, so one must wait until the
+outgoing map message is seen. In addition to the inlib and outlib,
+must construct the transit and ingress routes and install them on the
+secondary. (this implies building the necessary data structures on the 
+secondary).
+   In addition to the label-map messages, the primary must send
+auxiliary information necessary for building the data structures (for
+example self-ids).
+
+   Protocol messages arriving on the IRS and the JSR are processed in
+a similar way from a point of view of building the LDP data
+structures. Thus, the same code used for initial sync can be reused
+for ongoing sync. This should not be surprising, since during initial
+sync we must also do ongoing sync.
+
+   Messages may not be processed immediately. This could happen if the
+information required for successful completion of the processing is
+not available at the time the message arrives. For example, for an
+outgoing label-map message, the requirement is that the route be
+available in the shadow route table and that the selfid of the nexus
+on the primary be known. If this information is missing on the
+secondary, the processing on the secondary is delayed. This is
+accomplished by caching the message on the secondary (see note above
+about the meaning of the word "caching").
+
+   The processing of the messages on the secondary is very different
+than on the primary, because the primary drives the data-structure
+building off incoming label messages, while the secondary must drive
+it off outgoing label messages. The same data structures must be set
+up on both primary and secondary (nexus, nexus_refs, bindings,
+ldp_routes, etc) because on switchover the secondary needs these data
+structures to continue operation. In particular, the transit and
+kernel routes must be built and the state of the bindings must reflect
+the information that was sent on the wire.
+
+   [LDP-IMPL] describes:
+- the message formats of the messages coming in on the IRS
+- how to prioritize between messages arriving on the IRS and the JSR
+- how to cache messages for processing after sync-complete
+- how to create LDP data structures based on the messages on IRS and
+JSR (note that the order of messages on IRS and JSR is not
+guaranteed). This implies deferring the processing of some messages
+until all relevant information has been gathered. 
+- how to handle the fact that there may be no route in the shadow
+route table for a particular fec at the time the message is received.
+- how to pack the database information in a more efficient way (rather
+than sending individual label-map messages)
+- what data structures are maintained on the secondary for the purpose
+of keeping track of replication state, cached messages, etc.
+
+3. Synchronizing ongoing state
+===============================
+
+   What are the messages that are replicated over the replication socket?
+- all label messages (over the JSR)
+- keepalives (over the JSR)
+- address messages 
+
+   What are the messages that are NOT replicated? 
+- hellos (udp)
+
+   What are the messages over the IRS?
+- adj up/down 
+- session up/down
+- auxiliary information (e.g. selfid information for a nexus)
+
+   The infrastructure guarantees that messages are written to the JSR 
+before they are sent on the wire. The secondary does not allocate
+labels as a result of receiving incoming label-map
+information. Instead, it only allocates labels based on snooped
+outgoing messages. Furthermore, since several sockets are read by the
+secondary, it is not guaranteed that the secondary will see an
+incoming label-map for a FEC before it sees and outgoing label-map for
+the FEC. For example, assume that DUT has one upstream (A) and one
+downstream (B) neighbor. 
+A - DUT - B
+    Assume that B sends a label-map for FEC F, with label L1. On the
+primary, DUT receives the label-map and as a result sends a label-map
+with label L2 to both A and B. (this assuming B is on the bestpath for
+F).
+    On the secondary, depending on which socket is being processed,
+DUT may see the outgoing label-map with label L2 to A before it sees
+the incoming label-map with label L1 from B. 
+
+
+4. Switchover
+=============
+
+   The switchover is viewed as a commit full on the secondary. The
+idea is that the secondary will:
+- clean up any half-synched state. For example, sessions which were in
+the process of being synchronized, but for which sync did not complete
+must be shut down. 
+- clean up any inconsistent state. For example, it is possible that
+outgoing label-map for a particular FEC were not sent to all
+sessions. The result is either different labels for the same FEC in
+the outlibs of several sessions, or missing labels for a FEC for some
+sessions. What needs to happen is the withdrwal of the inconsistent
+label, and the advertisement of a new label on all outgoing
+session. (see more details in [LDP_IMPL])
+- reconcile the routing information it has with the forwarding
+information the kernel feeds it. The rpd information should match the
+kernel information. If it does not match, the rpd information should
+overwrite it.  
+
+5. Interaction with PPMD
+=========================
+
+   LDP hellos are handled by PPMD. 
+
+   In principle, PPMD on the secondary need not be pre-programmed, and
+may be programmed only on switchover. However. this raises an issue
+with how fast PPMD on the secondary can take over, and if this is
+"fast enough" to ensure that adjacencies won't time out.
+For this reason, it was deemed desirable to pre-program ppmd on the
+secondary. This functionality is not implemented in the first release.
+
+   For now, we rely on ppmd being reprogrammed on
+switchover. Switchover triggers a commit-full on the secondary and ppmd is
+reprogrammed on each commit, so ppmd should be able to take over after
+switchover.
+
+9. Caveats
+============
+
+See [LDP_IMPL] for a list of caveats and unsupported functionality.
+
+10. References
+==============
+
+[BASE_SPEC] - Non-Stop Routing (NSR) - Functional specification
+sw-projects/os/nsr/software_spec.txt
+
+[BGP_DESIGN] - BGP stateful replication 
+sw-projects/os/nsr/bgp-design.txt
+
+[IGP_DESIGN] - IGP Synchronization for NSR
+sw-projects/os/nsr/igp-design.txt
+
+[LDP_IMPL] - Functional spec for LDP support of NSR
+sw-projects/os/nsr/ldp_software_spec.txt
+
+[MPLS_COMMON] - MPLS issues for NSR 
+sw-projects/os/nsr/mpls-common-issues.txt
+
+[SOCK_API] - Juniper socket replication API, 
+sw-projects/os/nsr/kernel/socket_replication_api.txt
+

@@ -1,0 +1,280 @@
+$Id: nsr-kernel-performance-rli-6386-utp.txt,v 1.1 2008/05/27 15:58:47 lbazinet Exp $                                                                                                                
+ 
+       NSR: testing of Socket Data Cache Layer (SDCL)
+                               
+                           RLI 6386 
+                               
+                    Unit test plan and results 
+ 
+Author: Luc Bazinet <lbazinet@juniper.net> 
+
+S3.02.P05.T02
+
+Copyright (C) 2008, Juniper Networks, Inc.
+
+JUNIPER NETWORKS COMPANY CONFIDENTIAL
+
+NOTICE: This document contains the proprietary and confidential
+information of Juniper Networks, Inc., and must not be
+distributed outside of the company without the
+permission of Juniper Engineering.
+
+1.  INTRODUCTION
+
+This document contains the unit test plan and unit test results for 
+RLI 6386: "NSR: Kernel performance improvement". This is the SDCL
+functionality for NSR scaling scenarios.
+
+  PR 276683 - Tracking PR for RLI 6386
+
+  Functional spec:
+     sw-projects/os/nsr/nsr-kernel-performance-rli-6386-funcspec.txt
+
+Related CLI commands:
+
+@@@@ list (new) command to enable .... 
+
+2.  SETUP
+
+This test plan uses the following routers/ test equipment/ SW and HW
+tools:
+
+    1 m10i
+    1 linux server, with customized RBGP setup
+
+The following topology is used to verify the SDCL operation .
+
+
+     +------------+            +----------+         +--------------+ 
+     |            |            |          |         |              |
+     |   shedu    |____________|  lahamu  |_________|    shedu     |
+     | linux+rbgp |            |   m10i   |         |  linux+rbpg  |
+     |            |            |  (DUT)   |         |              |
+     |            |            |          |         |              |
+     +------------+            + ---------+         +--------------+ 
+
+                            < lan >  | <-512 vlans->
+
+                        |<---EBGP--->|<---IBGP--->|
+                            (AS 33)  |  (AS 55)
+  
+                          < 1 peer > |  < 512 peers >
+    Incoming EBGP updates:                       Outgoing IBGP updates:
+    shedu# sh ex1                                shedu# ruby vlanbgp-poll.rb
+    (megacli1.rb)
+
+    Figure-1: RBGP test setup topology
+
+The config for lahamu (DUT) can be found:
+  ~lbazinet/rli6386/unit_test/sdcl_unit_test_lahamu.conf
+
+The purpose of this topology is to have the EBGP (lan) connection
+"push" the BGP route updates into the m10i (DUT). Once this
+is done, then the IBGP peers are connected to the DUT.  Since
+all the IBGP peers are in the same peer group, the DUT sends
+the updates to these newly connected peers. With NSR enabled, all
+of these BGP updates get replicated to the standby - which is the
+situtation where SDCL feature handles the cacheing of the Tx-snoop
+NSR replication data.
+
+The IBGP side is done with VLANS, each being a BGP neighbor
+to the DUT.
+
+At the moment, the following SDCL tuning values are hard-coded
+in the feature:
+(As currently described in the Functional Specification).
+
+     cache-element-size 16;                                                                                              
+     start-trigger-delay 0;                                                                                              
+     gulp-fairness-ratio 0;                                                                                              
+     end-trigger-delay 15;                                                                                               
+     drain-fairness-ratio 5;                                                                                             
+
+3. FUNCTIONAL TEST CASES
+
+In different test cases below, the following checks are performed 
+whenever it is applicable.
+
+  A. On both master and standby REs, while the DUT is pushing
+     out the BGP updates to the IBGP peers.
+     The output queues on the master go to zero, while the output
+     queues on the standby increase until they reach the total
+     number of BGP updates.
+
+     The master RE has converged when the output queue for all
+     the peers decreases to zero after the burst.
+@@@@ At this point, the master should be able to switchover without
+causing any external effect to established BGP peers.
+
+@@@@ what happens if failover occurs before standby has finished
+processing the updates ? 
+
+     On the standby RE, the BGP updates have been successfully
+     processed when the output queue for each peer in the IBGP peer
+     group matches the total number of injected updates.
+
+     The following commands are used:
+     "show bgp summary | no-more"
+
+  B. On the master RE, once BGP convergence has occured, check the
+     number of NSR throttles that occured.
+
+     The following (shell) commands are used:
+     "netstat -pjsr | grep throttle"
+
+  C. On the standby RE, after the master RE has converged, and
+     the standby has processed all the updates, check the BGP statistics.
+     This shows how well the BGP standby cache worked during the test.
+   
+     The following commands are used:
+     "show bgp statistics"
+  
+Due to the scaling nature of the feature, it is difficult to determine
+the execution behaviour under load. (other than the success metrics 
+described above, based on the BGP output queue behaviour on both REs.).
+
+If the nsr-synchronization traceoption is enabled, some post-processing
+of SDCL log entries can show a finer-grained detail of the execution 
+profile. Some of these graphs are listed in the test cases.
+
+      protocols bgp traceoptions {                                                                                                              
+          file bgp-nsr size 100m files 100 world-readable;                                                              
+          flag nsr-synchronization;                                                                                    
+      }  
+
+The graphs show the various inflection points for individual peers, 
+as the SDCL code moves through: 
+       1. memory-mode
+       2. file-mode: gulp phase
+       3. file-mode: drain phase
+       4. back-to memory-mode
+
+Also, there are overall graphs that show all the gulps and drains
+for an entire test, as well as one that shows io plot for the 
+entire test.
+
+3.1 Generate a BGP update burst with NSR enabled.
+
+    Goal: To test the behavior of SDCL during a small BGP update burst.
+          (256 peers, 500,000 routes)
+
+    Test Steps:
+    1. Load the OS under test on both REs.
+       Make sure NSR and the sdcl feature is enabled.
+@@@@ command to enable .... 
+       (optionally enable nsr-synchronization tracing.)
+       Reload both REs.
+       Proceed when they have rebooted.
+
+    2. Setup the EBGP side (push BGP updates into DUT)
+
+	   shedu# cd /usr/local/src/rbgp
+	   shedu# sh ex1
+
+	   RBGP (10.227.6.128:Down) [ rcv:0 | sent:0 ] - Command > start
+
+	   RBGP (10.227.6.128:Established) [ rcv:1 | sent:1 ] - Command > send bigupdate
+
+	   On DUT, monitor "show bgp summary" | match 151"
+       until peer 10.227.6.151 is at the total amount of updates
+       (e.g.  500,000).
+
+    3. Connect the IBGP peer-group, to sink the BGP updates .
+
+	   shedu# cd /usr/local/src/rbgp
+	   shedu# ruby vlanbgp-poll.rb
+
+    Success Criteria:  
+    1. The master RE converges, without any peer flaps.
+    2. The time for convergence should be slightly higher than without
+       NSR enabled.
+    3. The standby has the same number of route updates as the master
+       for all peers. 
+
+
+    Results: Pass 
+       http://enlil/rli6386-tests/vbl-reviewmay14-254-500k/summary-master
+       http://enlil/rli6386-tests/vbl-reviewmay14-254-500k/summary-backup
+       http://enlil/rli6386-tests/vbl-reviewmay14-254-500k/save/all_io.jpg
+       http://enlil/rli6386-tests/vbl-reviewmay14-254-500k/save/all_gulp_drains.jpg
+       http://enlil/rli6386-tests/vbl-reviewmay14-254-500k/save/all_gulp_drains_td.jpg
+       http://enlil/rli6386-tests/vbl-reviewmay14-254-500k/save/node_1.jpg
+
+
+3.2  repeat above test case with  500 peers, 1,000,000 BGP updates.
+
+    Results: Pass 
+       http://enlil/rli6386-tests/vbl-reviewmay14-500-1000K-v1/summary-master
+       http://enlil/rli6386-tests/vbl-reviewmay14-500-1000K-v1/summary-backup
+       http://enlil/rli6386-tests/vbl-reviewmay14-500-1000K-v1/save/
+
+
+3.3  repeat above test case with  1000 peers, 1,000,000 BGP updates.
+
+@@@@ currently, this test does not pass.
+
+4.  BOUNDARY TEST CASES
+
+{As necessary.  As with functional tests but for boundary/negative
+tests.}
+@@@@ Define and test what should happen when a switchover occurs
+and convergence has not completed.
+
+4.1: perform a switchover before replication is complete
+
+4.2: perform a switchover immediately after convergence is complete
+     but before standby has finished processsing them.
+
+@@@ how does master know when rpd on standby has caught up ??????
+
+4.3. perform procedure (1) when there is not enough
+     disk space for the SDCL cache file.
+
+4.4.
+@@@@ Do need a successful switchover for success ?
+
+5.  GRES TEST CASES
+
+This feature does not impact GRES functionality.
+
+6. TX TEST CASES
+
+This feature is supported on TX platform.
+
+All the test cases in this document must succeed, if tested on TX
+platform.
+
+7.  REGRESSION TEST CASES
+
+{As necessary.  As with functional tests but for regression tests.
+Include references to regression requests, who is performing them,
+etc.}
+
+8.  INTEROP TEST CASES
+
+None.
+
+9.  MIGRATION & COMPATIBILITY TEST CASES
+
+None.
+
+10.  TEST COVERAGE REMAINING
+
+10.1 Test with virtual routers and/or multiple rpds.
+
+11.  DEFECTS REMAINING
+
+{List PRs filed at dev complete for test failures from this plan
+which were not fixed by dev complete.}
+
+@@@@ No PRs open
+11.1. Occasional peer flapping during test cases. It is not clear
+these are caused by SDCL. Needs to be examined.
+
+11.2. During the large test 1000/1000000, on different setup, many
+closes and re-opens were seen. On this setup, the "clear soft"
+CLI command was used to cause the BGP update burst. Needs to 
+be examined.
+http://enlil/rli6386-tests/vbl-kato-v1/save/all_io.jpg
+http://enlil/rli6386-tests/kato.20080521.1/save/all_io.jpg
+

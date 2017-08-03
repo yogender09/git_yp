@@ -1,0 +1,239 @@
+$Id: pim-nsr-v6-funcspec.txt,v 1.3 2009/10/23 11:21:08 vikramna Exp $ 
+
+                  NSR: PIM v6 stateful replication
+                  Functional Specification
+
+                  Vikram Nagarajan <vikramna@juniper.net>
+
+
+Copyright (C) 2009, Juniper Networks, Inc.
+
+NOTICE: This document contains proprietary and confidential
+information of Juniper Networks, Inc. and must not be distributed
+outside of the company without the permission of Juniper Networks
+engineering.
+
+1.  INTRODUCTION
+
+This document can be seen as an extension to the PIM NSR functional 
+specification. In this document, the focus is on IPv6 listing what 
+features are supported and what are not. 
+
+For functional details, implementation and design details please
+refer to the following parent documents. 
+
+http://cvs.juniper.net/cgi-bin/viewcvs.cgi/sw-projects/os/nsr/pim-nsr-funcspec.txt?rev=1.7&view=log
+http://cvs.juniper.net/cgi-bin/viewcvs.cgi/sw-projects/os/nsr/pim-nsr-designspec.txt?rev=1.3&view=markup
+http://cvs.juniper.net/cgi-bin/viewcvs.cgi/sw-projects/os/nsr/pim-nsr-ut-plan.txt?rev=1.5&view=markup
+http://cvs.juniper.net/cgi-bin/viewcvs.cgi/sw-projects/os/nsr/igmp-nsr-ut-plan.txt?rev=1.3&view=markup
+
+An application note is provided for customers of PIM NSR for a smooth upgradation at
+http://cvs.juniper.net/cgi-bin/viewcvs.cgi/sw-projects/os/nsr/NSR-PIM_in_9%203_7-Nov08.doc?rev=1.1&view=log
+
+1.1 Goals:
+
+
+0. The same goals listed in the parent functional spec applies here 
+   particularly for IPv6 family. 
+
+1. Attaining feature parity with PIM NSR for IPv4.  
+
+
+1.2 Non-goals:
+
+1.  No PIM protocol specification changes are planned, rather PIM
+    implementation shall be changed to support the NSR goals.
+
+
+1.3 Tracking info:
+
+PIM NSR for IPv6 is tracked under:
+  RLI 9022: NSR: PIM stateful replication IPv6 in phase 2, PR 474977
+
+Earlier RLIs for PIM NSR for IPv4 
+
+PIM NSR is tracked under:
+  RLI 2728: PIM stateful replication, PR 94595.
+  
+A related RLI is tracked under:
+  RLI 2727: IGMP stateful replication, PR 94594.
+
+2.  FUNCTIONALITY
+
+The functional requirements for PIM NSR v6 is the same as PIM NSR v4. Please refer
+to the same section in the parent document. For easy reference, the requirements
+are listed again below.
+
+The functional requirements for PIM subject to configuration & unicast routing
+convergence:
+    - Maintaining the self-generation-id across RE switchovers.
+    - Maintaining the list of neighbors across switchovers.
+    - Maintaining consistency of the dynamic interface state created by PIM.
+          + pime/pe and pimd/pd interfaces.
+    - Maintaining multicast session (s,g) state across RE switchovers:
+          + OIF list.
+          + Per interface Join/Prune state.
+          + RPF nbr state.
+    - Maintaining the RPSet across RE switchovers.
+
+
+2.1 Features to be supported for IPv6:
+    - Dense mode.
+    - Sparse mode. 
+    - SSM
+    - StaticRP
+    - Bootstrap router
+    - Embedded RP on non-RP router
+    - BFD support
+
+
+
+    Note:- AutoRP is not supported for IPv6 and hence no NSR
+
+2.2 Features to not be supported for IPv6:
+    - Ngen MVPN
+    - Rosen MVPN support 
+    - IGMP snooping
+    - PIM knobs that are excluded: TBL
+        i.  join-load-balace
+        ii. vpn-group-address 
+        iii. mvpn 
+    - NSR on a RP router.
+    - NSR for Anycast RP on a RP router.
+    - MLD Exclude support
+    - Policy related features:
+        nbr-policy
+        join-policy
+        BSR policies
+        Scope policies
+        Flow-maps
+        RPF check policies
+
+    - Any New PIM features that have been developed post 9.2
+    - Register state sync - Will be addressed as part of RLI 6259.
+
+2.2.1 Features that need enhancements:
+
+  Asserts: Please note that no explicit replication of Assert state is done.
+For downstream state, we just rely on the Assert happening again to
+re-instantiate proper Assert state on the downstream interfaces after
+switchover.
+
+  RPF=>RPF' : For RPF changed to RPF' caused by an upstream assert war no explicit
+replication is done. We just rely on the internal mechanics of the protocol to
+reinstantiate upstream assert state (that shall appropriately set the RPF
+neighbor) after a switchover.
+
+2.3 State maintenance
+
+    Please refer to the parent NSR document for details.
+
+    MLD: Similar to IGMP, no specific MLD state shall be replicated.  
+
+2.4 CLI
+All multicast related CLI commands will work on both the master RE and the
+backup RE except the below (please refer PR 290504).
+
+cli>clear pim join 
+cli>clear pim register 
+cli>clear pim statistics 
+
+2.4.1 Configuring PIM NSR
+    Please refer to the parent NSR document for details.
+    NSR cannot be configured with local-RP. There will be a commit error disallowing NSR with local-RP.   
+
+2.4.2 Trace flags:
+    Please refer to the parent NSR document for details.
+
+2.5 Error logging:
+    Please refer to the parent NSR document for details.
+
+2.6 Assumptions
+    Please refer to the parent NSR document for details.
+
+3.  CAVEATS
+   
+
+    3.1 The caveats for IPv6 remain similar to what exists for IPv4 NSR today. Just listing the pointers below. 
+        Please refer to the parent NSR document for details.
+
+  - Performance expectations
+  - Statistics
+  - Logical router support
+  - Ngen MVPN
+  - NSR on a RP router
+  - Rosen MPVN support
+  - IGMP snooping
+  - MLD Exclude state
+  - Asserts (listed in detail in Secion 2.2.1) 
+  - RPF=>RPF' (listed in detail in Secion 2.2.1)  
+
+    3.2 Packet Loss:
+
+1.  Minimal traffic loss for existing multicast sessions: all (s,g) sesions 
+    for which traffic is already flowing through the router must experience a 
+    minimal traffic loss when the master RE fails-over.
+2.  Minimal traffic loss for new multicast sessions: any new (s,g) sessions 
+    that show up after the RE switchover must experience minimal traffic loss 
+    across due to the RE fail-over.
+
+
+4.  OTHER REQUIREMENTS
+
+N/A
+
+5.  IMPLEMENTATION DETAILS
+
+Design and implementation details have been documented in [PIM-NSR-DS].
+
+6.  PERFORMANCE
+    Please refer to the parent NSR document for details.
+
+
+7.  COMPATIBILITY ISSUES
+    Please refer to the parent NSR document for details.
+
+8.  SECURITY ISSUES
+
+N/A
+
+9.  Graceful RE Switchover (GRES), Hobson or ISSU Impact 
+
+PIM graceful restart support (which is a part of the GRES offering) is 
+documented in PIM-GR-RST.
+
+10.  SDK Impact
+
+N/A
+
+11.  NOTES
+
+N/A
+
+12.  GLOSSARY
+IGMP    Internet Group Management Protocol
+MSDP    Multicast Source Discovery Protocol
+NSR     Non Stop Routing
+PIM     Protocol Independent Multicast
+RE      Routing Engine
+
+
+13.  REFERENCES
+
+[NSR]         Non-Stop Routing (NSR) - Functional specification
+              sw-projects/os/nsr/software_spec_3083.txt
+[IGMP-NSR]    NSR: IGMP stateful replication - Functional Specification
+              sw-projects/os/nsr/igmp-nsr-funcspec.txt
+[PIM-GR-RST]  Functional Specification - Graceful Restart for PIM
+              sw-projects/routing/multicast/graceful-restart/func-spec
+[PIM-NSR]     NSR: PIM stateful replication - Functional Specification
+              sw-projects/os/nsr/pim-nsr-funcspec.txt
+[PIM-NSR-DS]  NSR: PIM stateful replication - Design Specification
+              sw-projects/os/nsr/pim-nsr-designspec.txt
+[PIM-DM]      Protocol Independent Multicast - Dense Mode (PIM-DM):
+              Protocol Specification (Revised). RFC3973
+[PIM-SM]      Protocol Independent Multicast - Sparse 
+              Mode (PIM-SM): Protocol Specification (Revised). RFC4601.
+
+
+14.  REVIEW COMMENTS

@@ -1,0 +1,739 @@
+$Header: /cvs/juniper/sw-projects/os/nsr/lr_nsr_issu_rli8321_func_spec,v 1.3 2012/12/02 00:12:34 tdeng Exp $
+
+
+Process Template J3.02.P05.T01S
+
+Functional Specifications
+
+RLI8321 - NSR Support for Logical Systems
+
+Author: Tao Deng, tdeng@juniper.net
+
+
+Copyright (C) 2010, Juniper Networks, Inc.
+Template Owner(s):  Owner(s) of Software Development Process J3.02.P05
+Template Version 1.41
+
+NOTICE: This document contains proprietary and confidential
+information of Juniper Networks, Inc. and must not be distributed
+outside of the company without the permission of Juniper Networks
+engineering.
+
+
+
+1.  INTRODUCTION
+
+RLI 8321 aims to provide NSR support for Logical system (Lsys) RPDs.
+
+In JUNOS, the user is allowed to configure a number of logical systems on a 
+router to achieve modularity. Every logical system is a separate and 
+independent rpd process, co-existing with the default (Non-Lsys) rpd process. 
+
+Before this RLI, Non-Stop Routing (NSR) are only supported in the default 
+(Non-Lsys) rpd. Even if the user has a config containing logical systems, 
+the NSR feature is only allowed be enabled in the 
+default rpd. Thus, only the default rpd is spawned in the backup RE to provide
+live standby protection of routing states. As for Lsys rpds in the master, they 
+are not protected in any way in the control plane. During a switchover, unlike 
+the default rpd that's already up and running in the new master and well synced 
+to the old master in terms of routes and states, Lsys rpds have to be freshly 
+started in the new master, re-aquiring all adjacencies and route information 
+from scratch. This may result in traffic churns in the network during 
+switchover, when peering routers detect the adjacency changes. In the worst 
+case, packet loss may occur. 
+
+Given the increasing demand for high availability features and popular Lsys 
+configs among customers, it is thus important for us to fill this functionality 
+gap. The purpose of this RLI is to extend the support of NSR to Lsys 
+rpds by making necessary system enhancements. 
+
+The majority of the dev work shall be in the rpd infrastructure area. However, 
+assistance will be needed from the kernel side to ensure that Lsys rpds in 
+the backup RE can interact normally with the kernel.
+
+Responsibles: 
+
+Tao Deng - rpd infrastructure.
+
+
+2.  FUNCTIONALITY
+
+2.1 Goals
+
+This RLI has the following goals:
+
+- Extend support of NSR capability to Lsys rpds transparently. The user should 
+  feel no difference of the NSR feature no matter it is configured in an Lsys 
+  rpd, or the default rpd. 
+
+
+2.2 Non-Goals
+
+This infrastructure-oriented RLI has no intention of changing the individual 
+NSR supporting status for any existing or new protocol. Hence, if a protocol 
+does not support NSR in the default rpd before this RLI, it will not support 
+NSR in the Lsys rpds either after this RLI. Switchover traffic interruption due 
+to the lack of NSR capability of a particular protocol is beyond the scope of 
+this functional spec.
+
+
+2.3 CLI Config
+
+a. Configure nonstop-routing in Lsys stanza
+ 
+The main config change is that the user can now configure [nonstop-routing] 
+under [logical-systems] <lsys-name> [routing-options]. For example:
+
+logical-systems {
+    lr1 {
+        routing-options {
++	    nonstop-routing;
+	}
+    }
+}
+
+We should allow every logical-system or the default rpd to be independently 
+configured with or without NSR. There should be no dependency among various 
+rpds as to who should be configured with NSR, and who should not.
+
+As long as one rpd (Lsys or Non-Lsys) is configured with NSR, the following
+configurations shall be mandatory to ensure the operation of NSR. 
+
+
+system {
+    commit synchronize;
+}
+chassis {
+    redundancy {
+        graceful-switchover;
+    }
+}
+
+This is to ensure consistency with the existing behavior of the default rpd 
+when configured with NSR.
+
+
+2.4 CLI Commands
+
+After extending NSR support to Lsys rpds, we should append the 
+"logical-systems" argument to all NSR related operational commands 
+to allow the display of replication status in Lsys rpd(s). These commands
+are given as follows.
+
+
+a. show task replication
+
+This operational command is used to display the NSR syncing states of all 
+protocols that are currently configured. We should add the "logical-systems" 
+argument to this command like below:
+
+    root@pro6-f# run show task replication ?
+    Possible completions:
+      <[Enter]>            Execute this command
++     logical-system       Name of logical system, or 'all'   
+      |                    Pipe through a command
+
+
+
+The logical system display output shall look somewhat like the example below:
+
+root@pro6-f# run show task replication logical-system all 
+ 
+logical-system: lr1
+        Stateful Replication: Enabled
+        RE mode: Master
+
+    Protocol                Synchronization Status
+    IS-IS                   Complete              
+-----
+ 
+logical-system: lr2
+        Stateful Replication: Enabled
+        RE mode: Master
+
+    Protocol                Synchronization Status
+    OSPF                    Complete              
+-----
+ 
+logical-system: default
+        Stateful Replication: Enabled
+        RE mode: Master
+
+    Protocol                Synchronization Status
+    BGP                     Complete              
+
+
+
+b. show <protocol> replication
+
+This set of commands display individual protocols' replication details. We 
+should append the "logical-system" argument to this command too, if it is not 
+yet available.
+
+For example, isis already supports logical-system display in 
+"show isis replication". Hence, no change is needed here. This is also the 
+case of "show mpls replication".
+
+root@pro6-f# run show isis replication statistics ?
+ Possible completions:
+  <[Enter]>            Execute this command
+  logical-system       Name of logical system, or 'all'
+  |                    Pipe through a command
+
+root@pro6-a> show mpls replication lsp ?
+Possible completions:
+  <[Enter]>            Execute this command
+  brief                Display brief output (default)
+  detail               Display detailed output
+  extensive            Display extensive output
+  logical-system       Name of logical system, or 'all'
+
+
+However, bgp currently does not support logcial-system display in "show bgp 
+replication". We need to add this argument for bgp. all such protocols that 
+support NSR but do not have the display for logical-systems include:
+    - bgp
+    - ospf
+    - ospf3
+    - ldp
+    - l2vpn
+    - l2circuit
+    - bfd
+    - rsvp
+    - vpls
+ 
+In the end, these protocols should all look like the following bgp example.
+
+{master}[edit]
+root@pro6-f# run show bgp replication logical-system all 
+ 
+logical-system: lr1
+BGP is not running
+-----
+ 
+logical-system: lr2
+BGP is not running
+-----
+ 
+logical-system: default
+Synchronization master:
+  Session state: Up, Since: 6:40:27
+  Flaps: 1, Last flap reason: Write error, Last flap error: Broken pipe
+  Protocol state: Idle, Since: 6:40:27
+  Synchronization state: Complete
+  Number of peers waiting: AckWait: 0, SoWait: 0, Scheduled: 0
+  Messages sent: Open 1, Establish 1, Update 0, Error 0, Complete 1
+  Messages received: Open 1, Request 1 wildcard 0 targeted, EstablishAck 1, CompleteAck 1
+
+
+c. New operational command(s)
+
+Although at this time no more new operational command is planned to be added,
+it is possible that the need will arise when the development progresses. This
+document will be updated accordingly if that happens.
+
+
+
+2.5 Syslog - ERRMSG
+
+This RLI does not dump newer types syslog ERRMSG for Lsys rpds than what is 
+already defined in the default rpd.
+
+
+APIs/Messages (include intent)
+
+
+Assumptions
+
+
+2.6 Constraints and limitations
+
+This RLI is only applicable to dual-RE platforms that currently support 
+
+1) NSR in default rpd, and
+2) Lsys configs. 
+
+For platforms that do not support either of the above, this RLI has no impact
+on them.
+
+
+
+2.7 Dependencies and interactions with other components in the system
+
+In order to support NSR for Lsys rpds, new interactions with the following
+components in the system need to be added:
+
+1) LRMUXD 
+    - to deliver commit SIGHUPs to Lsys rpds in the backup REs. 
+    - to provide a replication channel between Lsys rpds in the master and
+      Lsys rpds in the backup.
+
+2) Kernel 
+    - to designate and convey logical router ids in the backup RE.
+
+
+
+3.  PATENT OPPORTUNITIES
+
+There is no patent opportunity for this RLI.
+
+
+4.  CAVEATS
+
+There is no caveat.
+
+
+5.  OTHER REQUIREMENTS
+
+There are no other requirements.
+
+
+6.  IMPLEMENTATION DETAILS
+
+This section will certainly be filled with more contents as the code 
+development progresses.
+
+---------------------------
+6.1 Dynamic Port Allocation
+---------------------------
+
+Any replication channel (libmiror or rsync) between a rpd in the master RE and 
+its peering rpd in the backup RE has to be established through the fxp1.0 ifl 
+in the private routing instance __juniper_private1__. The route to the other 
+RE is installed in the __juniper_private1__.inet.0 table, using fxp1.0 as the 
+nexthop. Before this RLI, ports for libmirror and rsync channels for the 
+default rpd are statically assigned to well-known numbers. For example, 
+libmirror uses 6156 (RPD_MIRROR_DATA_TCP_PORT), bgp rsync uses 179 (BGP_PORT), 
+and ldp rsyn uses 646 (LDP_PORT), etc. Hence, the backup default rpd knows 
+what port to use to connect to its master peer for a given replication service.
+
+Now, since we are going to support Lsys NSR, there can be a number of Lsys 
+rpds on both REs. Each Lsys rpd needs a set of replication channels through
+the fxp1.0 interface to communicate to its peer on the other RE, and all these
+channels have to go through the fxp1.0 interface. In order for the kernel to 
+decide where to divert the packets for a specific Lsys rpd, we must allocate 
+a uniques port to each Lsys rpd for each of its replication services when it 
+request sockets from kernel.
+
+For now, a maximum of 31 Lsys rpds are allowed be configured in the master RE, 
+yet it is possible that we may allow a much larger number of logical systems 
+to be configured on a router in the future. It is obvious that the old static 
+port assignment scheme is not going to scale. Hence, it becomes essential to 
+be able to dynamically allocate a port number when a replication service 
+needs a socket. 
+
+The dynamic port allocation can be done by supplying a port 0 address in the 
+bind() call, then use getsockname() to retrieve the ephemeral port number 
+that kernel assigns to the socket. 
+
+Note that only Lsys rpds should use dynamic port allocation mentioned above,
+the default rpd shall stick to the statically assigned ports as before. This 
+can ensure smooth ISSU operation when one RE is loaded with a version post
+this RLI, while another RE is loaded with a version before this RLI.
+
+-------------------------------------
+6.2 Port Discovery in the backup Lsys 
+-------------------------------------
+
+Once the master Lsys rpd has obtained the port number for a replication service
+(libmirror, rsync) from kernel, it needs to communicate this information to its
+backup rpd peer so that the backup peer can initiate the connection. This 
+differs from the default rpd where port allocation is static and the backup 
+default rpd simply knows what port to use to connect to its master peer. 
+
+Two options have been discussed so far to achieve this communication between 
+master Lsys rpds and backup Lsys rpds. The details of the two options are given
+as follows:
+
+Option 1: Define a new type of Lsys object in the rtsock message suite. Each 
+	  Lsys rpd in the master RE, after learning its port allocation for the 
+	  requested service, will send an RTM_ADD request to add the 
+	  port-service mapping info to the kernel. Kernel needs to replicate 
+	  this new Lsys object database from master to the backup kernel 
+	  through ksyncd, and sends asynchronous rtsock msgs to inform the 
+	  Lsys rpds on the backup of the port information.
+
+            
+	   MASTER RE                                   BACKUP RE
+       	    
+    +--------- Lsys1				       Lsys1 <---------+
+    |								       |
+    |	+----- Lsys2				       Lsys2 <-----+   |	
+    |   |							   |   |
+    |   |							   |   |
+  
+   rtsock					           	   rtsock
+ 
+    |   |							   |   |
+    |   |							   |   |
+    |   +---> kernel        ksyncd replication     	kernel  ---+   | 
+    +-------> master   ============================>	backup  -------+
+
+
+	  This option has the advantage of easy implementation, since the main 
+	  rtsock infrastructure is already in place. We only need to make some 
+	  patch work in kernel/ksyncd and rpd to ensure the new messages are 
+	  delivered/received properly. The disadvantage of this options is that 
+	  we will be carrying a new type of user space data through kerel, 
+	  which is not a desirable design.
+
+
+
+Option 2 (Selected): Create a libmirror channel using a well-known port between 
+	  LRMUXD in the master RE and LRMUXD in the backup RE. LRMUXD on the 
+	  master will obtain the port numbers from Lsys rpds using new APIs 
+	  from librpd. This information will be replicated to the backup LRMUXD 
+	  through the libmirror channel. Then the backup LRMUXD notifies the 
+	  corresponding Lsys rpd through librpd as well. 
+
+
+	   MASTER RE                                   BACKUP RE
+       	    
+    +--------- Lsys1				       Lsys1 <---------+
+    |								       |
+    |	+----- Lsys2				       Lsys2 <-----+   |	
+    |   |							   |   |
+    |   |							   |   |
+ 
+    librpd							   librpd	
+ 
+    |   |							   |   |
+    |   |							   |   |
+    |   +---> LRMUXD      libmirror replication     	LRMUXD  ---+   | 
+    +-------> master   ============================>	backup  -------+
+
+	
+	  This option has the advantage of a reasonable design that keeps user 
+	  space data within the user space. It largely decreases this RLI's
+	  kernel dependency. The disadvantage is that the infrastructure to 
+	  establish libmirror channels between LRMUXDs and the librpd sessions 
+	  between Lsys rpds and the lrmuxd all need to be written from 
+	  scratch. We need to define register and deregister client callbacks, 
+	  and provide exception handling and session recovery mechanisms. The 
+	  work on the rpd side is much increased compared to Option 1. 
+
+
+In the beginning, the favor was given to Option 1 due to the ease of 
+implementation. But later, preference is given to Option 2 due to the more 
+reasonable design, although at the expense of more coding effort from the rpd 
+side. After weighing pros and cons of the above two options, the final vote 
+went to Options 2, mainly to provide a permanent solution to carry Lsys data 
+between REs. For now we only have the port allocation info to be passed, but 
+more such requirements may arise in the future. It would be good to have a 
+solution contained within RPD's domain.
+
+
+---------------------------------------
+6.3 Lsys-compatible synchronized commit 
+---------------------------------------
+
+6.3.1. Sequence number check
+
+Before this RLI, when NSR is configured in the default rpd, in the commit check 
+phase (rpd -C) on both master and backup, a sequence number check is always 
+performed to ensure that rpd is not SIGHUP'ed to process a new commit until 
+the previous commit is consumed. The check is done by comparing the current 
+sequence number, stored in global "config_db_version", and the previous 
+sequence number, stored in a file named "/var/run/__rpd_commit_sync__". If they 
+differ by 0 or 1, rpd -C will pass. If not, rpd -C will try the check 30 times, 
+1 second apart, then rpd -C will still pass, allowing the SIGHUP to be 
+delivered to RPD. This is based on the assumption that rpd should be able to 
+finish any synchronized commit in 30s. If the check fails after 30s, there 
+might be a legitimate reason for it - for example, when a new jroute package 
+is installed, the new sequence number may differ a lot from the previous 
+sequence number - and we should not permanently block the whole commit process.
+
+In this RLI, we need to make this check Lsys-compatible by creating a separate 
+file /var/run/__rpd_commit_sync__<lr-name> for each Lsys rpd. This should be 
+done in both master and backup rpds. The reason is that every rpd progresses
+differently in handling the same commit. If there is only one sequence number
+file shared by multiple rpds, the slower ones will get seriously confused to
+see that the sequence number has been updated by the faster rpds. Hence, we 
+need one file per rpd.
+
+
+
+6.3.2. Ksyncd initiated commit (backup only)
+  
+Before this RLI, when NSR is configured in the default rpd, during the commit 
+check phase (rpd -C), if it is a backup rpd and the environment variable 
+"BACKUP_CONFIG_INIT" is set, indicating this is a ksyncd initiated commit, 
+rpd -C will skip the sequence number check, and it will also create a skip 
+sync file "/var/run/__rpd_no_config_sync__" to communicate this special 
+situation to rpd. Ksyncd initiated commit only takes place when the backup 
+RE boots up while "system commit synchronize" is configured. In this case, 
+ksyncd syncs configuration by forking mgd with a special option, which results
+in a SIGHUP only delivered to the backup RPD, not to the master RPD. Then the 
+primary done message will never arrive. The backup RPD must be aware of this 
+special situation while enforcing the task commit sync state machine. 
+
+In this RLI, we need to make this check Lsys-compatible as well. Since this 
+situation only happens when the entire backup RE reboots, it applies to all 
+Lsys rpds. Therefore, it should be sufficient to continue using this 
+environment variable in the rpd -C process for each Lsys rpd -C process. 
+However, instead of multiple Lsys rpd consulting a single skip sync file, every
+Lsys rpd -C should manage (create/delete) its own 
+"/var/run/__rpd_no_config_sync__<lr_name>" file to avoid race conditions. 
+
+The skip sync file for each Lsys rpd should be deleted in the commit check 
+rpd -C process in the subsequent commit made after the initial RE boot-up.
+
+
+
+6.3.3. (Optional but good to have) Decouple task commit sync from bgp rsync to 
+       libmirror
+
+Before this RLI, the communication between default rpds on the master and the 
+back in the task commit sync module is established on bgp's rsync channel. If 
+protocol BGP is not configured in an NSR setup, we will lose the benefit of 
+the commit sequence between REs. A solution to this is to decouple the task 
+commit sync module from BGP's rsync channel, and replace it with the libmirror 
+channel. The libmirror channel is created whenever NSR is configured, and it 
+has no dependency on BGP config. As such, task commit sync will become a true 
+infrastructure module with clear logic.
+
+However, the amount of work of the decoupling is expected to be heavy. It 
+will be ideal to implement this in the framework of this RLI, if allowed by 
+the schedule.
+
+
+----------------------------------------------------
+6.4 Spawn LRMUXD, PPMD, LMPD and Lsys rpds on Backup
+----------------------------------------------------
+
+Before this RLI, LRMUXD is not spawned in the backup RE. Since we wish to add
+NSR support for Lsys rpds in this RLI, nonstop-routing should be allowed to be
+configured under an arbitrary logical system instance. As long as one Lsys is 
+configured with NSR, LRMUXD needs to be spawned in the backup RE to deliver the 
+commit SIGHUPs. However, if NSR is only configured in the default rpd, LRMUXD 
+should not be spawned in the backup, even if the config itself contains logical 
+systems.
+
+As long as nonstop-routing is configured somewhere, be it default rpd, or an
+Lsys rpd, ppmd and lmpd should be spawned in the backup RE. 
+
+Certainly, every Lsys rpd that is configured with nonstop-routing should be 
+spawned in the backup RE.
+
+Spawning daemons in the backup is achieved by adding necessary lines to file
+/var/etc/init.inc. This can be taken care of in ddl action function 
+"mgd_prop_lr_processes()" in lib/ddl/input/export.c. Note that lrmuxd should 
+only have one entry in the init.inc file even if there are multiple LRs
+configured with NSR.
+
+Below is an example of lines added to /var/etc/init.inc when NSR is configured
+on logical systems named lr1 and lr2.
+
+root@pro2-a% vi /var/etc/init.inc
+
+...
+
+process "lr_lrmuxd" {
+    action respawn;
+    command "/usr/sbin/lrmuxd ";
+    re-mode protocol-master protocol-backup;
+}
+processes {  
+    periodic-packet-services re-mode protocol-master protocol-backup;
+}
+
+processes {
+    link-management re-mode protocol-master protocol-backup;
+}
+
+process "lr_lr1" {
+    action respawn;
+    command "/usr/sbin/rpd -JLlr1";
+    dump-command "/bin/sh /etc/dumpd rpd /var/tmp _lr1";
+    re-mode protocol-master protocol-backup;
+    terminate-signal hup;
+}
+process "lr_lr2" {
+    action respawn;
+    command "/usr/sbin/rpd -JLlr2";
+    dump-command "/bin/sh /etc/dumpd rpd /var/tmp _lr2";
+    re-mode protocol-master protocol-backup;
+    terminate-signal hup;
+}
+
+
+-------------------------------------
+6.5 Lsys-compatible libmirror library
+-------------------------------------
+
+Before this RLI, the libmirror library does not handle the Lsys case. Some 
+checks exist to prevent the code from proceeding within the library if it is
+a logical system rpd. Such checks need to be carefully removed.
+
+
+----------------
+6.6 Misc cleanup
+----------------
+
+Cleanup all checks necessary in protocols and infrustructure code that prevent 
+an Lsys rpd from participating in the NSR operations. It is also assumed that 
+the kernel socket replication (JSR) should just work because the ifls that the 
+socket snooping is done upon are already Lsys aware.
+
+
+7.  PERFORMANCE
+
+7.1.  Performance Related Resources
+
+All Lsys rpds and the default rpd are independent processes competing for the 
+CPU and memory resources. The limited CPU and memory resources are the 
+bottleneck that sets the maximum number of rpds (currently 32) we can support 
+on each RE.
+
+The changes made by this RLI are to spawn additional Lsys rpds in the backup 
+RE. This would certainly add more load to the backup RE. However, it should
+not raise much conern since the master RE has been supporting Lsys rpds for
+a long history in JUNOS.
+
+
+7.2.  Target Performance
+
+This RLI is not a scaling and performance RLI. Since NSR is already 
+supported for the default rpd, the Lsys NSR is are expected to achieve a
+similar performance in comparable situations.
+
+
+8.  COMPATIBILITY ISSUES
+
+This RLI should not introduce any backward compatibility issue. The old NSR
+feature in the default rpd would work just well. 
+
+
+9.  SECURITY ISSUES
+
+There is no foreseen security issues introduced by this RLI.
+
+
+10.  Platforms Supported
+
+This RLI is only applicable to dual-RE platforms that currently support 
+
+1) NSR in default rpd, and
+2) Lsys configs. 
+
+For platforms that do not support either of the above, this RLI has no impact
+on them.
+
+
+11.  Graceful RE Switchover (GRES), or ISSU Impact 
+
+Since this RLI eventually opts to the design of not adding a new type of rtsock
+message in the kernel, it is not expected to have any GRES impact.
+
+Support of lsys NSR is a prerequisite of the future support of lsys ISSU.
+
+12. NSR Impact
+
+This RLI enhances the NSR infrastructure to support Lsys rpds. The impact is
+expected and as designed.
+
+
+13. Aggregated Ethernet/SONET Support
+ 
+This is no change of behavior in terms of supporting AE/SONET interfaces.
+
+
+14.  SDK Impact
+
+This is no SDK impact introduced by this RLI.
+
+
+15. Services / JSF (JUNOS Services Framework) Impact
+
+No service impact is expected.
+
+
+16. MULTI-CHASSIS SUPPORT
+
+This RLI is not expected to behave differently in the multi-chassis system. 
+
+
+17. 64-BIT SUPPORT
+
+This RLI would be written in the current 32-bit environment in rpd.
+
+
+18. NOTES
+
+There are no notes at this time.
+
+
+19.  GLOSSARY
+
+NSR - NonStop Routing
+Lsys - Logical System
+
+
+20.  REVIEW COMMENTS
+
+Yogesh:
+
+1. Section 2.4b: Is it possible to list all protocols that would be updated, so 
+   that there is no confusion if someone looks at this doc in future and tries 
+   to figure out what was updated?
+    - Tao: done. A complete list of protocols are added.
+
+2 Section 2.4 c: Will the information about new commands (if any seen 
+  necessary) be added back to this section? If so, can you please add same 
+  sentence as in "section 4" here? Or point to where the new commands may be 
+  documented?
+    - Tao: done.
+
+Dave: 
+
+1. Add template version number to the Copyright section.
+    - Tao: done.
+
+Tejas:
+
+1. Isn't it the case that it is not expected and there would be nsr connection 
+   reset between master and backup if seq number mismatch happens. In the 
+   back-to-back sighups case, if we can handle missing a sighup and hence not 
+   enforcing strict commit synchronization, what is the point of having commit 
+   synchronization?
+    - Tao: it's a good catch. As long as NSR is enabled, RPD -C works as a 
+      throttling mechanism to prevent SIGHUPs from arriving at rpd too fast. So
+      it is not expected to see back-to-back SIGHUPs. I removed it from Section 
+      6.3.1. Sequence number check.
+
+Ron: 
+
+1. Clarify the graceful restart statement in Section 1.
+    - Tao: Removed the statement. The original intent was to describe the 
+	   traffic churn that's caused by a RE switchover without NSR support.
+	   But it may be too confusing to mention graceful restart. 
+
+2. Section 4, 5, 7.2: I think the above sections need some text (instead of the 
+   boiler plate) before we can approve the FS.
+    - Tao: These sections now contain what I foresee in current stage of the
+	   development. They are subject to modification in later revisions
+	   when more development progress has been made.
+
+3. Section 6: Clarify that only the Logical Systems rpd(s) will use the new 
+   "port discovery" scheme. The non-Lsys rpd will continue to use well-known 
+   port numbers. (If the non-Lsys rpd uses the new scheme as well, there would 
+   be ISSU issues.)
+    - Tao: done.
+
+4. Section 6: For option 2, it may be possible to use the librpd in lrmuxd to 
+   communicate the port number information to rpd. Logical systems do support 
+   the rpd-server function. We can define a new librpd request to set the port 
+   number information in rpd. It would be a lot easier than creating a new unix 
+   domain communication channel from scratch. What do you think?
+    - Tao: that's a very good suggestion. Spec modification is done accordingly.
+
+
+5. Section 6: It may be good to have a separate sub-section number for all the 
+   sections between lines.
+    - Tao: done.
+
+6. Section 6: For "Sequence number check," it would be good to describe how the 
+   sequence numbers can differ for the multiple Lsys rpds (why we need separate 
+   __rpd_commit_sync<lr-name> files).
+    - Tao: done. Added more explanation. 
+

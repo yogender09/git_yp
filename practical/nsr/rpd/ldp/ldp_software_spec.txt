@@ -1,0 +1,1135 @@
+$Id: ldp_software_spec.txt,v 1.1 2007/03/13 01:29:52 shivania Exp $
+
+S3.02.P05.T01
+
+		Functional spec for LDP support of NSR
+		=======================================		
+
+	Functional specification and implementation details
+	
+		Ina Minei (ina@juniper.net) 
+		Shivani Aggarwal (shivania@juniper.net)
+
+Copyright (C) 2005, Juniper Networks, Inc.
+
+NOTICE: This document contains proprietary and confidential
+information of Juniper Networks, Inc. and must not be distributed
+outside of the company without the permission of Juniper Networks
+engineering.
+
+DO NOT document the implementation details or share them with the
+customer.
+
+THIS DOCUMENT IS A WORK IN PROGRESS - unresolved issues are marked FIXME.
+
+In this document, the terms "primary" and "master" are used
+interchangeably to mean the current active rpd. The terms "secondary" and
+"standby" are used interchangeably to mean the rpd that will take over
+after the master crashes. 
+
+1.  INTRODUCTION
+=================
+
+   This feature is part of the NSR project. The LDP functionality is
+tracked under RLI 3168 tracking pr 65909. 
+
+   This document assumes familiarity with the concepts in the NSR base
+spec [BASE_SPEC]. Before reading the implementation section, it is 
+recommended to read [LDP_DESIGN] and the documents referenced in it.
+
+   For NSR, the expectation from the LDP protocol is that on
+switchover:
+- the sessions that were up will continue to stay up
+- traffic allong LDP LSPs will continue to be forwarded without loss
+- hellos will be sent on time to prevent the adjacencies from dropping
+(neighbors that were up will continue to stay up)
+- messages from peers will continue to be processed in a timely manner
+- the labels sent to the peers will not be changed (no label churn as
+a result of the switchover). Note: exceptions to this rule may be
+necessary, see the implementation details and caveats sections.
+- all the above will happen regardless of whether the secondary is
+running the same or a different version of the code as the primary.
+
+     Non-goals for the first version (will be addressed in later versions):
+- l2ckt functionality is not handled in this RLI.
+- snmp support is not a priority for the first version. Traffic statistics
+in snmp, traps, maintenance of which trap-up must be sent, etc, are
+not synchronized on the secondary. 
+- ldp_fec_filtering is not handled in this RLI. The policer-id 
+synchronization is left for later resolution. 
+
+
+2.  FUNCTIONALITY
+==================
+
+   The NSR functionality is enabled globally for all protocols, and
+should not generate any user-visible behavior on the primary. 
+
+   The NSR functionality is enabled with the "nonstop-routing" statement at 
+the [edit routing-options] hierarchy level and requires GRES with the 
+graceful-switchover statement at the [edit chassis redundancy] hierarchy level.
+
+   The only user-visible functionality in LDP on the primary is the 
+ability to trace NSR-related activity via a new (hidden) flag. 
+
+regress@pro6-d> show configuration protocols ldp
+traceoptions {
+    file ldp.log size 8m world-readable;
++   flag nsr-synchronization detail;
+}
+
+   The user-visible behavior on the secondary will be after switchover, when
+the LDP behaviour will be as described in the previous section. Before
+switchover, there may be a discrepancy in the output of show commands 
+between the primary and the secondary. The tracing flag available on 
+the primary for tracing NSR-related activity also exists on the secondary.
+
+   In addition to the NSR traceflag, ldp messages can be traced on
+both primary and secondary (the packets arriving on the replication
+socket on the secondary can be traced as normal packets).
+
+    All existing cli show commands are available on both primary and secondary
+RE.
+
+    The following show commands (hidden) have been added:
+- show ldp replication ?
+Possible completions:
+  neighbor             Show LDP neighbor replication database
+  path                 Show LDP path replication database
+  session              Show LDP session replication database
+  standby-path         Show LDP standby path database
+  standby-route        Show LDP standby route database
+
+
+  The following show commands are currently not available but can 
+     be made available if needed. 
+- a show command to display unsynchronized sessions
+- a list of the unresolved FECs on the secondary (FECs for which the
+outgoing label was seen, but for which not all LDP data structures
+could be reconstructed)
+
+    FIXME - document here the new output that might be encountered on
+the secondary (for example new states of bindings)
+
+
+
+3.  CAVEATS
+===========
+
+- 1) NSR and graceful restart are mutually exclusive. Graceful restart 
+helper mode will be supported.
+
+- 2) Instance stats (packets sent, types of errors encountered so far),
+are lost on switchover. This type of statistics was not considered
+important enough to track across RE switchovers
+
+- 3) An interface that was in blocked state on the primary (blocked =
+we were ignoring hellos on it) may not be blocked on the
+secondary. If/when the switchover happens, we will block the
+interface, which means that in effect an interface may end up being
+blocked for longer than what it should have been. (A blocked interface
+is a sign of an active session with an adjacency which has a different
+transport address, and we should have both the session and the
+adjacency on the secondary. If in the meantime the session/adj went
+down, we don't care over which of the interfaces we establish the new session).
+
+- 4) Following switchover, adjacencies that were in
+the process of timing out on the primary will not time out within the
+expected interval. This is becasue we don't maintain information
+regarding the time when hellos are sent/received by the
+primary. Following switchover, the behavior is that we start the
+timeout timers again. So the adjacency may live longer than it would
+have otherwise lived if we had not switched over. 
+
+- 5) To avoid the primary and secondary getting out of sync with
+regards to the value of the router-id, it is recommended that the
+router-id be specified in the config, rather than dynamically computed
+based on interface addresss selection. 
+
+- 6) Snmp state is not maintained across switchover. The traps that need 
+to be sent, the traffic stats displayed in snmp, all are lost.
+
+- 7) Some FECs may undergo label changes on switchover.
+
+- 8) Traffic statistics will not be available on the secondary. This is
+     an artifact of how GRES is implemented and is not specific to this
+     implementation. 
+
+     Traffic statistics will, however, be retained and will be available
+     after the secondary becomes primary on switchover.
+
+
+4.  OTHER REQUIREMENTS
+=======================
+
+N/A
+
+5.  IMPLEMENTATION DETAILS
+===========================
+
+See detailed discussion at the end of this document (moved there
+because the section is very long).
+
+
+6.  PERFORMANCE
+===============
+
+   Turning on NSR functionality should not impact the performance of
+the primary. This is one of the major requirements from a testing
+perspective and needs to be documented in the unit-test doc. 
+   There are three main areas to be looked at: 
+1) CPU utilization, 2) blocking of TCP sockets, and 3) hello
+generation. The performance implications should be discussed in the 
+unit-test document. This should be one of the main areas for test.
+   See more discussion on testing in the implementation section at
+the end of this document.
+
+7.  COMPATIBILITY ISSUES
+==========================
+
+N/A
+
+8.  SECURITY ISSUES
+====================
+
+N/A
+
+9.  Graceful RE Switchover (GRES), Hobson Impact
+================================================
+
+N/A
+
+10.  NOTES
+===========
+
+N/A
+
+11.  GLOSSARY
+==============
+
+N/A
+
+
+12.  REVIEW COMMENTS
+====================
+
+     See discussions on the ldp-coders and nsr-rpd-coders mailing
+lists. Also see the cvs log of this document. 
+       The LDP NSR review was held on Nov 18, 19. Attendees: Nischal
+Sheth, Steven Lin, Shivani Aggarwal, Ina Minei, Arthi Ayyangar and
+Andy Heffernan. See the cvs log of this document for the outcome of
+the discussions.
+
+13, REFERENCES
+===============
+
+[BASE_SPEC] - Non-Stop Routing (NSR) - Functional specification
+sw-projects/os/nsr/software_spec.txt
+
+[LDP_DESIGN] - Design of LDP Synchronization for NSR
+sw-projects/os/nsr/ldp-design.txt
+
+[SOCK_API] - Juniper socket replication API, 
+sw-projects/os/nsr/kernel/socket_replication_api.txt
+
+[LDP_NSR_IMPL] - Implementation and Design details for LDP support of NSR
+sw-projects/os/nsr/ldp-nsr-implementation.txt
+
+************************************************************************
+************************************************************************
+************************************************************************
+
+IMPLEMENTATION DETAILS - do not document or share with the customer
+======================
+
+   APIs starting with 
+- "jsr_" are documented in [SOCK_API]
+- 'ldp_" are either standard ldp APIs or are documented in the APIs 
+section below.
+
+   IRS = internal routing socket (there is a single of these for the
+ldp protocol)
+   JSR = replication socket (there is one of these for each active session)
+
+   In this document, the terms "primary" and "master" are used
+interchangeably to mean the current active rpd. The terms "secondary" and
+"standby" are used interchangeably to mean the rpd that will take over
+after the master crashes. 
+
+Assumptions
+************
+
+   The implementation makes the following assumptions. If any of the
+conditions below breaks, the implementation must be revisited:
+
+Labels and label-allocation
+- LDP is using global labels (no per-interface labels). This means
+  that the same outgoing label is sent to all sessions. On switchover,
+  if not all sessions have the same outgoing label, the condition is
+  flagged as an error, the FEC is withdrawn on all sessions, and a new
+  label is advertised to all sessions. There will be traffic loss for
+  the affected FEC.
+
+- As a result of the reliance on global labels, the assumption is
+  made that the nexus can be uniquely identified by the global label. We
+  need to be able to identify the nexus for identifying self-ids
+  for example.
+
+- The label allocation scheme on the primary is such that labels are
+  not reused immediately upon freeing them. This assumption is
+  necessary in order to handle the fact that the messages for
+  different sessions are not processed with the same speed on the
+  secondary. If the same label were reused on the primary, some of the
+  old messages referencing the label on the slow sessions may not be
+  correctly interpreted.
+
+Self-ids & self-id allocation 
+- The assumption is that once self-ids are allocated for a particular
+  nexus, they don't change for the entire life of the
+  nexus. Furthermore, the self-ids are not reused until the selfid
+  space wraps around. 
+
+LDP modes of operation
+- The original LDP code has some stub code put in for handling other
+  modes of operation, such as non-merging, on-demand label allocation,
+  conservative label retention, etc. When writing the replication
+  code, no effort was made to support these unless the code is
+  actually used (e.g. on-demand labels are used by the l2ckt code).
+
+
+1. Areas of work
+****************
+
+   There are several areas of work:
+- activity on the primary if it knows that NSR is enabled
+- activity on the secondary when it comes up
+- activity on the primary when receiving a request for replication
+- initial sync
+- ongoing sync
+- switchover (activity on primary and on secondary)
+- configuration handling
+- ppmd interaction
+
+  The code changes required for each will be discussed separately below.
+  The ideas behind why we do each of these steps is explained in [LDP_DESIGN].
+Here we just detail the data structures and operations that must be performed.
+
+Infrastructure background
+--------------------------
+
+   NSR is turned on in the config. To determine whether an instance of
+rpd is master or standby, the mcontrol_re_is_master() API is used in
+task.c to set the global task_re_mode_master to TRUE for the master.
+By looking at the value of the global variable from any protocol, we
+know if we are master or standby. 
+
+   Each protocol must define init/var_init functions for the standby
+version and add them to the module_inits_backup[] vector in task.c. 
+These functions are in most cases different for master and standby,
+though they may share some common code. Because many protocol actions
+need to be different on primary and standby, it is useful to have
+function vectors defined for those instances where the two
+differ. This is a cleaner approach than sprinkling "if(master)"
+statements in the code. A good place to initialize these function
+vectors is in var_init.
+   
+   The listen_task is only created on the primary. This is the task
+that actually listents on the LDP socket. This task should not exist
+on the secondary. The task is created from the instance creation
+code. It probably makes the code cleaner to isolate it into the init routine
+based on whether there are instances configured or not.
+
+  Extra tasks are required on both the primary and the secondary to
+handle the communication between the two over the IRS. This
+functionality cannot be offloaded to the "main" LDP task, as LDP may
+not be necessarily running in the master instance. On the
+secondary, the task for communication with the primary over the IRS
+must be created from the init routine. On the primary, this task
+should be created when the incoming request arrives from the
+secondary. 
+
+1.1 Activity on the primary if it knows NSR is enabled
+-------------------------------------------------------
+
+   The communication between the primary and the secondary is 
+done over a TCP socket in the internal routing instance
+(_juniper_private1_), port 646 (the LDP port). This socket is called
+IRS. The secondary initiates the connection to the primary. 
+   On the primary, the listen_task listens for incoming connections on
+port 646 anyway. If the incoming connection is over the ifl associated
+witht he _juniper_private_ instance, then this is a sign that the
+secondary is attempting to open the IRS.
+
+FIXME - explain how to get rid of this and the associated task when
+NSR gets unconfigured. This was left for later resolution, as the
+solution should come from the infrastructure.
+
+   The messages exchanged on the IRS and their usage are defined in
+the "APIs, message formats, data structures" section of this document.
+
+1.2 Activity on the secondary when it comes up
+-----------------------------------------------
+   The init/var_init functions run on the secondary are different
+than the ones on the primary. This is required because the actions
+taken by the secondary may be different. Invoking the different
+functions for primary and secondary is taken care of
+automatically in task.c.
+
+   On both primary and secondary, the existing code for init/var_init
+must be run. In addition to these, the var_init on each of the
+primary/secondary must: load the function vector and initialize the 
+data structures required. (for example, on the secondary we must have
+the storage for the FEC structure where we will cache unprocessed data).
+
+   At the end of the init, the secondary creates the LDP_standby task and
+attempts to connect to the IRS. This code should be written taking
+into account that the connection may fail, so needs to be retried
+periodically. Also, the connection may be closed, by either primary or
+secondary. The IRS is identified as belonging to the _juniper_private_
+instance, the port number is the same as the LDP TCP port. 
+
+1.3 Activity on the primary and secondary after starting IRS
+-------------------------------------------------------------
+
+   The sync process between secondary and primry is based on a pull
+model, where the secondary is asking for replication for particular
+sessions from the primary. The primary informs the secondary which
+sessions are up via the mirroring api. (See [LDP_DESIGN] on a discussion 
+of why this model was chosen).
+
+   Both the primary and the secondary must maintain state regarding
+the sync state of sessions (in_progress, synched, not synched). The
+primary needs this info in order to inform the secondary of sessions
+going up/down. The secondary needs this info to keep track of which
+sessions to request sync for. At the time the secondary first finds
+out about a new session, it may not be able to ask for sync for it,
+for example because the interface over which the adj is set up is not
+yet available on the secondary.
+
+   The secondary asks for replication for one session at the time
+by sending a message to the primary over the IRS. Before it sends the
+message, it sets up the socket such that it can receive both the
+inbound and outbound traffic on the socket once the primary replicates
+the socket. (details on how this is achieved is in the document 
+[LDP_NSR_IMPL]).
+
+   As a result of asking for replication, the following things will happen:
+- the secondary will start receiving initial sync messages over the
+internal routing socket (IRS) containing information about the session
+for which replication was requested.
+
+- when receiving a replication request, the primary will 
+a) request replication for this socket. At the time that replication is 
+requested, the stream must be at a record boundary. The primary can check
+this by making sure to read from the socket first.
+- At this point, the secondary will start getting ongoing protocol 
+messages on the replication socket (JSR)
+- the primary will send replication state over the IRS, detailing the 
+state of the session (next hop address (in/out) and inlib/outlib info). The
+secondary must always treat the info on the JSR as more recent than 
+the info on the ISR. 
+
+   The challenge on the secondary is that it receives information from
+two sources at the same time. This is described in the section on
+message processing and the LDP binding state machine.
+
+
+1.4 Initial sync
+-----------------
+   Initial sync _MUST_ be performed as a background job. It cannot be
+allowed to run to completion and ignore read from any existing JSR
+sockets, as this would mean blocking the primary. The secondary
+_MUST_ read from the JSR during initial sync, otherwise it blocks the
+normal operation of the primary (send/receive messages from the
+network).
+
+   The secondary will receive information about a session on three
+channels: the IRS, the incoming and the outgoing ends of the JSR. One
+cannot make any assumptions about the order in which these 3 streams
+are read. Within each stream we are guaranteed temporal ordering.
+
+   A consequence of the requirement to read from the JSR is
+that information received on the JSR should be regarded as more
+up-to-date than information received over the IRS. Here is why. 
+The info on the IRS reflects the state either after processing 
+the message replicated on the JSR, in which case there is no conflict, 
+or before the message is replicated, in which case it is stale and
+should not be believed. Messages arriving on the IRS are the
+equivalent of label-map and label-withdraw. (This is because the
+primary must send info not just for active bindings, but also for
+binding in RELRCV state, as these labels must be marked as in-use).
+On the JSR, we get map, withdraw and release messages. Map messages on 
+the JSR can be processed immediately, as they are more current. 
+Withdraw/release messages must be processed after the primary has 
+finished sending messages on the IRS (as these may cancel state that 
+was sent over the IRS). One way to avoid caching these messages is by
+creating a new binding with "negative" state associated with it, which
+can be used to cancel-out other label messages.
+   
+   For each FEC seen on either the IRS or the JSR, we maintain a
+reconciliation data structure, used for storing information required
+for reconstructing the internal data structures of ldp. This
+information includes at the logical level: label_in, label_out, source
+of info, cached JSR messages (not required to cache the messages, 
+can cache the info), the self-id, the ldp_route_entry. The structure 
+is keyed by prefix and  session. At the implementation level, it is 
+not required to maintain this information explicitly. Labels can be
+stored in inlibs/outlibs, and searched there. The source of the info
+can be encoded in the binding state, the ldp_route_entry can be
+searched in the shadow route table. 
+
+   Here are the processing rules for messages on IRS and JSR (all
+checks are per FEC and per session). If the message is processed, the
+FEC data struct is updated. Look at the section on ongoing sync to see
+how internal ldp data structures are built from messages.
+- incoming label-map on IRS - check if already seen. If yes, and the
+source is the JSR, skip processing. If the source is IRS, check if any
+pending label-withdrawl for the same label. If yes, skip processing,
+get rid of cached message. Otherwise process as a label-map. 
+- outgoing label-map on IRS (we are guaranteed these will arrive after
+the incoming label-map, since the primary controls how these are
+sent). We check if already seen in the outlib. If not, process. 
+If yes, and the source  is the JSR, skip. If yes, and the source is 
+IRS, this indicates an error, assert.
+- incoming label-map on JSR - Check if already seen. If yes, process
+as a label-withdraw followed by a label-map. If not, process as a label-map.
+- outgoing label-map on the JSR - same
+- incoming label-withdraw on JSR - if seen, and the label is the same,
+process as a label-withdraw. If the label is not the same, cache the
+label-withdraw. 
+- incoming label-release on JSR - if seen, just get rid of the
+binding. Otherwise, cache.
+- outgoing label-withdraw on JSR - we are guaranteed that if the
+label-map was seen on the JSR, it was sent before the withdraw. Check 
+if seen outgoing label-map with same label on either IRS or JSR. 
+If not seen, cache. Otherwise,process. 
+- outgoing label-release on JSR - check that the FEC was removed from
+the inlib on the session on which the label-release was sent. If not,
+assert.  
+  
+   Building the LDP data structures is detailed in the section on ongoing sync.
+
+   Synchronizing databases. There are two approaches: share the label 
+information between as many sessions as possible (the BGP approach) or
+synchronize each session individually. 
+   For LDP, the second approach was chosen for the following reasons:
+- the inlibs are different for each session
+- the outlibs may be the same for normal LDP, but will be different
+for l2ckt. Even so, the outlibs may not be consistent on all sessions
+because a binding may be in ACTIVE state for one session but not for
+another (due to the fact that the primary did not manage to send out
+the binding to all interested parties).
+- ldp_label_binding is a per/session data struct, it contains info
+such as whether the label was already sent to a particular neighbor. 
+Also, the filtering state (though today is applied on all sessions), 
+might become a  per/neighbor state. 
+- the savings in the IPC used for sending the out-label info are
+offset by the fact that sync-complete is achieved slower for each
+session. (Packing info would imply synchronizing several sessions at
+the same time).
+
+
+1.5 Ongoing sync
+----------------
+   LDP routes must added to the routing table (inet.3 and mpls.0)
+immediately (rather than on switchover). This is because both types of
+routes are needed for resolution of BGP routes.
+
+   For ongoing sync, the ldp messages sent/received by the primary
+are processed by the secondary. In addition, the primary will send
+auxiliary information over the IRS).
+
+   The processing of LDP messages is different on the secondary,
+because
+- the secondary is not allowed to allocate any outgoing labels in 
+response to receiving incoming label-map messages
+- there is no guarantee that incoming label-map messages will be seen
+before outgoing label-map messages. (this is because the sockets may
+be read at different speeds).
+
+   The goal is for the secondary to create the data structures that
+are required to pick up operation from the primary on switchover. This
+includes nexus, nexus_ref, nexthop database, shadow route table,
+bindings, etc. 
+
+   Most of these data structures are reconstructed on the
+secondary from the snooped outgoing messages. The problem is that the
+reconstruction cannot happen without reliance on other info, such as:
+the route for the FEC in the shadow route table, an
+entry in the inlib that would yield a label_vector and nexus-specific
+info such as the self-id. This is the type of logical info that is
+required in the reconciliation data structure mentioned in the
+previous section. (note that at the implementation level not all the
+items need to be stored).
+
+     There are two approaches to solving this problem:
+1) defer the processing of the outgoing message until all information
+is available. This implies maintaining a new data structure (the
+reconciliation FEC datastructure) keyed by
+prefix, where the required information for the processing of an
+outgoing label message is stored. This is the approach taken in the
+implementation.  Note that this approach does not imply storing all
+the data in this data structure, as explained in the previous
+section. The reconciliation data structure is a permanent structure
+keyed by the prefix and instance.
+2) build fake data structures with fake values for the missing info,
+and then replace thes with the real info, as it becomes
+available. This approach was not taken because of the complexity of
+replacing the fake data structures with real ones. 
+
+   Below is an outline of how ldp messages are handled and what data
+structs they create on the _secondary_.
+
+- incoming label-map - no reliance on any data structures. 
+    Same processing on the secondary as on the primary.
+    The inlib entry is created.  The label-ref,
+    prefix_ref, binding, and inlib entry are created.
+
+FIXME - rewrite this based on creating lib entries with negative state.
+
+- outgoing label-map - requires existence of the route in the shadow
+    route table. an incoming label-map (that is an entry in the
+    inlib for this prefix), and nexus info for the nexus associated
+    with this route. If any of these are
+    missing, create an incomplete_FEC data structure, keyed off the 
+    FEC prefix and the _instance_ and save the relevant label info 
+    there, along with the session information and the fact that this
+    is an outgoing label. Once the info becomes available, incoming messages
+    need to be processed first, then outgoing messages.
+
+    Lookup the FEC in the shadow route table. If not present, just put
+    the outgoing label in the incomplete_FEC structure. If present,
+    call ldp_build_label_vector(route). If no label vector, put the
+    info in the incomplete_FEC structure. 
+    FIXME - depending on the approach taken, we may need to look for
+    the selfid as well, see the discussion on self-id reconstruction
+    after the discussion on processing an outgoing label-map.
+
+    Create label_ref and pfx_ref in outlib. Create binding
+    (ldp_bind_refs). Set binding state to SYNC_IN_PROGRESS (or
+    something similar).
+    Lookup pfx in route table, then call
+    ldp_build_label_vector(route). We are guaranteed to find one,
+    because we check in the beginning. Check if
+    there is a nexus already (with the same label as the one seen in
+    the label message).
+    If yes, create nexus reference (this will update the
+    transit routes), set binding to ACTIVE and bind the outlib
+    label_ref to the nexus.  
+    If not, create the nexus (making sure to allocate the same label
+    as the one used in the label message) and then create nexus ref,
+    set binding to active and bind the outlib label_ref to the nexus. 
+
+What self-id to use for the nexus?
+
+Reconciliation of self-id on primary and secondary. There are three
+approaches:
+a) the self-id is sent over the IRS via the mirroring api. The nexus is 
+identified by the outgoing label. This is the approach taken.
+b) the self-id is gleaned from the route synched by the kernel. krt
+flashes rpd on the standby with the kernel route. From this route, the
+selfid is learned. This approach is undesirable, because it requires
+route-flashes to be sent from krt to ldp on kernel route changes.
+c) the self-id is initially set to 0 and reconciled on
+switchover. When switchover happens, get all the kernel routes and
+change the selfid in the rpd routes. This approach has the drawback
+that it imposes a lot of churn at the time switchover happens, and
+therefore is undesirable.
+
+- outgoing label withdraw - this is a withdraw that is seen on an
+  outgoing session. We are _guaranteed_ temporal ordering between the
+  withdraw and the outgoing map for the label.
+
+  Lookup the FEC in the incomplete_FEC data structure. 
+  If it is there, lookup the session and see if there is a pending 
+  outgoing label-map for the label withdrawn. If yes, then simply
+  remove that state. 
+  FIXME - open issue - will this affect the state of the binding? 
+  If it is not there, then we have already processed the outgoing
+  label-map, so look up the label in the outlib for the session. If
+  not there, assert (this indicates an inconsistent state). If it is
+  found, then set the binding to LDP_BINDING_RELRCV and call 
+  ldp_delete_nexus_ref(instance, nexus_ref, down_reason) (this may
+  free the nexus).
+
+- incoming label release - this is a release that is received in
+  response to a label withdraw that we sent previously. However, we
+  may end  up seeing this before we have seen the outgoing label
+  withdraw, because of reading sockets at different speeds.
+  
+  Lookup the FEC in the outlib for the session (match not just on
+  prefix but also on label). If found, ensure that it is in
+  LDP_BINDING_RELRCV state. 
+
+  If not, put the release info in the
+  incomplete_FEC data structure (it means we did not yet process the
+  outgoing label withdraw for this FEC). If yes, remove the binding 
+  according to the procedures of ldp_label_release_binding. 
+  
+  If the FEC is not in the outlib for the session, then cache the
+  incoming release.
+
+XXX
+
+- outgoing label release
+
+- incoming label withdraw
+
+- outgoing label withdraw
+
+- incoming address message
+
+- outgoing address message
+
+- incoming/outgoing notification message
+
+  Notification messages MUST be processed by the secondary, because
+not all notifications are fatal (and thus not all of them result in
+the session getting closed). This means that a session may get closed
+on the secondary and then we receive a session-down message on the IRS
+for the same session. To ensure that notifications are sent to
+the peer even if the switchover happens before the notification was
+sent by the primary, the secondary must keep track of whether a
+notification needs to be seen for a particular session. Thus,
+notifications can be sent after switchover, if needed.
+  
+
+FIXME - document the actions that need to be taken for each and every
+message type.
+Also document what happens on route flashes, and how to trigger the
+reevaluation of a FEC as the information becomes available.
+
+1.6 Switchover - activity on the secondary
+---------------
+   This is only interesting on the secondary. The secondary gets a
+SIGHUP which causes rpd to read the mastership info, and at this point
+it looks like it is primary.
+
+    On switchover, the secondary calls a new function,
+ldp_nsr_switch_to_primary. This function must do the following:
+- check that indeed it was secondary (looks like it is primary now)
+- go through all sessions it has and check that they are all marked as
+sync-complete (that is, the primary was not trying to send us the
+initial sync for this peer). Kill all sessions that are not
+sync-complete, as they are half-baked, and log the reason for killing
+them (they will eventually time out and die on the remote peer, or to
+speed up things, generate notifications to the remote peer).
+- drain the outbound JSR socket for all peers and process the messages
+(see below why)
+- change the read-only file descriptors to the sockets to read-write ones.
+- reconcile the forwarding state received from the kernel with the
+route state that LDP has. This includes reconciliating the self-ids.
+- detect that a particular outgoing label was not sent to all
+the peers and fix this (see below why).
+- reconcile FECs that are in incomplete state
+- become primary - this means changing the task vector on the fly. 
+This implies that we set up the task to listen to
+the internal socket (so we can create it once the new secondary will
+come up and try to connect)
+- read the config - config processing will occur as if for the primary
+
+Explanation for some of the actions above:
+
+    The secondary must drain the outbound JSR socket for each peer. 
+This is because the messages still waiting on this socket
+represent state that the peer _has_already_seen_. So draining the
+socket and _processing_ these messages on the secondary is required in
+order for the secondary to have a consistent view of the network state.  
+This must be done before any switchover actions are done on the secondary.
+
+     The secondary must reconcile forwarding state with route state
+that LDP has. This simply means overwriting kernel routes with LDP
+routes. There may be value in logging the overwritten routes. 
+
+     The secondary must check that all peers have a consistent view of
+the outlibs. The infrastructure guarantees that whatever rpd wrote to
+the socket on the primary, got sent on the wire. However, it may be
+the case that rpd on the primary did not have a chance to write to the
+socket for all peers, and so some peers would have gotten a label,
+while others would not have. In this case, rpd should be able to
+advertise the label to the remaining peers, or fix the situation some
+other way (e.g. withdraw the label from all peers, advertise a new
+label to everyone involved). 
+
+     Reconciling FECs that are in inconsistent state depends on why 
+the FEC is in the inconsistent state. If the route is missing, then
+set the route defer timer on the binding.
+
+
+1.7 Switchover - activity on the (old) primary
+--------------
+    There are two cases when switchover happens. 
+a) Core of the primary, in which case nothing special must happen on 
+the primary.
+b) Manually initiated switchover - in this case, must make sure that
+no notifications are sent to the peers to close the sessions. This
+means that we must make sure when we call ldp_destroy_instance from
+task_terminate, not to flush the route table (as this would cause us
+to distribute withdrawls to all peers, send notifications, etc, which
+would all in all defeat the purpose of NSR). 
+
+1.8 Configuration processing
+----------------------------
+
+FIXME - this section is left for later resolution, no unified approach
+has been identified in the infrastructure.
+
+Issues to figure out:
+- how does the primary inform the secondary that it is about to enter
+commit
+- the secondary must drain and process the socket buffers before
+entering conffig, to prevent the secondary from processing messages
+that sent by the primary in the context of the old config, based on
+the new config.
+- which function triggers this cleanup? Probably task_cleanup
+
+
+1.9 PPMD interaction
+---------------------
+
+   The interaction with PPMD is short-circuited on the standby. All
+functions that create state in ppmd have been replaced with NULL
+pointers on the standby. A side-effect of this behavior is that most
+of the ldp show commands (which require aquiring data from ppmd)
+needed to be redone for the secondary.
+
+FIXME - resolve the open-issues.
+*** Open issue
+
+- What info does ppmd require on the secondary? instance_id is one thing
+  required by ppmd
+- How is this info passed around? Is there any info that is
+  ppmd-specific and needs to be replicated?
+- How do we prevent ppmd from being programmed on the secondary on a
+  normal commit.
+
+**** End open issue
+
+1.10 Adjacency maintenance
+---------------------------
+
+   Hellos are not replicated to the secondary. Therefore, adjacency
+information must be maintained via an out-of-band mechanism, such as 
+mirroring api. The primary informs the secondary of adjacency
+information, whether it is associated with an active session or
+not. The secondary maintains all adjacencies it learned from the
+primary in a separate data structure, and creates the ldp_adjacency
+structure from these. 
+
+   It communicates adj state (down/up), and if the parameters of the 
+adjacency changed (e.g. received a new hold time from the remote neighbor). 
+
+   The mirroring api will be used to keep the primary and the secondary in 
+sync with respect to the adjacencies. This was selected over using a message
+over the IRS due to some of the advantages that the mirroring api provides 
+such as automatic retransmission of the adjacency database if the secondary 
+were to restart, handling additions, deletions and updates on these 
+adjacencies in a manner that avoids having to maintain any state within the
+protocol itself. The mirroring api would also encode a tlv for the adjacency 
+that contains the standard LDP hello, in order to reuse the ldp hello 
+processing mechanism already available in the code.
+
+   The ipc message sent over the mirroring api must contain the interface 
+associated with the adjacency. The interface is identified by the 
+ifindex+generation number (this is a better scheme than sending the ifname, 
+as the ifindex is unambiguously identified).
+   The secondary must not change the state of an ldp_adjacency based
+on ifachange notifications unles the ifindex and generation number
+matches. 
+   The secondary must not change the state of a session based on an
+adjacency message received from the primary, unless this is the only
+active adjacency associated with the session on the secondary (this can
+happen when there are several adjacencies on the primary, but on the
+secondary not all interfaces are present).
+
+FIXME - how is a change in the transport address handled on the
+secondary? This should result in the destruction of the session. 
+
+1.11 Support of helper mode on primary
+--------------------------------------
+
+   Graceful restart helper mode is on by default for LDP. However,
+helper mode need not be supported on the secondary in the first
+release (this is a double failure scenario). When entering helper
+mode, the primary should not replicate any messages on the
+secondary. This can be achieved by not allowing a session to be
+synched unless it is in operational mode (with no graceful restart
+state).
+
+1.12 Handling malformed packets on the secondary
+-------------------------------------------------
+   The error handling functions on the secondary when encountering
+malformed packets is to close the session to the primary and request
+resync from the primary. The primary currently does not get notified
+that the JSR was closed on the secondary (this behavior will be
+implemented later on), but even so, the primary has no reliable way of
+determining the cause for the session going down on the secondary.
+
+1.13 Handling support for different address families 
+----------------------------------------------------
+   For ISSU purposes, the secondary always has a newer version of the
+software than the primary, for NSR they are both running the same
+version. Thus, the situation where a packet with the new AF is
+accepted by the primary and not by the secondary is not possible. 
+
+1.14 Router-id replication
+---------------------------
+   Router-id replication is provided through the mirroring API. A
+router-id change notification is sent to the secondary to inform it of
+any router-id changes. Such notifications must be handled in the
+normal way (tear down sessions, etc).
+
+
+
+2. APIs, data structures
+**************************
+
+2.1 APIs
+---------
+
+New APIs on the primary
+
+* ldp_nsr_prim_new_session/adjacency 
+Used on the primary only, when the secondary has passed the initial
+sync phase. It is used to inform the secondary of the appearance of a
+new session/adj
+
+* XXX
+Function to handle closing of IRS (by the secondary)
+
+* XXX 
+Functions to handle the initial sync.
+
+New APIs on the secondary
+
+* ldp_nsr_sec_close_connection 
+This is the moral equivalent of ldp_close_connection, but should close
+the JSR.
+
+* XXX
+Function to handle the IRS closing (from the local end)
+
+* XXX
+Function to handle the JSR closing (from the remote end). This should
+wipe out the session and clean up all state associated with it. 
+
+
+2.2 Data structures
+-------------------
+
+* session - add field that says if synched, not_synched or
+sync_in_progress. Add field for chaining the seessions that are
+not_synched. (used for periodic retry from the secondary)
+
+* The secondary must maintain all the adjacency information, whether
+associated with an active session or not. 
+
+
+3. Code organization
+*********************
+
+    NSR-related code can be organized by:
+
+- server-side code run on the primary only (new code). This includes
+the code for listening on the ISR, the code for doing initial sync 
+the code for sending the state of a new session from primary to
+secondary, keeping track of state synched, keeping track of peers that
+we need to retry to sync. All APIs will have ldp_nsr_server/primary (or
+similar) in the name. Sprinkle assert(primary) at the beginning of
+each such function. 
+
+- ldp_standby.c - client-side code run on the secondary only (new
+code). This includes the code for initiating the IRS to the primary, 
+the processing of messages on the IRS, the read tasks for incoming 
+and outgoing messageson the JSR, the negotiation with the primary 
+when a peer comes up on an interface that is not yet recognized 
+on the secondary. All APIs start with ldp_standby_xxx.
+
+- common code that is run both for primary and for secondary (config
+parsing, message parsing, creation of prefixes, creation of entries
+in the shadow route table, etc). Name remains unchanged.
+
+- code that performs similar functions, but needs to be tweaked on
+primary and secondary. The same API stays in place, but results in
+calling nsr_primary or nsr_secondary versions of the code, based on
+whether this is primary or secondary. To avoid code replication, as
+much of the code as can be extracted out, will be put in common helper
+routines. One way to do this is to use function vectors, similar to
+the code used by the rt_table to call protocol-specific
+functionality (see rt_table_api.h and rt_table.c)
+
+
+4. Things to change in the existing LDP code
+*********************************************
+
+   Below is a list of changes that must be done to the LDP code for
+support of NSR, listed by importance:
+
+High
+----
+o   Add fields to ldp_session regarding the nsr sync state of the
+session.
+
+o   Create the tasks for the communication on the IRS for both primary
+and secondary. For secondary, out of the init routine. For primary,
+out of the routine handling incomming connections.
+
+o   Change to the new selfid api after the fix for pr 63414
+
+Medium
+------
+
+o   Change the way time is tracked for sessions/adj. Currently we
+maintain a timestamp which is relevant in time since boot. This will
+yield a bogus value on the secondary, since the secondary will have a
+different time since boot. So time needs to be tracked independently
+of the time-since-boot, probably as UTC.
+
+Low
+---
+
+o   Add hooks to disable all graceful-restart related code in the
+presence of NSR (this does not include helper mode). In principle,
+this code should not run anyway because the cli should not allow
+graceful restart and nsr to be configured together. Also ensure that
+helper mode can run on the primary. While in helper mode, the primary
+should not synchronize any state. This implies that when a session
+goes down for which we are helper, the session replication should be
+deactivated towards the secondary. The session should only be marked
+as "up" when exiting helper mode.
+
+- change the show commands on the standby for interface, session,
+  neighbor so that we can display the interfaces on which ldp is
+  configured, the neighbors that are synched and the sessions (both
+  the ones that are synchronized and the ones that are not).
+
+- ldp_receive_session_message - split the code into established and
+  not established sessions, add code for processing unknown message
+  (instead of having the code in the default statement.
+
+- all the ldp functions operate on an ldp_connection. Need to have
+  code to create the ldp_connection and its related data structures on
+  the secondary. How do I identify a connection based on the JSR?
+
+- check the action for ldp_diff_configs on the standby, not all may be
+  applicable on the standby. 
+
+Areas of work for incremental changes
+-------------------------------------
+
+- creation of the IRS, starting communication over the IRS
+- handling premature close of the IRS
+- handshake over the IRS
+- send the list of available sessions
+- request for session init for one session
+- creation of the jsr on both ends
+- sending database info over the IRS (packing code on the primary)
+- receiving database info
+- processing database info
+- receiving messages on the jsr for the secondary
+- processing messages received on either irs or jsr on the secondary
+- notifications regarding new neighbors/sessions
+
+Done 
+====
+Changes in the first batch of diffs (dec 1st)
+
+- separate init/var_init routines for master and standby, hookup of
+  the standby routines into the backup vector in the task code.
+- build a function vector for master and standby, so that the
+  calls to code that is different for master and standby can be done
+  in a clean way. Replace calls to ldp_close_connection with a call 
+  into the function vector. Same for the creation of global tasks
+  (which are different on master and standby).
+- prevent the creation of the listen task on the standby.
+- create the standby task (handling communication on IRS) on the
+  standby. Create the IO task on the standby (required for intf
+  creation).
+- disable various ppmd operations on the secondary.
+- create placeholder for ldp_alloc_ID, taking as a
+  parameter the ID that we want allocated (similar to how labels can
+  be allocated).
+- add infrastructure for tracing synchronization activities on master
+  and standby. The traceflag is hidden in the config for now.
+- short-circuit the ppm code on the backup.
+- files added:ldp_standby.h, ldp_standby.c, ldp_nsr.h
+
+
+5. Testing tools required
+*************************
+
+- krt support for faking an interface/instance coming up slowly. This
+  could be driven via a hidden command in the cli, specifying the
+  interface name and the delay with which to send the notification on
+  the secondary. This could help test the code that handles messages
+  referencing unknown interfaces/instances. 
+
+- a way to see which are the allocated labels on primary and secondary.
+
+- scripts for comparing the output of LDP show commands on the primary
+  and secondary.
+
+- a way to inject an error in the message processing for the secondary
+  only. This can help tesing the code where primary and secondary run
+  different versions of the code, and the secondary fails while the
+  primary doesn't. One way to do this is to have
+  a hidden cli command (inject-failure-on-secondary) which sets a
+  boolean. When the boolean is set, the secondary will fail the
+  processing of some message, while the primary will accept the
+  message. What we want to check is the handling of the secondary
+  closing the connection. 
+
+- show commands for displaying session and adjacency info on the
+  secondary, in particular the ones that are not in sync.
+
+- show commands to display the bindings and their new state on the
+  secondary.
+
+- show command on the secondary to show the reconciliation data
+  structures.
+
+- The size of the packet on the IRS will influence the number of IPCs
+  uses. Run a profiled image with different packet sizes and
+  see how much time is spent in building the packets for init with a
+  large number of inlib/outlib entries (couple of thousand).
+ 
+
+6. Issues left for later resolution
+************************************
+
+-  Currently, there is no provisioning in the code for turning NSR on
+   and off. Once NSR is turned on, different tasks, data structs, etc
+   get created. If it is turned off in the configuration, the
+   appropriate cleanup will not happen. The solution to this problem
+   should probably be in the infrastructure, with callbacks into the protocols.
+   Probably the solution will rely on rpd on the secondary exiting,
+   which will close the IRS.
+
+-  Handling configuration changes. The processing of config actions on
+   the secondary is not defined, more discussion is needed to provide
+   uniform behavior across all protocols.
+
+-  NSR and graceful restart are mutually exclusive. The case of switchover
+   while the primary is an active helper is treated as a double failure
+   and not handled.
+
+-  Changes to the hello hold time or the keepalive holdtime _after_ a
+   session/adj has been synchronized is not supported in this RLI.
+   This could result in session/adj loss after switchover,
+   because the secondary may not send messages fast enough. This issue
+   is left for resolution in later versions, since it is a corner
+   case. There are two issues to fix: 1) an update message over the 
+   mirroring api when the parameters change on the primary 2) code to 
+   handle a hello packet coming in with inconsistent parameters after 
+   switchover, for example a different transport address.
+
+-  SNMP support - tracking of traffic stats for snmp, keeping tabs of
+   what traps for session up/down were sent (for correlation of
+   traps), any functionality that the LSR mib relies on, etc.
+
+-  Tracing for the standby task state machine, when no master instance
+   is present (seet the section on defects-remaining in the unit-test doc).
+
+
+For current and detailed implementation details, please refer to the spec 
+[LDP_NSR_IMPL].

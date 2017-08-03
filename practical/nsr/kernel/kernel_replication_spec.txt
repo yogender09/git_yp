@@ -1,0 +1,1050 @@
+$Id: kernel_replication_spec.txt,v 1.3 2005/05/19 21:19:43 ssandhir Exp $
+
+              TCP/Socket replication for Non Stop Routing (NSR)
+
+
+Copyright Notice
+
+   Copyright (C) 2004, Juniper Networks, Inc.
+
+   NOTICE: This document contains proprietary and confidential
+   information of Juniper Networks, Inc. and must not be distributed
+   outside of the company without the permission of Juniper Networks
+   engineering.
+
+   This document is for internal use only.
+
+Table of Contents
+
+1. Introduction
+2. Requirements
+3. Functionality
+   3.1 Application's View Of The NSR World
+   3.2 Packet Flow And Stack Synchronization (To Support Socket Data 
+       and TCP Session Replication)
+       3.2.1 Output Side Dataflow
+       3.2.2 Input Side Dataflow
+       3.4.3 Kernel Thread
+   3.3 Flow Control
+   3.4 Kernel to Kernel Communication     
+        3.4.1 Message Types
+        3.4.2 Transport Protocol for Message Exchange
+        3.4.3 Kernel Thread
+   3.5 TCP Timers 
+   3.6 TCP Protocol Block Replication During Initial Sync
+   3.7 TCP State Update Message Format
+   3.8 UDP specific extensions
+   3.9 Failure/Error Detection
+   3.10 Optimizations
+   3.11 Socket State Modifications
+   3.12 Hardware Requirements     
+4. Performance and Memory Requirements
+   4.1 Memory
+   4.2 Delays
+   4.3 Bandwidth
+5. Alternate Approaches
+6. Open Issues
+7. References
+8. Appendices
+   8.1 TCP state replication rationale
+   8.2 Aggressive TCP update scheme  
+        8.2.1 Caveat to Aggressive TCP update   
+     
+
+1. INTRODUCTION
+
+Non-Stop Routing is the ability for uninterrupted routing
+operations in face of Graceful Routing Engine Switchover (GRES).
+In the event of a switchover from one RE (primary) to
+another RE (secondary), RPD on the secondary should be able to
+keep the routing adjacencies from flapping.
+
+To achieve this overall objective, socket replication is needed.  
+Socket replication is defined as the replication of data from a socket 
+on the primary RE to the secondary RE.  The idea is that during a 
+switchover, the secondary RE's socket will contain all the information 
+needed to ensure that the connection stays up.  This information 
+includes both the data in the socket buffer as well as any kernel state 
+(TCP state for instance).
+
+GRES is a pre-requisite for NSR and the assumption is that the
+forwarding database on the primary (master) RE is replicated on
+the secondary (standby RE).
+
+
+2. REQUIREMENTS
+
+For NSR to be functional two additional major requirements are
+imposed on the system:
+
+    A) The secondary RPD should be able to keep track of the current state
+       of the network with respect to routing. This is required so that the 
+       secondary RPD can keep its internal state updated, so that it will 
+       be able to resume operations on a switchover event.
+
+    B) Uninterrupted transition of TCP (and UDP) sessions from primary
+       RE to the secondary RE. This requirement facilitates RPD to
+       maintain routing adjacencies with peers in face of a switchover.
+
+The basic premise in order to achieve (A) is that the state of the
+network can be determined by keeping track of routing messages
+sent out by primary RPD and the one's received by primary RPD. In
+other words, if the secondary RPD is able to snoop on the message
+exchanged by the primary RPD it should be able to keep track of
+the state of the network.
+
+This can be accomplished by "Socket (data) Replication" i.e. a
+mechanism of replicating the socket data sent/received by the
+primary RPD (or any application for that matter) and providing it
+to the secondary RPD. The stringent requirement here is that any
+data sent out from the primary application on the wire *must* be
+available to the secondary application and any data received by
+the primary application again *must* be accessible to the
+secondary application. In other words, send side data has to
+replicated before it's on the wire and receive side data is
+replicated before it is ACKed (in TCP).
+
+This ensures that in all cases of failover, the secondary
+application is as informed about the state of the network as peer
+it ends up communicating with.
+
+Achieving (B) requires maintenance of consistent TCP connection
+state across the two RE kernels via TCP state updates so that the
+connection can be resumed from the secondary RE kernel stack in
+case of a failover.
+
+Certain RPD connections can be datagram (UDP) based. Any UDP
+specific requirements are noted separately in this description.
+However since UDP is connectionless, it is assumed that UDP
+connection failover can be achieved using a subset of mechanisms
+developed for TCP with minimal modifications.
+
+Over and above this, the secondary RPD would require some out-of-
+band communication with the primary RPD to sync up initial network
+state and undertake other exchanges to update internal RPD state
+(independent of routing protocols).  The details of this requirement
+are outside the scope of this document.
+
+The rest of this document attempts to propose a scheme of data
+(packet) flow in the system such that Socket data replication and
+TCP state synchronization can be achieved. The scheme is targeted
+towards RPD in the context of NSR requirements; however, it is generic
+enough to be used by other applications that wish to have stateful
+backup and network connection preservation.
+
+Socket replication will only be supported for the following combinations 
+of protocols:
+
+Layer 3: IPv4, IPv6, ISO
+Layer 4: TCP, UDP, Raw IP
+
+3. FUNCTIONALITY
+
+The functionality description is split into two parts. Firstly, we
+briefly touch upon the application (i.e. RPD) view of NSR
+functionality. Details of this part including requirements on
+initial socket syncing, file descriptor management and API calls
+are left to another document. Secondly, we describe the mechanism
+for packet flow in the system with established sync points between
+the two RE kernels and additions to the TCP(UDP)/IP stack.
+
+
+
+3.1 Application's View Of The NSR World
+
+Under NSR, RPD application runs on both the primary and the
+secondary RE. The two instances of RPD interact with each other
+using an out of band communication mechanism. This mechanism is
+essentially for initial sync-up of network state and for
+exchanging replication socket handles.
+
+All socket writes from/by the Primary RPD are undertaken after setting
+a new record based write socket option. The socket options allows
+for only complete data writes, the write call is rejected if the
+space in the socket buffer is not enough for the entire message.
+This ensures that granularity of data replication on send side is
+a single protocol message (record) and in face of a failover,
+there is a clear demarcation of message boundary at which the
+secondary needs to resume operations. (see [1])
+
+The socket/TCP replication process is initiated by the Primary RPD.
+The socket(s) destined for replication (referred to as "Original
+socket") is tagged as such by using an libjsr API call
+(jsr_replicate). The call asynchronously sets up the replication
+handshake between the primary RE kernel and the secondary RE
+kernel. All writes on the socket are throttled with EAGAIN
+notification till the call succeeds and all incoming data is
+buffered but not exposed to the application. (see [1] for
+further details)
+
+The handle returned by jsr_replicate is passed by the primary to
+the secondary RPD via the out of band communication channel. The
+secondary RPD can use this handle to make a libjsr call
+(jsr_split) and obtain a socket descriptor pair (referred to as
+"Replicated Socket Pair"). In the "Replicated Socket Pair", one
+descriptor corresponds to the Original Socket's receive buffer
+(Replicated rcv socket) and the other one corresponds to Original
+Socket's send buffer (Replicated snd socket).
+
+Both the replicated sockets are read-only and are used by the
+secondary to snoop on the data sent and received by the primary
+application (RPD) on the original socket. Secondary RPD reads from
+these sockets and keeps its state updated based on the observed
+message exchange.
+
+On a failover, the secondary rpd is informed of the event by init
+(using a signal ?). It goes through the "Replicated Socket Pair"
+set and calls another libjsr function (jsr_merge) to convert the
+socket pair into a single unreplicated active socket linked with a
+active in-progress TCP connection (constructed as result of TCP
+state replication).
+
+Further details of application behavior and socket descriptor
+management can be found in other documents, however its useful to
+point out a few nuances here to illustrate the behavior -
+
+i)The point at which replication should start is solely an
+application decision and will depend on when the primary and
+secondary app have synced up existing state.
+
+ii) After the replication has been initiated by the primary - On
+the receive side of the original socket buffer, any data that is
+unread and any data that is received henceforth will be replicated
+to the secondary's replicated rcv socket. On the send side, only
+the data sent (written) henceforth will be replicated to the
+secondary's replicated snd socket.
+
+iii) After a failover and a merge call by the secondary RPD, the
+new active socket will have it's buffers setup as follows - any
+data from the replicated rcv socket will be copied over to the
+receive buffer of the new active socket. Only the data from the
+replicated snd socket that has not been ACK'ed will be copied over
+to the send buffer of the new active socket. This is to facilitate
+TCP retransmits on the newly active TCP connection.
+
+
+
+
+
+
+
+3.2 Packet Flow And Stack Synchronization (To Support Socket Data
+and TCP Session Replication)
+
+
+
+Figure (1) below describes the proposed replication mechanism for TCP sessions and socket data 
+
+
+
+        SDRL : Socket Data Replication Layer
+        PRL  : Packet Replication Layer
+        PSRM : Protocol State Replication Module
+        IFM  : Initialization and Failover Module
+        
+
+
+            |    
+     Lines  | and  ----  refer to outbound data path
+
+
+            :
+     Lines  : and :::::  refer to incoming data path
+
+
+
+           ,-.      Out of Band RPD Comm.         ,-.
+          /   \ <------------------------------>/   \
+         ;PRI  :                               ;SEC  :
+         |     |                               |     | rcv   snd
+         :RPD  ; |  |original                  :RPD  ;|  |  |  |replicated
+          \   /  |  |sock                       \   / |  |  |  |socket
+           `-'   |__|                            `-'  |__|  |__|pair
+   +-----------------+                   +-----------------+
+   | Socket Layer/   |                   | Socket Layer/   |
+   | IFM             |                   | IFM             |
+   +-----------------+                   +-----------------+
+      |         /:\                                   /:\        /|\
+      | (1)      :(H)                                  :(H)       |
+      |          :       FLOW CONTROL                  :          |
+     \_/         :     <~~~~~~~~~~~~~~~                :          |
+   +-----------------+                   +-----------------+      |
+   |                 |  "Send" data (2.1)|                 |      |
+   | S D R L         | ----------------> | S D R L         |______|(2.2)
+   |                 |   ACK (3)         |                 |____   
+   + ----------------+ <---------------- +-----------------+    |
+      |         /:\                                  /:\        | 
+      | (4)      : (G)                                : (G)     |(2.3)
+     \_/         :                                    :         | 
+   +-----------------+                   +-----------------+    | 
+   |  PSRM           |                   |  PSRM           | /__| 
+   |                 |                   |                 | \   
+   +-----------------+                   +-----------------+   
+   | TCP             |                   | TCP             |   
+   |                 |                   |                 |
+   +-----------------+                   +-----------------+
+       |        /:\                                  /:\
+       | (7)     : (F)                                : (F)
+      \_/        :                                    :
+   +-----------------+ Incoming Pkt (C)  +-----------------+
+   |                 | ::::::::::::::>   |                 |
+   |   P R L         |                   |   P R L         |
+   |                 |    ACK (D)        |                 |
+   +-----------------+ <::::::::::::::   +-----------------+
+       |        /:\                                  /:\
+       | (8)     : (E)                                : (E)
+      \_/        :                                    :
+   +-----------------+                   +-----------------+
+   |                 |                   |                 |
+   |   IP            |                   |   IP            |
+   |                 |                   |                 |
+   +-----------------+                   +-----------------+
+       |        /:\
+       | (9)     : (B)
+      \_/        :
+   +-----------------+                   +-----------------+
+   |  Layer 2        |                   |  Layer 2        |
+   +-----------------+                   +-----------------+
+       |        /:\
+       |(10)     : (A)
+       |         :
+      \_/        :
+
+
+
+     Note: The ACKs in the above figure are replication ACKs *not*
+           related to TCP ACKs.   
+
+     Figure (1): Packet flow for TCP/socket replication        
+
+
+As described above, the application viewpoint of socket/TCP
+replication is essentially provided by a replicated socket pair on
+the secondary RE corresponding to the original socket on the
+primary RE. In order to provide this service and ensure
+predictable data state on the secondary RE in light of a failover,
+the packet flow through the TCP(UDP)/IP stack needs
+synchronization points for both data as well as transport state.
+
+There can be several sync and data exchange points, however the
+overwhelming desire is to have the whole thing structured such
+that there is minimal disruption to normal TCP operation (and/or
+code) and the state of both data and transport can be predicted
+and verified to as large an extent as possible.
+
+To achieve this, we introduce two additional layers to the
+network stack -
+
+SDRL (Socket Data Replication Layer) is responsible for:
+    * Synchronizing outgoing data written by the primary RPD on the
+      original socket on a per record basis. 
+    * For TCP sockets, updating send-side TCP state on the secondary, so 
+      that in case of a failover, the secondary can take over the 
+      connection seamlessly as far as the remote peer is concerned.
+    * Exerting flow control on a replicated Socket/TCP connection
+      (described in detail later).
+
+PRL (Packet Replication Layer) is responsible for:
+    * Replicating incoming packets on the secondary from the primary.
+    * Ensuring that incoming packets will have enough buffer space on both 
+      the primary and secondary.
+
+Protocol State Replication Module is another addition to the stack. It is 
+ responsble for:
+    * Setting up initial TCP state (ISN, options etc) in tcpcb
+      when replication is setup (based on the handshake exchange at
+      SDRL layer)
+    * On each outgoing data record, update TCP state based on a 
+      call from SDRL (as detailed in Appendix)
+    * On Failover, activate tcpcb on the secondary with initialized
+      timers and such, so that TCP on secondary can resume the connection.
+
+In addition to the above layers, there is a IFM (Initialization
+and Failover Module) responsible for coordinating the initialization handshake
+ and failover between the two REs. It mantains the Initialization state 
+machine and calls appropriate SDRL/PSRM routines to gather paramters to be
+exchanged at init time and to update their state based on IPC messages 
+ received from the other RE. The NSR handle database/alllocation is also 
+mantained as part of IFM.
+
+As an aside, all these changes and modifications to packet flow
+are pertinent to NSR-enabled sockets and applications only. For
+other sockets/applications, the stack continues to function as
+before in an NSR-agnostic manner.
+
+
+3.2.1 Output Side Dataflow
+
+(X) refers to a spot in the Figure 1 above
+
+Step 1: Primary RPD initiates a record write on the original
+socket. Based on available buffer space in both the original
+socket's send buffer and replicated snd socket's read buffer (see
+flow control below), the write call proceeds (1)
+
+Step 2: SDRL layer replicates the record by passing it to the peer
+SDRL layer on the secondary (2.1) and gets an ACK back in return
+(3). The secondary SDRL layer deposits the record(s) in the
+replicated snd socket's read buffer (2.2). And the data is
+available to the secondary RPD application.  The secondary SDRL layer 
+will also update the associated tcpcb with the new snd_nxt and snd_up 
+values (2.3).
+
+No other updates to the secondary tcpcb are needed to ensure 
+correct failover of TCP connections.  See Appendix 8.1/8.2 for details.
+
+This step can be optimized to piggybank multiple records in one
+replication step and coalescing ACKs using a delayed-ack mechanism
+akin to TCP.
+
+Step 3: The outgoing data is now passed to the primary's TCP layer as
+usual and passes through the stack without any more synchronization.
+
+A point to note for Output side data replication is the
+data/buffer cleanup on the secondary. Although the sent data is
+deposited on the secondary as read data on replicated snd socket,
+it cannot be discarded once it's been read by secondary RPD. It
+can only be discarded when we have detected an incoming TCP ACK
+for the same. This is to support the case of a failover when the
+secondary TCP has to retransmit UnAcked TCP data
+
+
+3.2.2 Input Side Dataflow
+
+(X) refers to a spot in the Figure 1 above
+
+On the input side, Packet Replication layer (PRL) sits underneath
+the IP layer and intercepts all incoming packets (A), (B). PCB
+lookup is performed in the PRL and is cached (to avoid duplicate
+lookup later). If the PCB matches a replicated socket, the IP
+packet is replicated to the peer PRL on the secondary (C), (D).
+
+Henceforth, the packet moves through the two peer stacks in
+parallel updating the TCP state as it passes through the TCP
+layer. The sequence numbers, acks, window size and any TCP meta
+data information is derived independently on both stacks.
+
+By replicating the packet at this early stage of receive, we
+ensure that Input TCP state on both stacks stays in sync without
+exchanging any explicit TCP state updates.
+
+On the secondary, post IP and TCP processing (note: any IP
+fragments are handled independently on both stacks as a result of
+parallel traffic flow), the data is deposited onto the replicated
+rcv socket. It is read by the Secondary RPD and then discarded.
+
+Note that some flow control must occur in the PRL.  Specifically, 
+the PRL needs to reject any data that would overflow the receive 
+buffer on either the primary or the secondary.  This ensures that 
+the data is replicated the same on both the primary and secondary 
+(that is, it's either copied or dropped on both; you will never 
+have the situation where the data is copied on one RE and dropped 
+on the other one).  See the following section for details.
+
+3.3 Flow Control
+
+
+The two RPD applications may process data from the socket at
+different rates and we can run into a scenario where an incoming
+data segment or a outgoing write-record gets discarded on the
+secondary because of insufficient buffer in replicated socket
+pair. This situation is undesirable since such a loss of data due
+to insufficient buffer space breaks secondary RPD's ability to
+keep track of network state (because of data discards)
+
+In a single RE system with a traditional TCP/Socket stack,
+insufficient socket buffer space on receive side is dealt using
+Flow Control. TCP tells its peer exactly how many bytes its
+willing to accept (advertised window). At any time, window is the
+amount of room in the receive buffer. So the receive buffer is
+guaranteed not to overflow. 
+
+For UDP, there is no explicit flow control and packets are dropped on
+receive side if there is insufficient space in the receive buffer.
+
+On send side, any write to the socket is rejected in case of insufficient
+buffer space for both UDP and TCP.
+
+To address this issue, the flow control in a (socket) replicated system
+needs to keep track of socket buffer space on both REs. The flow control
+is guided by the union of the buffer space in the original socket and in
+the replicated socket.
+
+Three rules need to be followed for proper flow control for NSR -
+
+1. If the send buffer on the original socket is full or the corresponding
+buffer is full for the replicated snd socket, the write call into the
+socket should fail.
+
+2. If the receive buffer on the original socket is full or the read
+(receive) buffer is full for the replicated rcv socket, TCP advertises a
+window size of 0. The TCP window advertised otherwise should be the lower
+of original socket's receive buffer space and replicated rcv socket's
+receive buffer space.
+
+3. For UDP or TCP if a packet/segment is recieved with data content
+greater than either of 2 rcv socket buffers, it should be dropped (or
+trimmed for TCP) on both REs. It is essential that drops occur in a
+consistant manner across the 2 REs, that is a packet dropped at one RE is
+not accepted at other RE due to a race condition.
+
+The combination of the above three rules ensures proper flow control on
+the TCP connection and prevents data loss due to variable rates on the 2
+REs.
+
+A flow control update message is delivered by SDRL on the secondary to
+SDRL on the primary whenever the socket buffer state changes due to a
+application read on the either of the 2 replicated sockets. This allows
+the primary to keep track of the rcv/snd buffer space on the secondary and
+enforce writes/TCP window operations. The replicated socket structure on
+the primary has additional state to keep track of the secondary's buffer
+space based on these messages.
+
+Using this state, Rule 1 and Rule 2 are enforced. If insufficient buffer
+space exists on either RE, the write() call is rejected (Rule 1). For TCP,
+window size is advertized as lower of the available buffer spaces on the
+primary socket and the replicated socket (Rule 2).
+
+However to enforce Rule 3, the SDRL flow control messages are not
+sufficient as the view of socket buffer spaces on 2 REs may change after a
+packet is replicated and before the flow control message makes its way
+through. This can lead to inconsistant drops across the 2 REs as
+illustrated by the example below -
+
+- Primary RE has 1000 bytes of space in a rcv socket buffer, whereas the
+secondary RE has 2000 bytes in the corresponding replicated rcv socket
+buffer.
+
+- The flow control exchanges at SDRL layer will cause a window of 1000
+bytes to be published and a common buffer view of 1000 bytes to be
+established.
+
+- However, due to relative timing of sends from the TCP peer wrt to the
+window update, the peer may send a packet with 1500 bytes of data.
+
+- Once the packet is replicated at PRL layer from primary to secondary RE,
+primary application may read off further 500 bytes off the socket, leading
+to a available buffer size of 1500 bytes of the secondary.
+
+- Before the new view of 1500 bytes is conveyed to the secondary via SDRL
+flow control exchanges, the 1500 byte packet may be dropped on the
+secondary based on the old common buffer view of 1000 bytes. Subsequently
+the packet may be accepted on the primary
+
+Such race conditions are resolved by exchanging available buffer space at
+PRL layer when a packet is replicated on the incoming side. The exchange
+is a part of the packet replication and the ensuing ack.
+
+The lower of available buffer spaces on the 2 REs is used by both to
+determine if a packet needs to be dropped.
+
+In the example above, when the 1500 byte packet is replicated from primary
+RE to the secondary RE, primary will convey buffer size of 1000 bytes and
+secondary will convey 2000 bytes along with the ack. As a result, the
+lower size of 1000 bytes will be used as the common view (of socket state)
+and the packet will be dropped accordingly irrespective of the relative
+timing of SDRL flow control messages.
+
+Over and above all this, it is recommended that secondary RPD application
+scale the buffer sizes on the replicated socket pair, so that additional
+capacity is available on the secondary and the buffer watermarks are not
+normally encountered on the secondary (thus obstructing the writes or TCP
+window).
+
+3.4 Kernel to Kernel Communication
+
+3.4.1 Message Types
+
+NSR kernel replication requires the primary and the secondary kernels to 
+exchange a variety of control messages and data records.
+
+The following messages are exchanged between the two kernels at replication
+ establishment time for a particular socket -
+
+* Control message to initiate replication with a (socket) handle
+  (request and response)
+
+* Control message to exchange socket options and TCP state from primary
+  to secondary (request and response)      
+
+* Message to replicate data in rcv socket buffer from primary to secondary
+  (request and response)         
+     
+* Message to replicate unacked data in snd socket buffer from primary to
+  secondary (request and response)     
+
+Once socket replication has been established, the following messages are
+exchanged to sync data and L4 protocol state -
+
+* PRL data replicate message to replicate incoming packets 
+
+* SDRL data replicate to replicate records written by the application
+  and update send side TCP state
+
+* Flow control messages from secondary to primary.
+
+Socket replication can be torn down due to a graceful close or an 
+ unrecoverable error condition (unreachable peer-kernel, state mismatch 
+etc). The messages that can tear down replication are -
+
+* Replication Failed message (no response needed)
+
+* Unreplicate Request message (reponse required)
+
+3.4.2 Transport Protocol for Message Exchange
+
+The kernel to kernel message exchange requires choosing an appropriate
+ transport and network layer protocol.
+
+The possible alternatives for the message exchange transport are TCP, RDP or 
+ a custom transport protocol. RDP is considered inefficient and untested
+ in the current code base. Whereas a custom protocol could possibily entail
+ reinventing TCP primitives (window control, sequencing).We have decided to 
+go with TCP over IP for these messages. 
+
+TCP provides reliable and in sequence (required for data messages) delivery 
+of messages. Also, TCP is highly optimized, well tested and it's overhead is 
+less than commonly believed (see [5]). 
+
+3.4.3 Kernel Thread
+
+The inter-kernel communication over TCP will happen using a new kernel thread.
+ This thread will provide a common infrastructure for all NSR kernel message 
+exchanges.
+
+It is envisioned that the kernel thread running on primary will connect to the
+ corresponding thread on the secondary via two stream sockets. One socket will
+ be used for SDRL message exchanges and other other for PRL messages. 
+
+The messages will be identified by a well known IPC types and formats. The 
+ clients (SDRL, PRL) will register message types they are interested in and
+ corresponding handlers.
+
+When the thread receives a message, it will call the registered handler for  
+ the particular message. so_upcall semantics may be used here to avoid a 
+context switch.
+
+The thread will also provide an API to the SDRL/PRL clients for sending  
+messages to peer kernel layer. 
+
+The thread will include semantics to trace messages exchanged and a client
+ should be able to turn on tracing to monitor messages exchanged at the time
+ of registeration. The tracing will happen using client (SDRL/PRL) provided
+ formatting functions/handlers for each message type.
+
+
+3.5 TCP Timers
+
+It is envisaged that TCP timers execute only on the primary TCP
+stack. On a failover, as and when the secondary takes over the TCP
+session, the timers are restarted with default values
+
+3.6 TCP Protocol Block Replication During Initial Sync
+
+(TBD)
+
+3.7 TCP State Update Message Format
+
+* really only need snd_nxt and snd_up, not the whole header
+(TBD)
+
+3.8 UDP specific extensions
+
+UDP destination addresses can differ on a per packet/message basis for each write (sendto() call for example)
+
+UDP will require ancillary data to be replicated at the SDRL layer along with a new option of specifying the destination address for each outgoing message.
+
+(More TBD)
+
+3.9 Failure/Error Detection
+
+The overbearing rule while detecting any failures or errors in the
+NSR socket/TCP replication is that the primary socket is
+unaffected by it and continues operation. This has been
+accommodated in the RPD API (see [1]) where errors are not passed
+back on the original socket and is also a design goal.
+
+Timers will run at SDRL, PRL and flow control sync points to
+keep track of unreachability of the peer stack layer.
+
+3.10 Optimizations
+
+The message passing overhead between REs at replication points can
+be and will be optimized by piggybacking replication messages of
+similar and different kinds. Use of Delayed ACKs is another
+mechanism expected to be used to bundle up ACKs.
+
+[More to come]
+
+3.11 Socket State Modifications
+
+Socket state struct needs to be modified to maintain replication
+related information.
+
+3.12 Hardware Requirements
+
+No specific HW requirements are foreseen but it may be required to
+pitch socket/TCP replication for use with upcoming or new REs and
+particular platforms that have sufficient CPU power and fxp
+bandwidth ?? [TBD]
+
+
+
+4. PERFORMANCE AND MEMORY REQUIREMENTS 
+
+[TBD: Preliminary study comments below]
+
+4.1 Memory
+
+The main memory requirement foreseen at this stage is of the two file
+descriptors (sockets ?) that need to created on the secondary for every
+original replicated socket on the primary. This might require scaling of
+total FDs on the secondary. Since the descriptors don't correspond to the
+full socket, optimizations should be possible.
+
+The socket buffer requirements on the secondary will be scaled to be a
+factor more than the primary since the data in both directions of the
+original socket is buffered till the secondary RPD application consumes
+it.
+
+The memory requirements for additional state maintenance for replication
+is expected to be minimal.
+
+Also, since the messaging between the 2 stacks is synchronous, additional
+mbuf requirements for messaging per connection should be limited.
+
+4.2 Delays
+
+In both outgoing and incoming direction, the replication setup is akin to
+having an additional network hop for (replicated) TCP connections. (spots
+(5), (6) and (C),(D) in the above figure).
+
+The delay for this extra hop is expected to low given the proximity of the
+2 REs. The processing time at this Hop is governed by secondary REs
+ability to acknowledge the received TCP state update or incoming-packet.
+
+4.3 Bandwidth
+
+NSR replication can statistically cut the available bandwidth on RE to RE
+Ethernet (fxp) connection by half for RPD traffic. However, this problem
+is addressed by choice of platforms that have a parallel RE to RE
+bandwidth channel (fxp2 or equivalent). Part of this effort involves in
+making sure that future platforms have sufficient RE to RE bandwidth
+separate from RE to PFE bandwidth.
+
+Having a parallel channel makes sure that NSR replicated traffic doesnt
+interfere with RE - PFE traffic exchanges.
+
+In order to study the extent of traffic that could need replication, we
+ran a few tests to monitor fxp1 traffic under heavy rpd load. Since plain
+JUNOS code doesnt monitor fxp1 traffic rates, the tests were conducted
+with a special instrumented JUNOS with fxp1 driver changes to calculate
+traffic rate at 2 second intervals.
+
+RPD test involving installation of 1 million routes on RE 3.0 - Peak
+observed output fxp1 usage was 6 Mbps
+
+ibgp-ebgp tests on RE-2.0 (total peers 1000, total routes 900,000) - Peak
+observed output rate was 5.9 Mbps and peak input rate of 1.37 Mbps.
+
+
+[More TBD: A per platform study of the RE-RE ether circuit setup and GigE
+connections between REs is needed. May lead to NSR being pitched on
+specific current and future platforms with enough Bandwidth]
+
+5. ALTERNATE APPROACHES
+
+1.
+Idea:
+Lazy evaluation of TCP state, only when receiving a segment from the peer.
+The idea is that all the data you need to update your TCP state can be 
+inferred from incoming TCP segments (don't know if this is really true).
+
+Benefits:
++ TCP state does not have to be replicated until data has to be sent out 
+  from the primary RE.
+
+Reason(s) for not using this:
+- One or more cases exist where this will not provide correct behavior.  
+  For example:
+
+	* RE0 sends out segment with seq numbers 100 - 200.
+	* Failover happens before the ack is recved and RE1 takes over.
+	* RE1 gets an ACK for 200 which it hasnt even sent and is greater than
+		snd_max -
+
+		if (SEQ_GT(th->th_ack, tp->snd_max)) {
+			tcpstat.tcps_rcvacktoomuch++;
+			goto dropafterack;
+		}
+
+	* After this connection might get deadlocked...
+
+2.
+Idea:
+Multicast MAC addresses to both REs for inbound traffic.  REs would just have 
+to stream ACKs across to each other, instead of copying data.
+
+Benefits:
++ Saves data copy from primary to secondary in PRL.  Potentially big gain.
+
+Reason(s) for not using this:
+- Only some ethernet switches in the various chassises support port mirroring, 
+  which would be required for this to work.
+- PFE would have to multicast all incoming traffic, not just NSR traffic, since 
+  it has no idea what traffic is NSR-related.
+- Secondary RE would have to sort through incoming traffic and only use NSR 
+  data.  Of more major concern if we decide to route traffic through the 
+  secondary RE (effectively treating it as an extra hop).
+- TNP multicasting may require a bit of work to get right.  It doesn't currently 
+  exist.
+
+3.
+Idea:
+Replicate on receive side at the SDRL layer, rather than down in L3/L4 land.
+
+Benefits:
++ Reuses SDRL infrastructure.  No need for PRL layer at all.
+
+Reason(s) for not using this:
+- TCP on primary would have to hold back return ACKs for the incoming data 
+  until secondary has ACKed the data.  If secondary doesn't ACK the replicated 
+  data for some reason, then primary has to undo its TCP state for that data.  
+  That could get very messy.
+
+4.
+Idea:
+Report replication errors through a dedicated file descriptor.
+
+Benefits:
++ This provides a separate channel for errors to be reported.  Applications 
+  will not need to build error-handling into their primary datapath.
+
+Reasons(s) for not using this:
+- A new API will have to be built and maintained to translate error messages 
+  into something the application can understand.
+- This will be a new infrastructure.  rtsock already exists and has greater 
+  functionality than this (async callbacks, rtsockmon, etc.).
+
+5.
+Idea:
+TCP state replication transport using ifstate
+
+Benefits:
++ Uses existing, proven infrastructure.
+
+Reasons(s) for not using this:
+- Other things go through ifstate; state update could be delayed.  Bad?
+- TCP state needs to be incremental.  Otherwise, secondary may receive
+  traffic from peer that it can't recognize due to stale tcpcbs.
+
+6.
+Idea:
+Use select() to indicate errors.  Either return errors upon send/receive,
+or expand select()'s exception fdset to also indicate errors.
+
+Benefits:
++ Simpler in the kernel than creating whole new infrastructure for
+  callbacks on error.  Though there are other ways of doing this
+  (if we use rtsock for example).
+
+Reasons(s) for not using this:
+- rpd guys don't like it as they'll have to inject replication error
+  handling into their common-case dataflow.
+
+7.
+Idea:
+Active heartbeats to avoid holding onto too much data in case of RE death?
+
+Benefits:
++ You don't really know if the other side has died with either TCP or
+  UDP.  You just hear silence.  This lets us know if other side is
+  alive.
+
+Reasons(s) for not using this:
+- We already are planning timeouts for each replication communication.
+  A simple heartbeat is easier than timeouts for every communication,
+  but we will need timeouts anyway for each replication communication.
+  Just making them shorter may solve this problem.
+
+8.
+Idea:
+Create a new address family AF_REPLICATE to handle application <-> kernel
+interaction.  Errors can be indicated by returning messages on the control
+socket.
+
+Benefits:
++ Reuses existing infrastructure.
+
+Reasons(s) for not using this:
+- Needs new API for error messages.
+
+9.
+Idea:
+Make new rtsock message type in order to use ifstate for replication
+control transport.
+
+Benefits:
++ Reuses existing infrastructure.
++ Good for situations where what we care about is just the final state
+  of something.
+
+Reasons(s) for not using this:
+- ifstate sucks up resources based on # of sockets
+- ifstate involves all peers, not just the secondary RE
+
+10.
+Idea:
+Route all traffic (send- and receive-side) to/from the primary RE through the 
+secondary RE.
+
+Benefits:
++ PRL layer not needed.
++ Protocol failover is very clean as secondary does not have to initialize any 
+  protocol level state.
+
+Reason(s) for not using this:
+- Some TCP state replication to the other RE will be needed, at least 
+  on the receive side.
+- Needs PFE support to send out packet from peers meant for
+  primary RE to secondary RE
+- Needs PFE support to do this on a per socket (5-tuple) basis only.
+  Involves classification at SSB CPU, which can be expensive.  This is not 
+  scalable if the number of NSR-aware sockets increase.
+
+11.  
+Idea: 
+No data replication at SDRL, replicate data at TCPRL i.e
+replicate data along with TCP segment info.
+
+Benefits:
++ no need for extra ack at SDRL level
+
+Reason(s) for not using this: - record-based writes cannot be done this
+way, as records are already segmentized at this point. If Primary dies in
+the middle of the record, there is no recovery.
+
+12.
+Idea: 
+Replicate receive side data at SDRL layer.
+
+Benefits:
++ single point of data replication for both receive and send sides
++ single point of flwo control exchanges
+
+Reason(s) for not using this: 
+- We'll need to ensure that the secondary
+  has received the replicated data, before continuing with tcp_input(). If
+  the secondary doesn't ACK, we will have to un-do some TCP state wrt TCP
+  ACKs. Conflicts with the design goal of not modifying TCP.
+
+13.
+Idea:
+Add reference counts to mbufs.
+
+Benefits:
++ No need to copy mbufs when we need to replicate them from primary to 
+  secondary.
+
+Reason(s) for not using this:
+- For mbufs with small amounts of data, the overhead of filling out the 
+  header is comparable to copying the mbuf, so effectively nothing is gained.
+- For mbufs with large amounts of data, the driver will most likely put the 
+  data into an mbuf cluster.  Mbuf clusters already have reference counts, so 
+  adding reference counts to the mbufs themselves will not result in a 
+  significant performance increase.
+
+6. OPEN ISSUES
+
+* flow control race conditions on receive side
+* send-side: take latency hit and replicate TCP state using a TCPRL, or 
+  take a bandwidth hit and send everything through the secondary?
+* transport used for inter-RE communication
+
+7. REFERENCES
+
+ [1] libjsr API document - socket_replication_api.txt
+ [2] Socket Data Replication Layer Design - sdrl_design.txt
+ [3] Packet Replication Layer Design -  prl_design.txt
+ [4] Protocol State Replication Module Design - psrm_design.txt      
+ [5] An Analysis of TCP Processing Overhead
+        by David D. Clark, Van Jacobson, John Romkey, and Howard Salwen      
+
+8. APPENDICES
+
+8.1 Rationale for TCP replication
+
+The tcpcb consists of the following categories of state:
+
+* head of reassembly queue - maintained on inbound side
+* various timers - can be set to default values upon failover
+* variables used to calculate RTT and manage congestion control - can be   
+  set to default values upon failover
+* other state, such as TCP state and flags, pointer to inpcb, etc. - can be
+  initialized separately during replication setup
+* variables set only during initialization of connection, such as
+  MD5 key, VRF - can be initialized separately during replication setup
+* MSS - only changed on the output side when sending SYN
+* variables to keep track of the send and receive windows and progress
+
+Of these variables, the only ones that may need to be replicated with each
+send is the last category.  In that category, I _think_ we only
+need to replicate snd_nxt (demarcation between "sent and unacked" and
+"unsent" parts of the window) and snd_up (send urgent pointer) with each send.
+Everything else, including snd_wnd (send window size) can be inferred from
+existing TCP state, or given a default value upon failover without completely
+killing the connection.
+
+Both snd_nxt and snd_up should be able to be deduced at the SDRL layer based 
+ on the Aggressive TCP update scheme detailed below (section 8.2).
+
+8.2 Aggressive TCP update scheme...
+
+Send side TCP state consists of (mainly) sequence number that get sent
+from the primary TCP to the TCP peer at the other end in each segment.
+
+We have been looking at keeping secondary TCP in sync with the send
+side TCP state of primary.
+
+Schemes like lazy-evaluation kept the secondary TCP *behind* (in terms of
+send side state) from primary TCP and thus caused race
+conditions/deadlocks.
+
+Dennis suggested doing the oppposite of lazy evaluation and putting
+secondary ahead of the primary in terms of send side TCP state.
+
+Essentially when data is replicated at SDRL layer, make the secondary TCP
+stack believe as if the entire block has been sent by the primary. For this,
+ SDRL makes a call to TCP state Mantainence Module for each replicated record.
+
+As an example, consider primary RPD writes 200 bytes of data from sequence
+1 - 200 and the data is replicated to the secondary RE. At this point, the
+secondary TCP is pre-loaded to believe that 200 bytes of data has been
+written *AND* sent i.e snd_nxt and snd_max will be at 200.
+
+This will work fine and data will be discarded on the secondary as and
+when TCP ACKs flow in. Also, when there is a failover the secondary TCP
+will be ahead and believe that *more* has been sent (as compared to the
+actual sent data), but ACKs from the peer will pull it back in.
+
+This may cause a slight TCP churn on failover but it will settle and
+subside.
+
+8.2.1 Caveat to Aggressive TCP update
+
+With Aggressive TCP update Scheme, a misbehaving client can break the TCP 
+state on the secondary immediately after failover.
+
+The misbehaving TCP peer can send an ACK greater than what it has received
+and cause the secondary (which is the new primary) to discard more data
+than it should.
+
+In the above example - after replicating 200 bytes from primary to
+secondary, the TCP peer receives 100 bytes and a failover occurs. Now if
+the peer acts incorrectly and ACKs 150 bytes, the secondary (which is
+the new primary) will discard 150 bytes from the buffer.
+
+However, the narrowness of this scenario and the misbehaving nature of the
+TCP peer client allow us to ignore this case. It will cause the connection
+to lose state and terminate, which is not unexpected given the misbehaving
+nature of the client.

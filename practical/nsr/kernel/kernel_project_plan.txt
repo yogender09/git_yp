@@ -1,0 +1,231 @@
+$Id: kernel_project_plan.txt,v 1.3 2005/06/07 00:33:52 ssandhir Exp $
+
+
+
+Copyright (C) 2004, Juniper Networks, Inc.
+
+NOTICE: This document contains the proprietary and confidential
+information of Juniper Networks, Inc., and must not be
+distributed outside of the company without the
+permission of Juniper Engineering.
+
+--- THIS IS A WIDE DOCUMENT.  SET WINDOW WIDTH TO AT LEAST 120 CHARACTERS ---
+
+1.  INTRODUCTION
+
+{The Introduction section should contain a brief overview of the
+functionality and how and why it's used.  For traceability include a
+reference to any MRD, PDD, RLIs, tracking PRs, external requirements
+(e.g.  related to performance, safety, security or training) and any
+certifications required.}
+
+
+Non Stop Routing (NSR) is the ability for uninterrupted routing
+operations in face of Graceful Routing Engine Switchover (GRES).
+It implies that in event of a switchover from one RE (primary) to
+another RE (secondary), RPD (on the secondary)should be able to
+keep the routing adjacencies from flapping.
+
+Kernel replication for NSR requires the ability to replicate kernel socket
+data and TCP state across 2 REs in order to allow the application (RPD) on
+the secondary RE to resume operations if the primary RE fails.
+
+RLIs:
+Tracking PR:
+
+2.  ASSUMPTIONS
+
+Kernel Socket and TCP replication for NSR assumes GRES (Graceful RE
+Switchover) is fully functional and working.
+
+
+3.  RESOURCES
+
+
+
+userid       work area                             time                    other committments
+------------------------------------------------------------------------------------
+
+dsw     protocol (TCP/UDP) state mantainence      Full time till 7.6
+        PRL (packet replication layer)            50 - 100% in 8.0 (depending on NSR progress etc)
+                                                
+                 
+ssandhir socket data replication layer            Full time till 8.0 dev complete     
+         socket level flow control
+
+yadav    API lib/rtsock and handle management     Full time till 8.0 dev complete     
+         Init and Failover module                 
+         Error handling and Tracing
+         NSR sample Application
+
+shine    Kernel - Kernel thread
+
+        
+       kevent changes
+       nsrmon to monitor state changes
+       iso sockets 
+
+
+Full time == 75% commitment to the project
+
+Expected/Tentative PTO (Vacation) times -
+
+dsw - ~1 week in mid July 
+
+ssandhir - ~1 week days in early Aug
+            3-4 weeks in Nov - Dec
+
+yadav    - ~1 week in July end
+            1 week in Aug
+
+
+kernel-team consists of dsw, ssandhir, yadav, shine
+
+3.1 SYSTEM RESOURCES
+
+For 7.4/7.5 :
+
+   Dual RE systems in SW lab 
+        (a few single RE systems may need to be upgraded to dual RE)
+     
+   Two dual RE systems (M10i) dedicated to kernel NSR team (towards end of
+7.4)
+
+For end of 7.5 - 7.6 :
+
+    RPD testbeds with dual RE systems will be needed at the time of
+integration with RPD.
+
+    Efficient setups need to be available at this stage to enable 4-5
+people to work in parallel on a range of issues/problems.
+
+
+4.  TASK BREAKDOWN
+
+                                                                         plan     plan    revise   actual
+task                                             responsible     work    start     done     done     done        dependencies    
+----------------------------------------------  --------------  ------  -------- -------- -------- --------  --------------------
+
+Top level design for socket and TCP 
+replication (including API doc and func spec)    kernel-team                                         3/21   
+
+
+Initialization and Failover Design               kernel-team    1 week    3/21     3/28              4/4   
+
+Design and functional specs for                  kernel-team    3 weeks   3/28     4/15              4/27 
+  individual modules                                                                             
+ (SDRL, PRL, PRSM, IFM, Kernel Thread, API lib)
+
+
+Socket Data Replication Layer                   ssandhir        8 weeks   4/18     6/13
+    Initial NSR Handshake                         
+    Buffer Management                                   
+    Socket state changes                        
+    Control Messages                            
+    Reliable Record data replication            
+    Replication Teardown
+    Interaction with TCP
+    Failover         
+
+Flow Control
+    Flow Control (for window advert)            ssandhir        2 weeks   6/13     6/27
+ 
+Packet Replication Layer                        dsw             7 weeks   4/18     6/6 
+    Buffering        
+    Reliable Packet replication
+    Retries and Error Handling    
+    Flow Control (for packet drops)
+        
+Kernel to Kernel Thread                         shine           5 weeks
+    Input/Output API to be used by SDRL/PRL
+    Connection establishment
+    NSR IPC formats for control/data        
+    Message Tracing
+    Error Handling    
+            
+Protocol State Replication Module                dsw            3 weeks   6/6      6/27 
+   SDRL interface to preload state on send state on 
+    record transfer     
+   TCP state initialization on secondary
+   TCP state setup (timers, window etc) on failover     
+   UDP ancillary data 
+   ISO sockets      
+
+NSR API                                         yadav           3 weeks   4/18     5/6
+   Userland library (libjsr)
+   librtsock changes     
+   kernel rtsock changes 
+   async error reporting     
+   kernel component
+
+NSR Initialization and Failover                 yadav           5 weeks   5/9      6/10
+   NSR handle formats and management
+   Replication Initialization State Machine 
+   Replication Failover co-ordination     
+   kevent/select modifications
+
+   Sample application                           yadav           2 weeks   6/13     6/24
+
+Tracing Facility                                yadav           2 weeks   6/27     7/8
+    Generic NSR tracing/debugging facility with
+    userlevel and replication level hooks         
+
+Misc items                                      
+    nsrmon - NSR state monitoring app           yadav           1 weeks   <TBD>     MOVED OUT FROM THE 1st VERSION PLAN
+
+
+Kernel Integration                                 kernel-team  6 weeks   6/28     8/8
+           
+< Vacation time expected by most folks in 1st/2nd week of July, factored above >
+
+Full Scale kernel Testing 
+with Sample Application                            kernel-team  5 weeks   8/8     9/12           
+
+<1st set of key issues likely to be unearthened here>
+
+RPD integration                                    kernel-team  6 weeks   9/15     10/21        
+
+<2nd set of key issues likely to be unearthened here>
+
+Testing with Routing Protocols                     kernel-team  6 weeks   10/24    12/5                     
+<Might discover corner cases/race conditions>
+
+Performance Tuning/Changes                         kernel-team  ??        5/12      
+
+Scaling/Optimizations                              kernel-team  ??                            
+
+
+
+5.  NON ENGINEERING MILESTONES AND DEPNDENCIES
+
+milestone					responsible	 plan	revise	actual	dependencies
+----------------------------------------------  --------------  ------  ------  ------  --------------------
+{
+milestone is the name of the delivery, decision, milestone, etc.
+responsible is the person who owns tracking it
+plan is the original planned delivery date
+revise is the revised planned delivery date (update as the plan changes)
+actual is the actual date of delivery (add when the delivery happens)
+dependencies is any dependencies on other people's work or external deliveries
+
+If necessary, break this section into phases.
+
+Reference any related plans (e.g. hardware, systest, customer testing,
+supplier, or joint-venture development schedules) here and call out
+their dependencies.
+
+Identify any external dependencies (e.g. partner acceptance testing, etc.) here.
+}
+
+6.  RISKS
+
+(1) NSR is a design from scratch and corner cases/issues discovered may take longer than expected
+
+(2) NSR depends on GRES fully functional, any GRES issues can impact NSR
+
+(3) Scaling and performance cycle will unearthen bottlenecks that are tough to predict
+
+
+7.  POST-PROJECT ANALYSIS
+{If the project has a post-mortem after completion, list any issues
+raised and/or actions taken as a result.}

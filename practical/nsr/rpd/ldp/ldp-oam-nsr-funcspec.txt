@@ -1,0 +1,444 @@
+$Header: /cvs/juniper/sw-projects/os/nsr/rpd/ldp/ldp-oam-nsr-funcspec.txt,v 1.1 2008/04/02 04:31:21 rkandula Exp $
+
+S3.02.P05.T01
+
+                NSR support for LDP OAM (RLI 6486)
+                ==================================
+                Ramesh Kandula (rkandula@juniper.net)
+
+
+Copyright (C) 2007, Juniper Networks, Inc.
+
+NOTICE: This document contains proprietary and confidential
+information of Juniper Networks, Inc. and must not be distributed
+outside of the company without the permission of Juniper Networks
+engineering.
+
+
+1.  INTRODUCTION
+
+NSR support for LDP has been added through RLIs 3168 (PR 65909) and
+2721 (PR 73179). This RLI adds the NSR support for LDP OAM.
+
+Customers who run OAM on LDP signaled LSPs and use NSR would like to
+use this feature.
+
+This feature is tracked via PR 276691.
+
+
+2.  FUNCTIONALITY
+
+This RLI adds functionality so that there is no detrimental effect of a RE
+switchover (when NSR is enabled) on LDP OAM. Without the NSR support
+for LDP OAM one would run into issues explained below.
+
+Consider the network shown below. Suppose the paths A-B-C-D, A-D and
+A-E-F-D are equal cost paths from A to D. When OAM is enabled for the
+LDP signaled LSP A-D, a BFD session is setup for each of the ECMP
+paths corresponding to the LSP. Without NSR support for OAM, the
+current behavior during switchover is as follows.
+
+   B--------C
+  /          \
+ /            \
+A--------------D
+ \            /
+  \          /
+   E---------F
+
+
+1. When the egress LSR (i.e. D) undergoes a RE switchover, the egress
+   LSR would indicate to the ingress LSR (i.e. A) that the BFD session/s
+   has gone down.
+
+2. When the ingress LSR (i.e. A) undergoes a RE switchover, the
+   ingress LSR would loose all the OAM state and it would have to
+   reacquire all the OAM state after switchover.
+
+At present the BFD failure events for LDP LSPs are purely informational. With
+rli 4357, the operator would be allowed to configure failure action/s
+such as to deactivate an LSP upon a BFD failure event. When failure
+action such as  LSP deactivation upon BFD failure event is enabled for LDP
+OAM, the current behavior causes the following problems.
+
+1. Since the egress LSR informs the ingress LSR of a BFD session
+   failure after RE switchover, the ingress LSR will deactivate the
+   LSP. This would cause an unnecessary control plane churn in the
+   network and possibly packet loss for traffic flowing over the LSP.
+
+2. Since the ingress LSR has to reacquire all the OAM state after
+   switchover, any information regarding forwarding plane failures
+   over a path that are known before switchover is lost. This would mean that
+   if an LSP was deactivated before switchover, the LSP will be activated after
+   switchover until the failure of the path is detected again. 
+
+This RLI would address both these issues. For the first issue, the
+egress LSR will maintain state so that the BFD session/s would not go
+down as a result of RE switchover. For the second issue, the ingress
+LSR would maintain state so that it does not have to require after the
+RE switchover.
+
+
+CLI Config
+
+There are no new configuration commands introduced by this rli.
+
+
+CLI Commands
+
+The commands "show ldp route detail" and "show ldp oam" do not display
+any OAM related information on the backup RE at present. With this new
+functionality, these commands will display identical information as primary RE.
+
+The commands described below are used only for internal debugging and
+troubleshooting purposes. Hence, they will be hidden.
+
+2.1 show mpls replication
+-------------------------
+
+This command will display the replication state for MPLS OAM and traceroute
+
+regress@pro10-b> show mpls replication ?
+Possible completions:
+  oam                  Show oam replication database
+  traceroute           Show traceroute replication database
+
+regress@pro10-b> show mpls replication oam ?
+Possible completions:
+  ldp                  Show ldp oam replication database
+
+regress@pro10-b> show mpls replication oam ldp ?
+Possible completions:
+  <[Enter]> 
+  fec                  IP address of the fec
+  source               IP address of the ingress router
+  detail               Display detailed output
+
+regress@pro10-b> show mpls replication traceroute ?
+Possible completions:
+  database             Show traceroute replication database
+
+regress@pro10-b> show mpls replication traceroute database ?
+Possible completions:
+  ldp                  Show ldp traceroute replication database
+
+regress@pro10-b> show mpls replication traceroute database ldp ?
+Possible completions:
+  <[Enter]> 
+  <fec>                IP address of the FEC
+
+The "show mpls replication" command hierarchy is as below:
+
+  |--oam
+  |  |--ldp
+  |     |--[Enter]
+  |     |--fec
+  |     |--source
+  |     |--detail
+  |     
+  |--traceroute
+     |--database
+        |--ldp
+           |--[Enter]
+           |--fec
+
+2.1.1 show mpls replication oam ldp
+-----------------------------------
+
+This command will display the ldp oam replication state for both the ingress
+and egress LSPs.
+
+regress@pro10-b> show mpls replication oam ldp
+FEC/Source: 10.255.8.5/32    Type: Ingress
+
+  Destination Address: 127.0.0.64
+    Local discriminator: 23
+    Replication state: Synchronized
+
+  Destination Address: 127.0.1.64
+    Local discriminator: 24
+    Replication state: Synchronized
+
+FEC/Source: 10.255.8.6       Type: Egress  
+
+  Destination Address: 127.0.0.64
+    Local discriminator: 31
+    Replication state: Synchronized
+
+regress@pro10-b> show mpls replication oam ldp | display xml
+<rpc-reply xmlns:junos="http://xml.juniper.net/junos/9.3I0/junos">
+    <mpls-oam-ldp-replication-information>
+        <mpls-oam-ldp-replication>
+            <mpls-oam-ldp-fec>10.255.8.5/32</mpls-oam-ldp-fec>
+            <mpls-oam-ldp-type>Ingress</mpls-oam-ldp-type>
+            <mpls-oam-ldp-path>
+                <mpls-oam-ldp-destination-address> 127.0.0.64</mpls-oam-ldp-destination>
+                <mpls-oam-ldp-bfd-local-discriminator>23</mpls-oam-ldp-bfd-local-discriminator>
+                <mpls-oam-ldp-replication-state>Synchronized</mpls-oam-ldp-replication-state>
+            </mpls-oam-ldp-path>
+            <mpls-oam-ldp-path>
+                <mpls-oam-ldp-destination-address> 127.0.1.64</mpls-oam-ldp-destination>
+                <mpls-oam-ldp-bfd-local-discriminator>24</mpls-oam-ldp-bfd-local-discriminator>
+                <mpls-oam-ldp-replication-state>Synchronized</mpls-oam-ldp-replication-state>
+            </mpls-oam-ldp-path>
+        </mpls-oam-ldp-replication>
+        <mpls-oam-ldp-replication>
+            <mpls-oam-ldp-source>10.255.8.5/32</mpls-oam-ldp-source>
+            <mpls-oam-ldp-type>Egress</mpls-oam-ldp-type>
+            <mpls-oam-ldp-path>
+                <mpls-oam-ldp-destination-address> 127.0.0.64</mpls-oam-ldp-destination>
+                <mpls-oam-ldp-bfd-local-discriminator>31</mpls-oam-ldp-bfd-local-discriminator>
+                <mpls-oam-ldp-replication-state>Synchronized</mpls-oam-ldp-replication-state>
+            </mpls-oam-ldp-path>
+        </mpls-oam-ldp-replication>
+    </mpls-oam-ldp-replication-information>
+    <cli>
+        <banner>{master}</banner>
+    </cli>
+</rpc-reply>
+
+2.1.2 show mpls replication oam ldp fec 10.255.8.5
+--------------------------------------------------
+
+This command will display the ingress ldp oam replication state for
+the given FEC (i.e. LSP).
+
+2.1.3 show mpls replication oam ldp source 10.255.8.6
+-----------------------------------------------------
+
+This command will display the egress ldp oam replication state for
+LSP from the source LSR indicated by the source address to the current router.
+
+2.1.4 show mpls replication oam ldp detail
+------------------------------------------
+
+This command will display the BFD session state and the LSP ping state
+as well.
+
+regress@pro10-b> show mpls replication oam ldp fec 10.255.8.5 detail
+FEC/Source: 10.255.8.5/32    Type: Ingress
+
+  Destination Address: 127.0.0.64
+    Local discriminator: 23
+    Replication state: Synchronized
+    BFD session state: Up
+    LSP ping state: Up
+
+  Destination Address: 127.0.1.64
+    Local discriminator: 24
+    Replication state: Synchronized
+    BFD session state: Up
+    LSP ping state: Up
+
+regress@pro10-b> show mpls replication oam ldp fec 10.255.8.5 detail |
+display xml
+<rpc-reply xmlns:junos="http://xml.juniper.net/junos/9.3I0/junos">
+    <mpls-oam-ldp-replication-information>
+        <mpls-oam-ldp-replication>
+            <mpls-oam-ldp-fec>10.255.8.5/32</mpls-oam-ldp-fec>
+            <mpls-oam-ldp-type>Ingress</mpls-oam-ldp-type>
+            <mpls-oam-ldp-path>
+                <mpls-oam-ldp-destination-address> 127.0.0.64</mpls-oam-ldp-destination>
+                <mpls-oam-ldp-bfd-local-discriminator>23</mpls-oam-ldp-bfd-local-discriminator>
+                <mpls-oam-ldp-replication-state>Synchronized</mpls-oam-ldp-replication-state>
+                <mpls-oam-ldp-bfd-session-state>Up</mpls-oam-ldp-bfd-session-state>
+                <mpls-oam-ldp-lsp-ping-state>Up</mpls-oam-ldp-lsp-ping-state>
+            </mpls-oam-ldp-path>
+            <mpls-oam-ldp-path>
+                <mpls-oam-ldp-destination-address> 127.0.1.64</mpls-oam-ldp-destination>
+                <mpls-oam-ldp-bfd-local-discriminator>24</mpls-oam-ldp-bfd-local-discriminator>
+                <mpls-oam-ldp-replication-state>Synchronized</mpls-oam-ldp-replication-state>
+                <mpls-oam-ldp-bfd-session-state>Up</mpls-oam-ldp-bfd-session-state>
+                <mpls-oam-ldp-lsp-ping-state>Up</mpls-oam-ldp-lsp-ping-state>
+            </mpls-oam-ldp-path>
+        </mpls-oam-ldp-replication>
+    </mpls-oam-ldp-replication-information>
+    <cli>
+        <banner>{master}</banner>
+    </cli>
+</rpc-reply>
+
+
+2.1.5 show mpls replication traceroute database ldp
+------------------------------------------
+
+This command will display replication state of the traceroute results for LDP
+FECs and the traceroute results as well.
+
+regress@pro10-b> show mpls replication traceroute database ldp
+FEC: 10.255.8.5/32
+  Replication state: Synchronized
+  Sequence number: 3
+  Destination address: 127.0.0.64
+    Next-hop interface: so-0/2/2.0
+    Hop count: 3
+    Path: 192.168.8.54, 192.168.8.62, 192.168.8.69
+
+  Destination address: 127.0.1.64
+    Next-hop interface: fe-0/0/0.0
+    Next-hop address: 192.168.100.2
+    Hop count: 1
+    Path: 192.168.100.2
+
+regress@pro10-b> show mpls replication traceroute database ldp |
+display xml
+<rpc-reply xmlns:junos="http://xml.juniper.net/junos/9.3I0/junos">
+    <mpls-traceroute-ldp-replication-information>
+        <mpls-traceroute-ldp-replication>
+            <ldp-fec> 10.255.8.5/32</ldp-fec>
+            <replication-state>Synchronized</replication-state>
+            <sequence-number>3</sequence-number>
+            <lsp-path>
+                <destination-address>127.0.0.64</destination-address>
+                <nexthop-interface>so-0/2/2.0</nexthop-interface>
+                <hop-count>3</hop-count>
+                <path-address>192.168.8.54</path-address>
+                <path-address>192.168.8.62</path-address>
+                <path-address>192.168.8.69</path-address>
+            </lsp-path>
+            <lsp-path>
+                <destination-address>127.0.1.64</destination-address>
+                <nexthop-interface>fe-0/0/0.0</nexthop-interface>
+                <nexthop-address>192.168.100.2</nexthop-address>
+                <hop-count>1</hop-count>
+                <path-address>10.255.8.5</path-address>
+            </lsp-path>
+        </mpls-traceroute-ldp-replication>
+    </mpls-traceroute-ldp-replication-information>
+    <cli>
+        <banner>{master}</banner>
+    </cli>
+</rpc-reply>
+
+
+3.  CAVEATS
+
+None.
+
+
+4.  OTHER REQUIREMENTS
+
+None.
+
+
+5.  IMPLEMENTATION DETAILS
+
+Rationale:
+
+NSR support for BFD has been added through rli 2726. This means all
+the BFD state from the primary RE is replicated to backup RE. All that
+requires for this rli is to associate the appropriate LDP client with
+the BFD session that has been replicated to the backup RE.
+
+One of the ways to associate a client with a BFD session is through the
+local BFD discriminator. The local BFD discriminator uniquely
+identifies a BFD session on the router.
+
+When a client requests BFD daemon to setup a BFD session, BFD daemon
+informs the client of the local BFD discriminator after creating the
+session. Since this is not going to happen on backup RE (note: we want
+to associate a client with a session that is already replicated to
+backup RE), we need an out-of-band mechanism to learn the local
+discriminator. This will be done using the mirroring library.
+
+For the case of ingress oam (where the router is the ingress for an
+LSP), the combination of FEC and BFD destination address will uniquely
+identify a client. For the case of egress oam (where the router is the
+egress node for an LSP), the combination of Ingress LSR and BFD
+destination address will uniquely identify a client. So an LDP OAM
+client can be uniquely identified by the triplet <FEC, Ingress LSR,
+BFD destination address> (for ingress oam Ingress LSR is irrelevant
+and for egress oam FEC is irrelevant).
+
+Since similar functionality would be needed for RSVP OAM when NSR
+support is added later on, the key to identify a client will be
+generic as below.
+
+struct mpls_oam_mirror_key {
+  int momk_inst_id;  // Kernel id of the routing instance
+  mpls_oam_clnt_t momk_clnt;
+  union {
+    in_addr momk_fec;
+    in_addr momk_source;
+    in_addr momk_dest_addr;
+  } momk_union;
+};
+
+In the case of LDP OAM with ECMP enabled, the LDP OAM module learns about all
+the equal cost paths of an LSP through traceroute. Since there are no
+plans to run mplsoamd daemon on the backup RE, we would have to
+replicate the traceroute results to the backup RE. This again will be
+done using mirroring library. The key to identify an traceroute object
+will be as below:
+
+struct mpls_traceroute_mirror_key {
+  int mtmk_inst_id;
+  mpls_oam_clnt_t mtmk_clnt;
+  union {
+    in_addr mtmk_fec;
+  } mtmk_union;
+};
+
+Currently, LDP on the back RE ignores all the LDP OAM related
+configuration. This will be changed so that LDP on backup RE creates
+necessary state based on LDP OAM configuration. Further, it will learn
+the equal cost paths for an LSP through the replicated traceroute
+results and the local BFD discriminators through replication. After
+this, it will program BFD daemon the running on the backup just how it
+programs on the primary RE.
+
+Since rpd is replicating the traceroute results to the backup RE,
+after RE switchover rpd needs to inform mplsoamd about all the FECs for
+which mplsoamd needs to run traceroute for.
+ 
+
+6.  PERFORMANCE
+
+None.
+
+
+7.  COMPATIBILITY ISSUES
+
+None.
+
+
+8.  SECURITY ISSUES
+
+None.
+
+
+9.  Graceful RE Switchover (GRES), Hobson or ISSU Impact 
+
+None.
+
+
+10. NSR Impact
+
+The hidden commands introduced in the rli need not be supported on
+single RE systems.
+
+
+11.  Platforms Supported
+
+All.
+
+
+12.  SDK Impact
+
+None.
+
+
+13.  NOTES
+
+None.
+
+
+14.  GLOSSARY
+
+{As necessary, define any terms or acronyms used.}
+
+
+15.  REVIEW COMMENTS
+
+The tracking PR for this rli is 276691.
+

@@ -1,0 +1,1417 @@
+$Id: iha_design.txt,v 1.3 2005/12/09 23:55:01 yadav Exp $
+
+                        Juniper Socket Replication
+                     Initialization, Handle Management
+                      and Async Notification Module
+                                   (IHA)
+                             (Non Stop Routing)
+
+                      Author: Navneet Yadav, May 2005
+
+Copyright Notice
+
+   Copyright (C) 2005, Juniper Networks, Inc.
+
+   NOTICE: This document contains proprietary and confidential
+   information of Juniper Networks, Inc. and must not be distributed
+   outside of the company without the permission of Juniper Networks
+   engineering.
+
+TABLE OF CONTENTS
+
+   1. Introduction
+      1.1 Legend
+   2. FUNCTIONALITY
+   3. IMPLEMENTATION DETAILS
+      3.1 JSR Socket Handle Management
+         3.1.1 jsr_iha_handle_alloc()
+         3.1.2 jsr_iha_handle_free()
+         3.1.3 jsr_iha_handle_lookup()
+         3.1.4 jsr_iha_handle_equal()
+      3.2 Kernel RTSOCK Implementation
+      3.3 Initialization Message Exchange
+         3.3.1 Socket Initialization state
+         3.3.2 Message Exchange Diagram
+         3.3.3 jsr_iha_pri_init()
+         3.3.4 jsr_iha_ipc_proc()
+      3.4 Asynchronous Notification Mechanism - TBD
+      3.5 Summary of APIs
+         3.5.1 IHA APIs exposed to other layers
+         3.5.2 SDRL API needed by IHA Module
+         3.5.2 PSRM API needed by IHA Module
+      3.6 Summary of IHA Kernel to Kernel IPC Message Formats
+         3.6.1 IHA Module Message Formats
+         3.6.2 Summary of IPC ACK Error Codes used by IHA
+      3.7 Discussion Points
+
+1. INTRODUCTION
+
+   The Initialization, Handle Mgmt and Async Notification Module (IHA)
+   is a kernel module that is involved in initial interaction between
+   Primary and Secondary socket kernels to help setup socket replication.
+
+   It is involved when socket replication is being turned off
+   for a particular socket due to RE failure or RE switchover.
+
+   It provides the glue between the userland JSR API and the
+   other internal kernel modules for JSR.
+
+   RLIs - 2755 "NSR: Kernel miscellaneous NSR changes"
+   Related RLIs - 2709, 2710, 2754
+   PR - 59525 - Single Tracking PR for RLIs 2709, 2710, 2754 and 2755.
+
+   Related documents:
+   "JSR Socket Replication API"
+   "JSR IPC Message Formats"
+
+1.1 Legend
+
+   Some lines are marked with special symbols in the first three columns:
+
+   ==> Special point to note
+   TBD Point needs further discussion
+   XXX Ignore lines with this prefix
+   API An API is needed from an external module (SDRL, PRL, PSRM, KKCM etc)
+   ASY An asynchronous notification point. Application will be sent an
+       async notification.
+
+2. FUNCTIONALITY
+
+   The functionality of the IHA can be split in the following parts:
+
+   [a] JSR Socket Handle Management (SHM)
+
+       The IHA will provide this separate sub-module for management
+       of JSR handles.
+
+       The Socket Handle Management is exposed by an API that
+       will be used by other JSR modules and IHA sub-modules.
+
+   [b] Kernel RTSOCK implementation
+
+       The JSR API is implemented using rtsock library. The
+       kernel component of the rtsock processing is provided
+       by the IHA.
+
+       The IHA rtsock routines may call SDRL, PSRM, KKCM or
+       SHM API functions.
+
+   [c] Initial message exchange
+
+       When a socket is requested to be replicated there is
+       an initial exchange of messages between the primary
+       and secondary sockets' kernels. This exchange will
+       help in sharing the primary's socket parameters with
+       the secondary and also in replicating the initial
+       buffered send and receive side data from the primary
+       to the secondary socket.
+
+       This exchange is driven by IHA, the messages are formed
+       by it. However some of the data in the messages is 
+       provided by SDRL layer and is opaque to IHA. IHA will
+       use API functions exposed by SDRL, PRL, PSRM and KKCM modules to
+       do part of its job for the Initialization.
+
+       Once the initialization is done then the socket and
+       its handles are completely managed by the SDRL/PSRM/PRL
+       layers.
+
+   [d] JSR Asynchronous Notification Management (ANM)
+
+       This is another sub-module within IHA that will provide
+       the infrastructure for sending async notifications.
+       It will not itself generate these messages. Instead
+       its API will be used by IHA and other JSR modules.
+
+   [e] Failover/Failure Management Facilities
+    
+       IHA does not itself drive or initiate failover. Rather
+       it provides some facilities that are useful in failover
+       management. Same as true when any failure happens that
+       causes replication to stop.
+
+       IHA provides the RTSOCK implementation for calls such
+       as jsr_merge() which are used following a failover/failure.
+       It provides async notification facility which will be
+       used to indicate failure to primary applications.
+       
+3. IMPLEMENTATION DETAILS
+
+3.1 JSR Socket Handle Management
+
+   The Socket Handle Management (SHM) will be internally done using 32-bit
+   itables (itable32_t). We will have two itable32. One will be used for
+   generating handles for primary sockets on current kernel. The other
+   itable32 will be used for secondary socket handles i.e. handles generated
+   by the other kernel. We refer to these tables as primary and secondary
+   handle tables.
+
+   SHM will create these two tables at boot time using SYSINIT.
+   The tables are never destroyed. Entries are freed and
+   allocated dynamically based on usage.
+
+   The handle is currently planned as a 64-bit number:
+
+      typedef u_int64_t jsr_handle_t;
+
+
+   We also define a JSR socket type to distinguish between
+   primary and secondary sockets:
+
+   typedef enum {
+      JSR_SOCK_PRI,       /* Primary Socket */
+      JSR_SOCK_SEC        /* Secondary Socket */
+   } jsr_sock_type_t;
+
+   We expose the following Socket Handle Management API for other
+   layers
+
+3.1.1 jsr_iha_handle_alloc()
+
+API   int jsr_iha_handle_alloc(struct socket *sock,
+                               jsr_handle_t  *shandle,
+                               jsr_sock_type_t stype);
+
+   Arguments:
+      struct socket *sock -
+         The socket structure pointer for which the handle is needed.
+      jsr_handle_t  *shandle -
+         For primary sockets the handle is returned in shandle
+         For secondary sockets the handle is passed down in shandle
+      jsr_sock_type_t stype - Socket Type (JSR_SOCK_PRI or JSR_SOCK_SEC)
+
+   Description:
+      For primary sockets this structure will allocate a handle
+      in the primary handle table. The handle returned is a combination
+      of the itable32 index and a monotonically increasing number.
+      The socket structure pointer is stored in the index table.
+
+      For secondary sockets the handle is supplied to IHA module.
+      The IHA module tries to allocate an extry exactly at the index
+      contained in the handle. If an entry already exists it returns an
+      error EEXIST.
+
+      For secondary socket the SDRL layer chooses between one of
+      the two secondary socket structure (send and recv) pointers
+      to store in the index table.
+
+   Return Value:
+      The call returns 0 on success and the following errnos on error
+         EINVAL - One or more arguments are invalid
+         ENOMEM - There are no more handles available
+         EXIST  - For secondary socket only. The desired handle is
+                  already allocated.
+
+3.1.2 jsr_iha_handle_free()
+      
+API   int jsr_iha_handle_free(jsr_handle_t *shandle,
+                              jsr_sock_type_t stype);
+
+
+   Arguments:
+      jsr_handle_t  *shandle -
+         JSR socket handle is passed down in shandle
+      jsr_sock_type_t stype - Socket Type (JSR_SOCK_PRI or JSR_SOCK_SEC)
+
+   Description:
+      This call will release the JSR handle specified by
+      shandle. It looks into the primary handle table for
+      JSR_SOCK_PRI and into secondary table for JSR_SOCK_SEC
+
+      The handle is no longer valid if the call is successful
+
+      The socket's JSR extension structure is not freed by the
+      caller, instead IHA will free at some later point.
+
+      The index location used by the handle is not unallocated after this
+      call.  Rather it is marked for delayed unalloc. In case of primary
+      sockets the RE sends a delete message to the other RE which then
+      responds with an ACK. The handle on the primary is actually
+      unallocated on getting this ACK. On the secondary the handle is
+      unallocated on getting the delete message from the primary.
+
+      Whenever the index location for the handle on primary/secondary
+      is unallocated at that point the socket extension structure
+      is also freed.
+
+   Return Value:
+      The call returns 0 on success and the following errnos on error
+         EINVAL - The stype argument is invalid
+         ENOENT - The handle specified was not allocated
+
+3.1.3 jsr_iha_handle_lookup()
+
+API   int jsr_iha_handle_lookup(jsr_handle_t  *shandle,
+                                jsr_sock_type_t stype,
+                                struct socket **p_sock);
+
+   Arguments:
+      jsr_handle_t  *shandle -
+         JSR socket handle is passed down in shandle
+      jsr_sock_type_t stype alloc- Socket Type (JSR_SOCK_PRI or JSR_SOCK_SEC)
+      struct socket **p_sock -
+         The struct socket pointer stored at the handle index is returned
+         in p_sock
+
+   Description:
+      Given a JSR handle this call returns the struct socket pointer
+      stored at the handle index location.
+
+      Whenever a jsr_iha_handle_lookup() is used to get a socket structure,
+      it will internally compare compare the handle stored in the socket
+      structure with the handle passed to the jsr_iha_handle_lookup() call
+      to ensure that the two handles match. If they do not match then the
+      handle passed to jsr_iha_handle_lookup() is not a valid handle.
+
+   Return Value:
+      The call returns 0 on success and the following errnos on error
+         EINVAL - One or more arguments are invalid
+         ENOENT - The handle specified was not allocated
+         EBADF  - The handle passed for the lookup does not match
+                  the one stored in the socket's JSR extension structure
+
+3.1.4 jsr_iha_handle_equal()
+
+API   int jsr_iha_handle_equal(jsr_handle_t *shandle1,
+                               jsr_handle_t *shandle2);
+
+
+   Description:
+      This call compares the equality of two handles.
+
+
+   Return Value:
+      The call returns 1 on a match and 0 on no match. If any of
+      the arguments is NULL then the call will return 0.
+
+3.1.5 JSR Handle Validity
+
+   We define three different validity checks:
+
+   a) Unallocated Handle
+      The index part of the handle points at an unallocated
+      index entry. Typically indicated by ENOENT.
+
+   b) Bad Handle
+      The index part of the handle points to an allocated
+      index entry, however the socket structure to which
+      the entry points to has a different handle. Typically
+      indicated by EBADF. 
+
+   c) Unknown Handle
+      The handle has value JSR_HANDLE_UNKNOWN.
+
+3.2 Kernel RTSOCK Implementation
+
+   The IHA layer provides the rtsock processing routine for all synchronous
+   RTM_JSR messages written by JSR API applications to the kernel.
+
+   The main JSR rtsock processing routine will be
+
+   int rts_jsrmproc(m, mp, rtcb)
+        struct mbuf *m;
+        struct mbuf **mp;
+        struct routecb *rtcb;
+
+   The rtsock routing will process the following API calls mentioned
+   in the "Juniper Socket Replication API" document:
+
+      jsr_handle_alloc()
+      jsr_handle_free()
+      jsr_replicate()
+      jsr_unreplicate()
+      jsr_split()
+      jsr_merge()
+      jsr_close()
+      jsr_get_handle_by_fd()
+      jsr_get_fds_by_handle()
+      jsr_async_register()
+TBD   jsr_async_unregister()
+TBD   jsr_async_register_handle()
+TBD   jsr_async_unregister_handle()
+
+
+   In order to process some of these calls the IHA may call APIs routines
+   from SDRL layer. We now describe the implementation of each of these
+   routines.
+
+3.2.1 jsr_handle_alloc()
+
+      int jsr_handle_alloc(rtslib_cookie_t *cookie,
+                           int s,
+                           jsr_handle_t *pri_handle);
+
+      The rts_jsrmproc() will call following SDRL routine. 
+
+API   jsr_sdrl_pri_handle_alloc(int s, jsr_handle_t *shandle))
+         * Allocates a JSR extension structure for the socket
+         * Calls jsr_iha_handle_alloc() to allocate a handle and
+           store the socket extension structure
+         * Will associate the handle with the socket extension
+         * Will initialize jsr_iha_state to JSR_IHA_ST_PRI_UNINITIALIZED
+         * Will return 0 on success and an errno on error
+
+      The SDRL API will return the allocated handle to rts_jsrmproc()
+      which will then return it to user daemon.
+      
+==> Error Side Effects:
+      In case of any error jsr_handle_alloc() call is failed. The
+      JSR extension structure and a JSR handle are not allocated.
+
+3.2.2 jsr_handle_free()
+
+      int jsr_handle_free(rtslib_cookie_t *cookie,
+                          jsr_handle_t *pri_handle);
+
+      The rts_jsrmproc() will call following SDRL routine. 
+
+API   jsr_sdrl_pri_handle_free(jsr_handle_t *pri_handle))
+         * Calls jsr_iha_handle_lookup() to see if handle is
+           indeed allocated.
+         * Calls jsr_iha_handle_equal() to validate that the handle in the 
+           socket structure returned by jsr_iha_handle_lookup() and the one 
+           used to do the lookup are identical
+         * If handle is valid then call jsr_iha_handle_free()
+         * If the handle is not valid then this a serious internal error.
+         * Frees up the extension structure
+         * Will return 0 on success and an errno on error
+
+==> Error Side Effects:
+      * If the handle was not allocated then jsr_handle_free() call is
+        failed. 
+      * In case the handle is allocated but fails validation test
+        then the handle is not released nor is the socket extension
+        structure freed. This is however a serious error condition.
+        The jsr_handle_free() call is failed.
+      * In case of any other internal error the Socket extension
+        is freed and the handle is released. The jsr_handle_free()
+        call succeeds.
+        
+
+3.2.3 jsr_replicate()
+
+   int jsr_replicate(rtslib_cookie_t *cookie,
+                     int s,
+                     jsr_handle_t *sec_handle,
+                     struct timeval *timeout);
+
+   The rts_jsrmproc() will call an internal jsr_iha_pri_init() routine to 
+   do kick of the Initialization message exchange between the two REs
+   to initialize socket replication. See section 3.3 for more details
+   on this routine and the message formats and the SDRL, PSRM and PRL
+   API routines needed for initialization.
+
+   The jsr_replicate() will result in sending out the first JSR IPC
+   message for this socket to the secondary. This transmission is
+   the final step by jsr_iha_pri_init() after it has called APIs
+   from other modules.
+
+==> Error Side Effects:
+      * In case of failure in jsr_iha_pri_init() the jsr_replicate() 
+        is failed. The handle continues to be valid. The extension
+        structure fields are restored to their initial values
+        (the ones they had following jsr_handle_alloc()).
+
+        The IHA layer needs an API from SDRL which will allow
+        setting the extension structure to a pristine state. The
+        following API is invoked:
+
+API     jsr_sdrl_pri_reset()
+
+TBD     Do we need APIs from other modules to reset state in case
+        of failure ?
+
+3.2.4 jsr_unreplicate()
+
+   int jsr_unreplicate(rtslib_cookie_t *cookie, int s);
+
+   rts_jsrmproc() will call an internal jsr_iha_uninit() routine to
+   tear down initialization.
+   
+   jsr_iha_uninit() does the following
+      * If the jsr_iha_state in so_jsr extension structure is 
+        JSR_IHA_ST_PRI_UNINITIALIZED then no action is needed.
+      * Otherwise set jsr_iha_state to JSR_IHA_ST_PRI_UNINITIALIZED and
+        do the following
+         o Also calls are made to APIs from SDRL, PSRM and PRL
+           layers to turn off replication on the given socket.
+         o A JSR_IPC_IHA_UNREPLICATE IPC message is sent to secondary.
+           No ACK is expected for this message.
+
+API jsr_sdrl_pri_unreplicate(int s);
+      * If a timeout is set waiting for a ACK for replicated send
+        data, then the timeout is cancelled.
+      * Disable send side data replication from primary to secondary
+      * Will return 0 on success and errno on error
+
+API jsr_psrm_pri_unreplicate(int s);
+      * TBD
+API jsr_prl_pri_unreplicate(int s);
+      * TBD
+
+   ACKs received after jsr_sdrl_pri_unreplicate() and
+   jsr_prl_pri_unreplicate() have been invoked should be discarded.
+
+   jsr_iha_uninit() will set the state to JSR_IHA_ST_PRI_UNINITIALIZED
+   before it calls the SDRL and PRL unreplicate routines.
+
+   The JSR_IPC_IHA_UNREPLICATE message is the last action taken by
+   jsr_iha_uninit(). 
+
+==> Error Side Effects:
+      * If an intermediate step (such as an API call to another layer)
+        fails then it will be hard to restore the original replication
+        state as API calls to other layers may have succeeded.
+
+        So jsr_iha_uninit() ignores _all_ intermediate errors (except
+        for Unallocated or Bad handle errors). As long as the
+        handle is valid jsr_iha_uninit() will always succeed.
+
+3.2.5 jsr_split()
+
+      int jsr_split(rtslib_cookie_t *cookie,    /* input */
+                    jsr_handle_t *pri_handle,   /* input */
+                    jsr_handle_t *sec_handle,   /* output */
+                    int *fds);                  /* output */
+
+   rts_jsrmproc() will call an internal jsr_iha_split() routine to
+   handle this call.
+   
+   jsr_iha_split() will call an SDRL API
+
+API jsr_sdrl_sec_split(jsr_handle_t *shandle);
+      * Create two socket structures and FDs, shutdown their send side and
+        allocate a single JSR extension structure.
+      * Tie the two socket structures to the single extension structure.
+      * Call jsr_iha_handle_alloc(JSR_SOCK_SEC) to allocate the same index as
+        specified in the shandle. Pass one of the two socket structure
+        pointers to the jsr_iha_handle_alloc() call for storage in the
+        index table.
+      * Set jsr_iha_state to JSR_IHA_ST_SEC_UNINITIALIZED
+      * Return 0 on success and errno on error
+
+   jsr_iha_split() will return to the user daemon the two fds returned
+   by the SDRL API.
+
+TBD jsr_iha_split() will also call a PSRM API function (is PSRM involved
+    at this stage ?).
+
+API jsr_psrm_sec_split(jsr_handle_t *shandle);
+      * TBD
+      
+==> Error Side Effects
+      * If any intermediate step fails (other than Bad or Unallocated
+        handle) then jsr_split() call is failed.  The extension structures
+        and the socket's allocated by the SDRL layer need to be freed. Any
+        other resources allocated by other layers need to be freed.
+
+        The following APIs are invoked following error:
+
+API      jsr_sdrl_sec_unalloc()
+API      jsr_psrm_sec_unalloc()
+API      jsr_prl_sec_unalloc()
+
+3.2.6 jsr_merge()
+
+   int jsr_merge(rtslib_cookie_t *cookie, int fds[2])
+
+   rts_jsrmproc() will call an internal jsr_iha_merge() routine to handle
+   this call. This routine will in turn call SDRL, PSRM and PRL API functions
+   to do the real merge. Following this call SDRL is expected to
+   call IHA's Socket Handle Management routines to free the handle.
+   The handle will no longer be valid.
+
+API jsr_sdrl_sec_merge(jsr_handle_t *shandle);
+      * The two sockets are merged into one. Recv data that has 
+        not yet been read by application is put in the receive buffers
+        of new socket. TCP Send data that has been read but not yet
+        acknowledged by the peer is kept in the send buffer. All
+        other send data is discarded.
+      * The socket handle is freed (after doing the handle validity
+        check)
+      * The socket extension structure is freed.
+      * Return 0 on success and errno on error.
+
+API jsr_psrm_sec_merge(jsr_handle_t *shandle);
+      * TBD
+
+   The PSRM merge routine must be called before the SDRL routine as
+   the SDRL routine will invalidate the handle.
+
+==> Error Side Effects
+      * In case of failure in any intermediate step (other than
+        Bad or unallocated handle) the jsr_merge()
+        call is failed. Failure will result in calling of routines
+        from SDRL and PRL layers to free up all resources associated
+        with the split sockets.
+
+        The following APIs are invoked following error:
+
+API      jsr_sdrl_sec_unalloc()
+API      jsr_psrm_sec_unalloc()
+API      jsr_prl_sec_unalloc()
+
+3.2.7 jsr_close()
+
+   int jsr_close(rtslib_cookie_t *cookie, int fds[2]);
+
+   rts_jsrmproc() will call an SDRL API to do the real handling of
+   this call. After the SDRL API finishes the handle will no longer
+   be valid.
+
+   In case application does a regular close() then internally
+   the kernel treats it as if a jsr_close() has been done. rts_jsrmproc() is
+   again invoked.
+
+API jsr_sdrl_sec_close()
+      * The handle associated with the replicated fd is freed
+      * The socket extension structure is freed and the two
+        socket fds and socket structures are destroyed
+      * Return 0 on success and errno on error.
+       
+API jsr_prl_sec_close()
+      * TBD
+API jsr_psrm_sec_close()
+      * TBD
+
+==> Error Side Effects
+      * In case of an intermediate error (other than Bad or
+        Unallocated handle) the jsr_close() call will not be
+        failed. All other intermediate routines will be called
+        to free up other resources.
+
+3.2.8 jsr_get_handle_by_fd() jsr_get_fds_by_handle()
+
+   int  jsr_get_handle_by_fd(rtslib_cookie_t cookie,
+                             int fd,
+                             jsr_handle_t *shandle);
+
+   int jsr_get_fds_by_handle(rtslib_cookie_t *cookie,
+                             jsr_handle_t *shandle);
+                             int *fds);
+
+   rts_jsrmproc() will call SDRL API functions to handle these calls
+
+API jsr_sdrl_get_handle_by_fd()
+API jsr_sdrl_get_fds_by_fd()
+      * The above two APIs will return 0 on success and errno on error
+
+==> Error Side Effects
+      * None. We just report back whatever error the SDRL calls give.  
+      
+3.2.9 jsr_async_*() calls - TBD
+
+      int jsr_async_register(rtslib_cookie_t *async_cookie,
+                             void *user_info,
+                             rtslib_handler_ptr user_handler);
+
+      int jsr_async_unregister(rtslib_cookie_t *async_cookie);
+
+      int jsr_async_register_handle(rtslib_cookie_t *async_cookie,
+                                    jsr_handle_t *shandle,
+                                    u_int32_t   notify_error_mask,
+                                    u_int32_t   notify_trace_mask);
+      int jsr_async_register_handle(rtslib_cookie_t *async_cookie,
+                                    jsr_handle_t *shandle,
+                                    u_int32_t   notify_error_mask,
+TBD   TBD
+
+3.3 Initialization Message Exchange
+
+   This submodule exposes two main API functions
+
+   jsr_iha_pri_init() - This is exposed to rts_jsrmproc() to handle the
+                    jsr_replicate() RTSOCK implementation.
+
+   jsr_iha_ipc_proc() - This is exposed to the KKCM module and is
+                        called by KKCM whenever it receives a message
+                        of type JSR_IPC_TYPE_IHA. This routine will
+                        process both primary and secondary initiated
+                        messages.
+
+3.3.1 Socket Initialization state
+
+   The Extension structure for socket replication  (field so_jsr
+   in struct_sock) has a field jjsr_iha_state which is used by
+   IHA module during initialization to set the socket's state
+   based how far the initialization has progressed and what
+   is the next message the primary or secondary socket kernel
+   expects to receive or send.
+
+   The value for jsr_iha_state are as follows:
+
+   typedef enum {
+      JSR_IHA_ST_PRI_UNINITIALIZED,
+      JSR_IHA_ST_PRI_INIT,
+      JSR_IHA_ST_PRI_SEND_DATA,
+      JSR_IHA_ST_PRI_RECV_DATA,
+      JSR_IHA_ST_PRI_INITIALIZED,
+
+      JSR_IHA_ST_SEC_UNINITIALIZED,
+      JSR_IHA_ST_SEC_UNREPLICATE,
+      JSR_IHA_ST_SEC_SEND_WAIT,
+      JSR_IHA_ST_SEC_RECV_WAIT,
+      JSR_IHA_ST_SEC_INITIALIZED,
+   } jsr_iha_init_state_t
+
+   When a particular state is used has been shown in the Message
+   Exchange diagram in 3.3.2 and is further explained in 3.3.3
+   and 3.3.4
+
+3.3.2 Message Exchange Diagram
+
+         Primary Socket Kernel            Secondary Socket Kernel
+         ---------------------            -----------------------
+
+   1. jsr_replicate() is invoked by user
+      daemon. jsr_iha_pri_init() sends
+      initialization message
+      jsr_iha_state = JSR_IHA_ST_PRI_INIT
+      Timeout is started waiting for the ACK
+
+                      JSR_IPC_IHA_INIT msg
+                      -------------------->
+
+                                 2. KKCM calls jsr_iha_ipc_proc()
+                                    An ACK or NACK is sent to primary
+                                    jsr_iha_state = JSR_IHA_ST_SEC_SEND_WAIT
+                                    Timeout is started waiting for SEND_DATA
+
+                      JSR_IPC_IHA_INIT_ACK msg
+                      <--------------------
+
+   3. KKCM calls jsr_iha_ipc_proc()
+      Socket Send Data if present is sent
+      jsr_iha_state = JSR_IHA_ST_PRI_SEND_DATA
+      Timeout is started waiting for the INIT_ACK
+
+   3a. If timeout expires waiting for ACK
+       then replication is failed and async
+       notification is sent to user daemon
+
+                      JSR_IPC_IHA_SEND_DATA
+                      -------------------->
+
+                                 4. KKCM calls jsr_iha_ipc_proc()
+                                    An ACK or NACK is sent to primary
+                                    jsr_iha_state = JSR_IHA_ST_SEC_RECV_WAIT
+                                    Timeout is started for RECV_DATA
+
+                                 4a. If timeout expires waiting for
+                                     SEND_DATA data then an inline error is
+                                     generated on secondary sockets. Read of
+                                     the secondary socket fds returns -1
+                                     with EIO.
+
+                      JSR_IPC_IHA_SEND_ACK
+                      <--------------------
+
+   5. KKCM calls jsr_iha_ipc_proc()
+      Socket Recv Data if present is sent
+      jsr_iha_state = JSR_IHA_ST_PRI_RECV_DATA
+
+   5a. If timeout expires waiting for SEND_ACK
+       then replication is failed and async
+       notification is sent to user daemon
+       
+
+                      JSR_IPC_IHA_RECV_DATA
+                      -------------------->
+
+                                 6. KKCM calls jsr_iha_ipc_proc()
+                                    An ACK or NACK is sent to primary
+                                   jsr_iha_state = JSR_IHA_ST_SEC_INITIALIZED
+
+                                 6a. If timeout expires waiting for
+                                     RECV_DATA data then an inline error is
+                                     generated on secondary sockets. Read of
+                                     the secondary socket fds returns -1
+                                     with EIO.
+
+                      JSR_IPC_IHA_RECV_ACK
+                      <--------------------
+
+   7. KKCM calls jsr_iha_ipc_proc()
+      Socket Recv Data if present is sent
+      jsr_iha_state = JSR_IHA_ST_PRI_INITIALIZED
+
+      Socket is now ready for replication. SDRL
+      and PRL layers take over from here and
+      start data replication
+
+   7a. If timeout expires waiting for RECV_ACK
+       then replication is failed and async
+       notification is sent to user daemon
+
+3.3.3 jsr_iha_pri_init()
+
+   int jsr_iha_pri_init(jsr_handle_t *shandle);
+
+   Description:
+   This routine is only invoked for primary sockets. This routine
+   forms a JSR IPC message of type JSR_IPC_TYPE_IHA and subtype
+   JSR_IPC_IHA_INIT and the following format:
+
+       typedef struct jsr_ipc_iha_init_ {
+           jsr_ipc_hdr_t    iha_hdr;
+           jsr_handle_t     iha_handle;
+           u_int32_t        sdrl_info_len;
+           u_int32_t        psrm_info_len;
+           u_int32_t        sdrl_send_data_len;
+           u_int32_t        sdrl_recv_data_len;
+           u_int8_t         data[0];
+       } jsr_ipc_iha_init_t;
+
+   The message is of variable length and the total length is specified
+   in "iha_hdr.length" field. 
+
+   The variable length data[] portion at the end of the message
+   contains socket control information returned by SDRL and PSRM layers for
+   the primary socket. The length of these portions is specified in
+   sdrl_info_len and psrm_info_len fields. The value for these fields and
+   the actual SDRL and PSRM data is made available to jsr_iha_pri_init() by
+   API functions exposed by SDRL and PSRM
+
+   The sdrl_send_data_len and sdrl_recv_data_len fields contain
+   the size of data in the primary socket send and receive buffers.
+   These are also returned by jsr_sdrl_pri_init() routine. However
+   the actual socket data is not passed in the jsr_ipc_iha_init_t
+   message. It is passed in subsequent messages.
+
+API jsr_sdrl_pri_init()
+      * Returns the initial socket parameters to be sent to other
+        RE. Also returns the size of this data (used as sdrl_info_len).
+      * Returns the size of data in the  socket's send and receive data
+        buffers that needs to be replicated to other RE.
+      * Turns on record based writes on the socket
+      * Starts failing all application writes on the socket with an
+        EAGAIN till IHA sets the socket state to JSR_IHA_ST_PRI_INITIALIZED.
+
+API jsr_psrm_pri_init()
+      * Returns initial protocol parameters to be sent to other
+        RE and the size of this data (used as psrm_info_len).
+
+API jsr_prl_pri_init()
+      * Starts buffering incoming packets on the primary for this
+        socket.
+       
+   The jsr_iha_state is set to JSR_IHA_ST_PRI_INIT after sending
+   the jsr_ipc_iha_init_t message to the secondary.
+
+   Return Values:
+   Returns 0 on success and errno on error. Errno will have one of
+   following values
+      * EINVAL - One or more arguments are invalid 
+      * ENOENT - Handle supplied is unallocated
+      * EBADF  - Handle supplied is bad. The index entry is in used by
+                 another handle.
+      * EIO    - An internal error occured.
+
+==> Error Side Effects:
+      * In case of failure of any intermediate step (other than
+        unallocated or bad handle) the extension structure needs
+        to be restored to a pristine state. For this the following
+        API will be called :
+
+API     jsr_sdrl_pri_reset()
+      
+
+3.3.4 jsr_iha_ipc_proc()
+
+API   int jsr_iha_ipc_proc(jsr_ipc_msg_t *jsr_ipc);
+
+   Arguments:
+      jsr_ipc_msg_t *jsr_ipc -   IPC message received from other RE
+
+   Return Values:
+      Returns 0 on success, on error returns errno as follows:
+         * EINVAL - jsr_ipc argument was NULL or the IPC message
+                    had an invalid format
+
+   Description:
+   This routine is called by KKCM on both primary and secondary socket
+   kernel's whenever a JSR IPC message of type JSR_IPC_TYPE_IHA is
+   received.
+
+   The jsr_iha_ipc_proc() takes action based on the IHA message subtypes
+   as explained in the flowchart in 3.3.2. We explain each of the
+   steps in the flowchart and also specify what API functions are being
+   called from the SDRL and PSRM layers.
+
+   Before the IPC message exchange kicks the jsr_iha_state on the primary
+   has been initialized to JSR_IHA_ST_PRI_UNINITIALIZED by
+   jsr_handle_alloc() and on the secondary to JSR_IHA_ST_SEC_UNINITIALIZED
+   by jsr_split() calls.
+
+   1.
+      Kernel            - Primary Socket Kernel
+      Old jsr_iha_state - JSR_IHA_ST_PRI_UNINITIALIZED
+
+      Action -
+      This step is initiated by jsr_iha_pri_init() when a user
+      daemon calls jsr_replicate() to kick off replication on a primary
+      socket. Further details have been given in 3.3.3.
+
+      A timeout is started on the primary waiting for an ACK to come
+      from the secondary for the init message.
+
+      New jsr_iha_state - JSR_IHA_ST_PRI_INIT
+
+   2.
+      Kernel            - Secondary Socket Kernel
+      Old jsr_iha_state - JSR_IHA_ST_SEC_UNINITIALIZED
+
+      Action -
+         * KKCM calls jsr_iha_proc() to process the received 
+           JSR_IPC_TYPE_IHA type msg.
+         * A message with type other than JSR_IPC_IHA_INIT is discarded
+           and an error message is logged. The current state is maintained.
+         * The handle is validated. If JSR handle is invalid a NACK 
+           with JSR_IPC_ERR_INVALID_HANDLE is sent to primary's kernel.
+           The current state is maintained.
+         * The IPC message is validated.  If sdrl_info_len or
+           psrm_info_len are zero then a NACK with JSR_IPC_ERR_INVALID_IPC
+           error code is sent to primary's kernel.
+
+         * A JSR_IPC_IHA_UNREPLICATE subtype will cause socket replication
+           to be turned off on the secondary. SDRL API is called to do
+           this
+API            jsr_sdrl_sec_unreplicate()
+
+           jsr_sdrl_sec_unreplicate() will take action as described in the 
+           description of jsr_split() call in "socket_replication_api.txt",
+           Case 1. IHA State is set to JSR_IHA_ST_SEC_UNREPLICATE
+
+         * A message of any subtype other than JSR_IPC_IHA_INIT_ACK
+           is discarded, an error message is logged and current state
+           is untouched.
+         * For subtype JSR_IPC_IHA_INIT, SDRL and PRL API routines are called 
+           if sdrl_info_len  and prl_info_len are non-zero.
+
+API        jsr_sdrl_sec_init()
+            * Based on the sdrl_send_data_len and sdrl_recv_data_len fields
+              it should allocated sufficient buffer space to receive data
+TBD        ?? What if there is not enough memory to receive new data ??
+              Do we send an NACk with ERR set to ENOMEM ??.
+              If there is enough memory then is it allocated at this point,
+              so that when the IPC message with the read data is received
+              we do not run out of memory ??
+
+API        jsr_psrm_sec_init()
+API        jsr_prl_sec_init() ??
+
+         * If any of the SDRL or PSRM routines return error then a
+           NACK with error code JSR_IPC_ERR_INTERNAL is sent to primary.
+           and SDRL API is called to unreplicate the socket.
+
+API         jsr_sdrl_sec_unreplicate()
+
+           IHA State is set to JSR_IHA_ST_SEC_UNREPLICATE
+           
+         * If everything succeeds then a ACK with ERR_OK is sent to primary.
+         * If sdrl_send_data_len is non-zero then
+               - jsr_iha_state is set to JSR_IHA_ST_SEC_SEND_WAIT
+               - Timeout is start waiting for Send Data from primary.
+         * If sdrl_send_data_len is zero and sdrl_recv_data_len is non-zero
+               - jsr_iha_state is set to JSR_IHA_ST_SEC_RECV_WAIT
+               - Timeout is start waiting for Recv Data from primary.
+         * If both sdrl_send_data_len sdrl_recv_data_len are zero
+               - jsr_iha_state is set to JSR_IHA_ST_SEC_INITIALIZED
+               - SDRL, PSRM and PRL API functions are called to
+                 kick of regular socket data replication
+API                  jsr_sdrl_sec_initialized()
+API                  jsr_psrm_sec_initialized()
+API                  jsr_prl_sec_initialized()
+
+
+      Error Handling:
+         * If a NACK is sent to primary socket's RE then the secondary
+           replicated is assumed to have failed.
+           jsr_iha_state will be set to JSR_IHA_ST_SEC_UNREPLICATE and
+           SDRL API will be called:
+
+API        jsr_sdrl_sec_unreplicate()
+
+
+      New jsr_iha_state -
+         JSR_IHA_ST_SEC_UNREPLICATE
+         JSR_IHA_ST_SEC_SEND_WAIT
+         JSR_IHA_ST_SEC_RECV_WAIT
+         JSR_IHA_ST_SEC_INITIALIZED
+
+   3.
+      Kernel            - Primary Socket Kernel
+      Old jsr_iha_state - JSR_IHA_ST_PRI_INIT
+
+      Action -
+         * KKCM calls jsr_iha_proc() to process the received 
+           JSR_IPC_TYPE_IHA msg.
+         * A message other than JSR_IPC_IHA_INIT_ACK is discarded
+           and an error message is logged. The current state is untouched.
+==>      * The handle is validated. If JSR handle is invalid the mesage
+           is discarded and the current state is maintained. The timeout
+           is not stopped.
+TBD        (Is a NACK sent to secondary ?)
+         * If the handle is valid then the timeout for this handle is stopped.
+TBD      * The IPC message is validated. If the message is invalid then 
+ASY        replication is failed for this socket. Async Notification is sent 
+           to application and SDRL reset routine is called to reset extension 
+           structure. State is set to JSR_IHA_ST_PRI_UNINITIALIZED
+API            jsr_sdrl_pri_reset()
+
+         * If a NACK is received then replication for this handle has failed.
+ASY        Async notification message is sent to the application.  SDRL
+           routine that will reset the extension structure are called and the 
+           IHA state is set back to JSR_IHA_ST_PRI_UNINITIALIZED
+API            jsr_sdrl_pri_reset()
+
+         * If valid error free ACK is received then SDRL routine to
+           is invoked that will give send data and send data length
+           to be sent to secondary
+API            jsr_sdrl_pri_send_data()
+
+         * If send data length is non-zero then an IPC message of type
+           JSR_IPC_IHA_SEND_DATA is written out to the secondary kernel.
+           IHA state is set to JSR_IHA_ST_PRI_SEND_DATA. Timeout is
+           started to wait for ACK for this message.
+
+         * If send data length is zero then SDRL routine to get recv
+           data and recv data length is invoked
+API            jsr_sdrl_pri_recv_data()
+
+         * If recv data length is non-zero then an IPC message of type
+           JSR_IPC_IHA_RECV_DATA is sent to secondary kernel. IHA state is
+           set to JSR_IPC_IHA_RECV_DATA. Timeout is started waiting for
+           ACK for this message.
+
+         * If recv data length is also zero then replication initialization
+           is assumed to have been completed. IHA state is set to
+           JSR_IHA_ST_PRI_INITIALIZED. SDRL and PRL routines are invoked to
+           start normal data replication.
+
+API            jsr_sdrl_pri_initialized()
+API            jsr_psrm_pri_initialized()
+API            jsr_prl_pri_initialized()
+
+      Error Handling:
+         * Has been detailed above.
+         
+      New jsr_iha_state -
+         JSR_IHA_ST_PRI_UNINITIALIZED
+         JSR_IHA_ST_PRI_SEND_DATA
+         JSR_IHA_ST_PRI_RECV_DATA
+         JSR_IHA_ST_PRI_INITIALIZED
+
+   3a. 
+      Kernel            - Primary Socket Kernel
+      Old jsr_iha_state - JSR_IHA_ST_PRI_INIT
+
+      Action -
+         * Timeout happens waiting for ACK from secondary.
+TBD        Currently a single timeout will cause replication failure.
+           (Can revisit in the future)
+
+TBD      * JSR_IPC_IHA_UNREPLICATE message is sent to secondary.
+           (Is this needed ?? )
+
+         * SDRL routine to reset replication state is called
+API            jsr_sdrl_pri_reset()
+        
+           and replication state is set to JSR_IHA_ST_PRI_UNINITIALIZED.
+ASY        Async notification is sent to primary application that
+           replication has failed for the socket.
+
+      New jsr_iha_state - JSR_IHA_ST_PRI_UNINITIALIZED
+
+   4.
+      Kernel            - Secondary Socket Kernel 
+      Old jsr_iha_state - JSR_IHA_ST_SEC_SEND_WAIT
+
+      Action:
+         * Initiale validation on similar lines as 2. is done.
+           Only messages of type JSR_IPC_TYPE_IHA and subtyes
+           JSR_IPC_IHA_SEND_DATA or JSR_IPC_IHA_UNREPLICATE are valid.
+
+         * For subtype JSR_IPC_IHA_SEND_DATA SDRL API is called to
+           consume the send data got from the primary. Timeout is
+           stopped.
+
+API         jsr_sdrl_sec_send_data()
+
+         * If SDRL routine returns error then a NACK with error code 
+           JSR_IPC_ERR_INTERNAL is sent to primary. Replication is failed
+           on the secondary using SDRL API.
+
+API         jsr_sdrl_sec_unreplicate()
+
+           IHA State is set to JSR_IHA_ST_SEC_UNREPLICATE
+  
+         * If jsr_sdrl_sec_send_data() succeeds then a ACK of subtype
+           JSR_IPC_IHA_SEND_ACK is sent to the primary. IHA state is
+           set to JSR_IHA_ST_SEC_RECV_WAIT if recv data is next expected
+           from this socket.
+           A timeout is started waiting for the recv data.
+           
+         * If there is no recv data expected then the replication 
+           initialization is complete. State is set to 
+           JSR_IHA_ST_SEC_INITIALIZED and SDRL/PRL routines are called:
+
+API                  jsr_sdrl_sec_initialized()
+API                  jsr_psrm_sec_initialized()
+API                  jsr_prl_sec_initialized()
+
+      Error Handling:
+         * Has been detailed above.
+
+      New jsr_iha_state -
+         JSR_IHA_ST_SEC_UNREPLICATE
+         JSR_IHA_ST_SEC_RECV_WAIT
+         JSR_IHA_ST_SEC_INITIALIZED
+
+   4a.
+      Kernel            - Secondary Socket Kernel
+      Old jsr_iha_state - JSR_IHA_ST_PRI_UNINITIALIZED
+
+      Action -
+         * Timeout happens waiting for Send Data from Primary
+TBD        Currently a single timeout will cause replication failure.
+           (Can revisit in the future)
+         *  Replication is failed on the secondary using SDRL API.
+
+API         jsr_sdrl_sec_unreplicate()
+
+           IHA State is set to JSR_IHA_ST_SEC_UNREPLICATE
+ 
+      New jsr_iha_state - JSR_IHA_ST_SEC_UNREPLICATE
+
+   5.
+      Kernel            - Primary Socket Kernel
+      Old jsr_iha_state - JSR_IHA_ST_PRI_UNINITIALIZED
+
+      Action -
+         * Initial message validation and action on NACK is as specified in
+           3. above.  Only messages of type JSR_IPC_TYPE_IHA and subtye
+           JSR_IPC_IHA_SEND_ACK is accepted.
+      
+         * If valid error free ACK is received then SDRL routine to
+           is invoked that will give recv data and recv data length
+           to be sent to secondary
+API            jsr_sdrl_pri_recv_data()
+
+         * If recv data length is non-zero then an IPC message of type
+           JSR_IPC_IHA_RECV_DATA is sent to secondary kernel. IHA state is
+           set to JSR_IPC_IHA_RECV_DATA. Timeout is started waiting for
+           ACK for this message.
+
+         * If recv data length is zero then replication initialization
+           is assumed to have been completed. IHA state is set to
+           JSR_IHA_ST_PRI_INITIALIZED. SDRL and PRL routines are invoked to
+           start normal data replication.
+
+      Error Handling:
+         * Has been detailed above.
+
+      New jsr_iha_state - 
+         JSR_IHA_ST_PRI_UNINITIALIZED
+         JSR_IHA_ST_PRI_RECV_DATA
+         JSR_IHA_ST_PRI_INITIALIZED
+
+   5a.
+      Kernel            - Primary Socket Kernel
+      Old jsr_iha_state - JSR_IHA_ST_PRI_SEND_DATA
+
+      Action -
+         * Timeout happens waiting for SEND_ACK from secondary.
+TBD        Currently a single timeout will cause replication failure.
+           (Can revisit in the future)
+
+         * Action as specified in 3a. above is taken.
+
+      New jsr_iha_state - JSR_IHA_ST_PRI_UNINITIALIZED
+
+   6.
+      Kernel            - Secondary Socket Kernel 
+      Old jsr_iha_state - JSR_IHA_ST_SEC_RECV_WAIT
+
+      Action -
+         * Pretty much same as 4.
+          
+         * SDRL API that gets called on getting valid recv data
+           IPC message of subtype JSR_IPC_IHA_RECV_ACK is sent to primary
+
+API         jsr_sdrl_sec_recv_data()
+
+           Secondary transitions to JSR_IHA_ST_SEC_INITIALIZED and
+           calls SDRL/PRL routines to start regular data replication
+
+API         jsr_sdrl_sec_initialized()
+API         jsr_prl_sec_initialized()
+
+         * SDRL API that gets called on getting invalid IPC message
+           IPC message of subtype JSR_IPC_IHA_ACK with error code set
+           to JSR_IPC_ERR_INVALID is sent to primary
+           
+API         jsr_sdrl_sec_unreplicate()
+
+
+      New jsr_iha_state -
+         JSR_IHA_ST_SEC_UNREPLICATE
+         JSR_IHA_ST_SEC_INITIALIZED
+
+   6a.
+      Kernel            - Secondary Socket Kernel 
+      Old jsr_iha_state - JSR_IHA_ST_SEC_RECV_WAIT
+
+      Action - 
+         * Timeout happens waiting for receive data. Action similar to
+           4a is taken.
+
+API         jsr_sdrl_sec_unreplicate()
+      
+      New jsr_iha_state -  JSR_IHA_ST_SEC_UNREPLICATE
+
+   7.
+      Kernel            - Primary Socket Kernel
+      Old jsr_iha_state - JSR_IHA_ST_PRI_RECV_DATA
+
+      Action:
+         * On same lines 5. On a valid error free ACK from secondary
+           primary will set IHA state to JSR_IHA_ST_PRI_INITIALIZED
+           and calls SDRL/PRL APIs
+
+API         jsr_sdrl_sec_initialized()
+API         jsr_prl_sec_initialized()
+
+
+      New jsr_iha_state - 
+         JSR_IHA_ST_PRI_UNINITIALIZED
+         JSR_IHA_ST_PRI_INITIALIZED
+
+   7a.
+      
+      Kernel            - Primary Socket Kernel
+      Old jsr_iha_state - JSR_IHA_ST_PRI_RECV_DATA
+
+      Action:
+         * Timeout happened waiting for RECV_ACK message.
+
+TBD        Currently a single timeout will cause replication failure.
+           (Can revisit in the future)
+
+         * Action as specified in 3a. above is taken.
+
+      New jsr_iha_state - JSR_IHA_ST_PRI_UNINITIALIZED
+
+3.4 Asynchronous Notification Mechanism - TBD
+
+TBD TBD
+
+3.5 Summary of APIs
+   We collect together all APIs provided by IHA layer and needed
+   by IHA layer from other JSR kernel modules.
+
+3.5.1 IHA APIs exposed to other layers
+
+   rts_jsrmproc()          - Used by netrtsock
+   jsr_iha_handle_alloc()  - Used by SDRL
+   jsr_iha_handle_free()   - Used by SDRL
+   jsr_iha_handle_lookup() - Used by SDRL, PRL, KKCM(?) and PSRM(?)
+   jsr_iha_handle_equal()  - Used by SDRL, PRL, KKCM(?) and PSRM(?)
+   jsr_iha_ipc_proc()      - Used by KKCM
+
+3.5.2 SDRL API needed by IHA Module
+
+   jsr_sdrl_pri_handle_alloc(int s, jsr_handle_t *shandle))
+   jsr_sdrl_pri_handle_free(jsr_handle_t *shandle))
+   jsr_sdrl_pri_init()
+   jsr_sdrl_pri_recv_data()
+   jsr_sdrl_pri_reset()
+   jsr_sdrl_pri_send_data()
+   jsr_sdrl_pri_unreplicate(int s);
+
+   jsr_sdrl_sec_close()
+   jsr_sdrl_sec_init()
+   jsr_sdrl_sec_initialized()
+   jsr_sdrl_sec_merge(jsr_handle_t *shandle);
+   jsr_sdrl_sec_recv_data(jsr_handle_t *shandle);
+   jsr_sdrl_sec_send_data(jsr_handle_t *shandle);
+   jsr_sdrl_sec_split(jsr_handle_t *shandle);
+   jsr_sdrl_sec_unalloc()
+   jsr_sdrl_sec_unreplicate()
+
+   jsr_sdrl_get_handle_by_fd()
+   jsr_sdrl_get_fds_by_fd()
+
+3.5.3 PSRM API needed by IHA Module
+
+   jsr_psrm_pri_init()
+   jsr_psrm_pri_initialized()
+   jsr_psrm_pri_unreplicate(int s);
+
+   jsr_psrm_sec_close()
+   jsr_psrm_sec_init()
+   jsr_psrm_sec_initialized()
+   jsr_psrm_sec_merge(jsr_handle_t *shandle);
+   jsr_psrm_sec_split(jsr_handle_t *shandle);
+   jsr_psrm_sec_unalloc()
+
+3.5.4 PRL API needed by IHA Module
+
+   jsr_prl_pri_init()
+   jsr_prl_pri_initialized()
+   jsr_prl_pri_unreplicate(int s);
+
+   jsr_prl_sec_close()
+   jsr_prl_sec_init()
+   jsr_prl_sec_initialized()
+   jsr_prl_sec_unalloc()
+
+3.6 Summary of IHA Kernel to Kernel IPC Message Formats
+
+3.6.1 IHA Module Message Formats
+
+   The message type for the IHA module is JSR_IPC_TYPE_IHA
+
+   The message subtypes IHA Module are
+
+   enum {
+       JSR_IPC_IHA_INIT,
+       JSR_IPC_IHA_INIT_ACK,
+       JSR_IPC_IHA_SEND_DATA,
+       JSR_IPC_IHA_SEND_ACK,
+       JSR_IPC_IHA_RECV_DATA,
+       JSR_IPC_IHA_RECV_ACK,
+       JSR_IPC_IHA_UNREPLICATE
+       JSR_IPC_IHA_MAX
+   };
+
+   For each of the subtypes we define the following IPC
+   messages:
+
+   Subtype JSR_IPC_IHA_INIT:
+       typedef struct jsr_ipc_iha_init_ {
+           jsr_ipc_hdr_t    iha_hdr;
+           jsr_handle_t     iha_handle;
+           u_int32_t        sdrl_info_len;
+           u_int32_t        psrm_info_len;
+           u_int32_t        sdrl_send_data_len;
+           u_int32_t        sdrl_recv_data_len;
+           u_int8_t         data[0];
+       } jsr_ipc_iha_init_t;
+
+   Subtype JSR_IPC_IHA_SEND_DATA:
+       typedef struct jsr_ipc_iha_send_ {
+           jsr_ipc_hdr_t    iha_hdr;
+           jsr_handle_t     iha_handle;
+           u_int32_t        sdrl_send_data_len;
+           u_int8_t         data[0];
+       } jsr_ipc_iha_send_t;
+
+   Subtype JSR_IPC_IHA_RECV_DATA:
+       typedef struct jsr_ipc_iha_recv_ {
+           jsr_ipc_hdr_t    iha_hdr;
+           jsr_handle_t     iha_handle;
+           u_int32_t        sdrl_recv_data_len;
+           u_int8_t         data[0];
+       } jsr_ipc_iha_recv_t;
+
+   Subtype JSR_IPC_IHA_INIT_ACK:
+   Subtype JSR_IPC_IHA_SEND_ACK:
+   Subtype JSR_IPC_IHA_RECV_ACK:
+       typedef struct jsr_ipc_iha_ack_ {
+           jsr_ipc_hdr_t    iha_hdr;
+           jsr_handle_t     iha_handle;
+           jsr_ipc_err_t    iha_error;
+       } jsr_ipc_iha_ack_t;
+
+     . iha_error if 0 means a positive ACK (no errors).
+     . iha_error if non-zero means a NACK. The value in iha_error
+       indicates the type of error.
+
+   Subtype JSR_IPC_IHA_UNREPLICATE:
+       typedef struct jsr_ipc_iha_ack_ {
+           jsr_ipc_hdr_t    iha_hdr;
+           jsr_handle_t     iha_handle;
+       } jsr_ipc_iha_ack_t;
+
+3.6.2 Summary of IPC ACK Error Codes used by IHA
+
+      JSR_IPC_ERR_OK,               /* No error */
+      JSR_IPC_ERR_INVALID_HANDLE,   /* The JSR handle was invalid */
+      JSR_IPC_ERR_INVALID_IPC,      /* The IPC message for which the ACK is
+                                       needed failed basic sanity checks */
+      JSR_IPC_ERR_INTERNAL,         /* The sending side had an internal error */
+
+
+3.7 Discussion Points
+
+   a) What happens on secondary in following failure cases:
+
+      . During initialization secondary was expecting send or recv
+        data and a timeout happens. Is the secondary's handle valid ?
+      . On secondary should only jsr_close() or close() invalidate the
+        handle ? If there is some replication failure later on then
+        should the handle be proactively invalidated at that point ?
+
+      jsr_split() failure. Case 3. Failure during initialization.
+
+   b) Do we want to combine SEND_DATA and RECV_DATA in the initialization
+      phase into one single message ?
+
+   c) Consider the following case:
+         . Primary does jsr_handle_alloc(), gets a handle.
+         . Handle uses up an index entry in the primary's index table
+         . Handle is sent to secondary and secondary does jsr_split()
+         . Handles uses up an index entry in the secondary's index table
+         . Primary closes the socket the index entry on the primary
+           becomes available. Primary does not do a jsr_unreplicate().
+         . Secondary Application is informed of this socket close by
+           the primary but the secondary application has not yet
+           done a jsr_close().
+         . Primary does another jsr_handle_alloc() and this new
+           handle ends up using the same index entry as the earlier handle.
+         . Primary sends this handle to the secondary and secondary
+           tries a jsr_split(). This jsr_split() call will fail.
+
+      It can happen that the two handles in question were allocated
+      by two different applications.
+
+   d) EINTR ? In what cases will we have to return EINTR when
+      JSR API is used.
+
+   e) Whenever KKCM on secondary/primry receives an initial message header 
+      should it start a timeout waiting for complete message to come ?
+      The timeouts at IHA, SDRL, PRL are not much use here as they are
+      not even aware that a partial message has arrived.
+
+
+   f) Mastership changes.
+      If mastership has just changed, new master has some secondary sockets
+      and jsr_merge() has not been called on them. If a peer sends
+      a SYN, SYN-ACK will these result in the peer getting a RST ?
+      If the peer sends data packets which now start hitting the new
+      master but socket is still secondary what is done with the packets ?
+
+   g) Should KKCM on primary be provided a single failure call for mastership 
+      change, NSR being disabled and secondary RE crashing ?
+
+      May make sense to just have one call (from IHA layer) which
+      is given the reason for replication shutdown. The IHA call can
+      send an async notification to all primary applications and set some 
+      flag or state which will tell SDRL and PRL layers to take appropriate
+      action.
+
+      On secondary kernel this call will set the flag/state for PRL/SDRL
+      to know that replication is off, but there is no application
+      visible notification
+
+      There is a time window on the primary between turning off replication
+      and the application reading the async notification. What happens to
+      all writes/read done in the interim period on the primary socket ?
+      (Question for RPD folks).
+
+
+
+
+
+vim:et:ts=3:tw=76:wm=76:sw=3:ru

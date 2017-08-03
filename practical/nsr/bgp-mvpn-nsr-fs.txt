@@ -1,0 +1,430 @@
+
+$Header: /cvs/juniper/sw-projects/os/nsr/bgp-mvpn-nsr-fs.txt,v 1.4 2012/12/05 20:30:44 nvinay Exp $
+
+
+Process Template J3.02.P05.T01S
+		    BGP MVPN NSR Support
+	    Vinay K Nallamothu <nvinay@juniper.net>
+
+Copyright (C) 2010, Juniper Networks, Inc.
+Template Owner(s):  Waldek Mikolajczyk
+Template Version 1.3
+
+NOTICE: This document contains proprietary and confidential
+information of Juniper Networks, Inc. and must not be distributed
+outside of the company without the permission of Juniper Networks
+engineering.
+
+
+TABLE OF CONTENTS
+
+Table of Contents
+1.	Introduction	
+1.1	Document Revision History	
+1.2	Reference	
+1.3	RLI List	
+1.4	Feature Parity Traceability	
+2.	Functionality	
+2.1	Goals	
+2.2	Non-Goals	
+2.3	Functional competitive data	
+2.4	APIs/Messages	
+2.5	CLI Config	
+2.5.1	CLI Config Details	
+2.6	CLI Commands	
+2.6.1	CLI Command Details	
+2.7	JUNOScript
+2.8	J-Web Quick Configuration and Monitor Screen	
+2.9	SNMP	
+2.10	Syslog ERRMSG	
+2.11	Serviceability and diagnose-ability	
+2.12	Assumptions	
+2.13	Constraints and Limitations	
+2.14	Dependencies and Interactions with other Components in the System
+2.15	Examples or Interaction Descriptions	
+2.16	Free Software Considerations	
+2.17	3rd party Software Considerations	
+2.17.1	3rd party software package information and its functionality
+2.17.2	Anticipated usage of 3rd party code	
+2.17.3	Anticipated integration rules within JUNOS	
+3.	Caveats	
+4.	Other Requirements	
+5.	Resource Estimation	
+6.	Performance	
+6.1	Performance Related Resources	
+6.2	Target Performance	
+7.	Compatibility Issues	
+8.	Security Issues	
+9.	Platforms Supported	
+10.	High Availability (HA)	
+10.1	Graceful RE Switchover (GRES), ISSU and NSSU Impact	
+10.2	NSR Impact	
+11.	Aggregated Ethernet/ SONET/ IRB Support	
+12.	SDK Impact	
+12.1	SDK Customer Usage	
+13.	Services/JSF (JUNOS Services Framework) Impact	
+14.	JUNOS Ready Software considerations	
+15.	Multi-Chassis Support	
+16.	64-Bit Support	
+17.	IPv6 Support
+18.	Logical System Support	
+19.	Notes	
+20.	Glossary	
+21.	Design Specification exception	
+22.	Review Comments	
+22.1	Review stakeholder matrix	
+
+
+
+
+
+1.	Introduction
+
+This document describes the functional details of Non Stop Routing (NSR)
+support for BGP MVPN.
+
+Currently in Graceful RE Switchover (GRES), when the master RE fails, the backup
+RE will take over. BGP MVPN on the new master RE will re-learn the MVPN states 
+from scratch. This would take some time and cause the loss of the existing and 
+new multicast traffic during the MVPN state re-building.
+
+BGP MVPN NSR improves upon this by synchronizing the MVPN state to the backup RE
+and further reduces the time to rebuild the MVPN state after the RE switchover.
+MVPN NSR can protect existing multicast vpn flows and accept new multicast flows
+immediately after RE switchover.
+
+This feature extends the PIM NSR support to BGP MVPN scenarios.
+
+1.1	Document Revision History
+
+ Revision: 1.0
+ Author: Vinay K Nallamothu
+ Date: 08/23/2012
+ Description of Changes: Initial draft
+
+1.2	Reference
+	
+[PIM-NSR-FS]   PIM NSR Functional Specification. RLI 2728
+               sw-projects/os/nsr/pim-nsr-funcspec.txt
+
+[ROSEN-NSR-FS] ROSEN MVPN NSR Functional Specification. RLI 12.2
+	       sw-projects/os/nsr/pim-nsr-rosen-mvpn-funcspec.txt
+
+[BGP-MVPN-RFC] Multicast in MPLS/BGP IP VPNs RFC 6513
+
+1.3 RLI List
+
+    +-------+-------------------------------------------+---------+--------+
+    | RLI   | Description                               | Release | PR     |
+    +-------+-------------------------------------------+---------+--------+
+    | 5809  | BGP MVPN NSR Support		        | 14.1    | 810724 |
+    +-------+-------------------------------------------+---------+--------+
+
+1.4	Feature Parity Traceability
+
+Not applicable.
+N/A
+
+
+2.	Functionality
+
+BGP MVPN is an L3VPN application that is built on the top of various unicast and
+multicast routing protocols such as PIM, BGP, RSVP, LDP. Enabling NSR for
+BGP MVPN requires that NSR support is enabled for all these protocols.
+
+The state maintained by MVPN includes MVPN routes, cmcast, provider-tunnel and
+forwarding information. BGP MVPN NSR synchronizes this MVPN state between the
+master and back REs.
+
+While some of the state on the backup RE is locally built based on the
+configuration, most of it is built based on triggers from other protocols MVPN
+interacts with. The triggers from these protocols are in turn the result of
+state replication performed by these modules. This includes route change
+notifications by unicast protocols, join and prune triggers from PIM, remote
+MVPN route notification by BGP, provider-tunnel related notifications from
+RSVP and LDP.
+
+Since PIM/multicast on backup RE doesn't monitor the traffic rate statistics
+for the multicast flows, the backup RE on the ingress PE can't make its own
+decision to trigger creation of selective p-tunnels which have a threshold rate
+configuration.
+
+For such cases, the backup RE creates selective p-tunnels based on state
+synchronization from master RE, and doesn't maintain the periodic flow rate
+monitoring timer which is used to advertise or withdraw selective AD routes.
+When the master fails and the backup RE takes over, flow rate monitoring is
+enabled. As the timer expiration could be different from the original master,
+triggering of selective AD routes may deviate slightly.
+
+2.1	Goals
+
+The goal of this RLI is to extend NSR support to BGP MVPN protocol for all
+features currently supported. This includes various provider tunnel types
+(RSVP-TE, LDP-P2MP, IR, PIM-ASM, PIM-SSM), different mvpn modes (source tree,
+shared-tree) and PIM features (auto-rp, BSR).
+
+Acheiving this has external dependencies (dynamic p2mp, mLDP. More details in
+caveats section) and can impact delivery of all features in 14.1.
+
+2.2	Non-Goals
+
+1. NSR support for inter-as segmented p-tunnels (option b).
+2. GR/GRES support BGP MVPN is not within the scope of this RLI
+
+2.3	Functional competitive data
+
+Not available.
+
+2.4 APIs/Messages
+
+N/A
+
+2.5 CLI Config
+
+No new CLI configuration will be added. However, to enable BGP MVPN NSR support,
+an additional (existing) knob needs to be configured.
+
+# set protocols bgp advertise-from-main-vpn-tables
+
+2.5.1	CLI Config Details 
+
+N/A
+
+2.6 CLI Commands
+
+There are no new CLI commands added.
+
+2.6.1	CLI Command Details 
+
+No new CLI commands are introduced. Regular CLI commands can be issued on the 
+backup RE to track BGP MVPN related PIM state, and multicast forwarding states
+on the backup RE.
+
+2.7	JUNOScript
+
+N/A
+
+2.8	J-Web Quick Configuration and Monitor Screen
+
+N/A
+
+2.9 SNMP
+
+N/A
+
+2.10	Syslog ERRMSG
+
+None.
+
+2.11	Serviceability and diagnose-ability
+
+All mvpn specific CLI commands available to users on master RE are also
+available on backup RE:
+
+    show mvpn instance
+    show mvpn c-multicast
+    show ingress-replication mvpn
+    show route table <inst>.mvpn.0
+    show route table <inst>.mvpn-inet6.0
+
+Similarly all the multicast and PIM commands are available on the backup RE:
+
+    show pim join
+    show multicast route
+    show pim interface
+    show route table <inst>.inet.1
+    show route table <inst>.inet6.1
+
+It should be noted that forwarding statistics for multicast flows will not be
+available on backup RE.
+
+2.12	Assumptions
+
+
+2.13	Constraints and Limitations
+
+
+2.14	Dependencies and Interactions with other Components in the System
+
+
+2.15	Examples or Interaction Descriptions
+
+
+2.16	Free Software Considerations
+
+N/A
+
+2.17	3rd party Software Considerations
+
+N/A
+
+2.17.1	3rd party software package information and its functionality
+
+N/A
+
+2.17.2	Anticipated usage of 3rd party code 
+
+N/A
+
+2.17.3	Anticipated integration rules within JUNOS
+
+N/A
+ 
+3.	Caveats
+
+Enabling NSR for some of the BGP MVPN modes depends on NSR support by other
+modules which are not available today. NSR support for the below listed modes
+may be affected by the availability of these features.
+
+    +---------------------------+-----------------------------+----------------+
+    | Missing feature that MVPN |   MVPN NSR feature affected |    Expected    |
+    |    has dependencies on    |                             |  availability  |
+    +---------------------------+-----------------------------+----------------+
+    | RSVP-TE Dynamic P2MP NSR  | dynamic p2mp p-tunnel       |      14.1      |
+    |                           |                             |                |
+    | RSVP-TE Dynamic P2P NSR   | RSVP signaled IR p-tunnels  |      14.1 ?    |
+    |                           |                             |                |
+    | LDP-P2MP NSR              | LDP-P2MP p-tunnel           |      13.3      |
+    |                           |                             |                |
+    | LDP NSR for broadcast ifl | LDP signaled IR p-tunnels   |      13.3 ?    |
+    +---------------------------+-----------------------------+----------------+
+
+NSR support will not be enabled for Inter-AS option-b/segmented p-tunnels. This
+will addressed at a later date as a PR when the segmented p-tunnel functionality
+is enabled.
+
+Most of the processing performing by BGP MVPN is deterministic in nature and NSR
+support leverages this characteristic. However, there are few corner cases where
+this may not apply. Issues arising out of such corner cases may not addressed
+as a part of the feature, but as a separate PRs. Known issues are:
+
+    * In ebgp scenarios, when a route is learnt from different ebgp peers, the
+      backup might endup chosing a nexthop gateway different from the one chosen
+      by the master RE. While there are no known scenarios where BGP-MVPN might
+      be affected, will be addressed later as a separate PR. 
+
+    * NSR support for BGP MVPN SNMP MIB feature may not be available as a part
+      of this RLI. As it is an ongoing effort, aNSR support for this feature
+      may have to be extended later as a separate PR.
+
+4.	Other Requirements
+
+
+5.	Resource Estimation
+
+Since this feature requires enabling of the knob advertise-from-main-vpn-table,
+this would result in maintaining a copy of the locally originated MVPN routes
+in the bgp.mvpn.0 table as well. rpd memory usage will increase as a result.
+
+Also synchronizing BGP MVPN state to the backup RE requires maintaining
+additional replication objects on both master and backup REs resulting in
+increased memory usage and slight overhead in processing.
+
+When the NSR feature is not enabled, there shouldn't be any noticeable
+peformance degradation.
+
+6.	Performance 
+
+There is no performance degradation in non-NSR case.
+
+6.1	Performance Related Resources
+
+N/A.
+
+6.2	Target Performance
+
+Remain same as current implementation.
+
+7.	Compatibility Issues
+
+None.
+
+8.	Security Issues
+
+None.
+
+9.	Platforms Supported
+
+This feature is platform independent.
+
+10.	High Availability (HA)
+
+10.1	Graceful RE Switchover(GRES), ISSU and NSSU Impact
+
+GRES is supported. GRES has to be enabled when users configure NSR.
+
+10.2 NSR Impact
+
+This feature adds NSR support for BGP MVPN.
+
+11.	Aggregated Ethernet/ SONET/ IRB Support
+
+N/A.
+
+12.	SDK Impact
+
+N/A.
+
+12.1 SDK Customer Usage
+
+N/A.
+
+13.	Services/JSF (JUNOS Services Framework) Impact 
+
+N/A.
+
+14.	JUNOS Ready Software considerations 
+
+N/A.
+
+15.	Multi-Chassis Support
+
+RPD is not multi-chassis aware.
+
+16.	64-Bit Support
+
+This feature includes support for 64-bit platforms.
+
+17. IPv6 Support
+
+This feature includes support for IPv6.
+
+18.	Logical System Support
+
+NSR is not supported in the logical systems.
+
+19.	Notes
+
+None.
+
+20.	Glossary
+
+None.
+
+21.	Design Specification exception
+
+
+22.	Review Comments
+
+
+
+22.1	Review stakeholder matrix
+
+Function			Name			Required?	Approval State
+---------------------------------------------------------------------------------------------------------------
+SW1 (kernel, RPD, PFE etc)				Yes/No/Optional	Approved/Rejected/Approved with actions
+SW2 (kernel, RPD, PFE etc)				Yes/No/Optional	Approved/Rejected/Approved with actions
+SW3 (kernel, RPD, PFE etc)				Yes/No/Optional	Approved/Rejected/Approved with actions
+SW Manager						Yes/No/Optional	Approved/Rejected/Approved with actions
+JAB							Yes/No/Optional	Approved/Rejected/Approved with actions
+Systest							Yes/No/Optional	Approved/Rejected/Approved with actions
+Tech-pubs						Yes/No/Optional	Approved/Rejected/Approved with actions
+JTAC							Yes/No/Optional	Approved/Rejected/Approved with actions
+HW							Yes/No/Optional	Approved/Rejected/Approved with actions
+
+
+
+© Copyright 2010 Juniper Networks, Inc. -- Proprietary and Confidential
+Do not distribute outside of the company without the permission of Juniper Networks engineering
+Printed copies are for reference only!
+ 

@@ -1,0 +1,845 @@
+$Id: isis_software_spec.txt,v 1.3 2006/01/17 18:56:02 qv Exp $
+
+ISIS non-stop routing (RLI 2712)
+
+S3.02.P05.T01
+
+Functional Specification.
+Author: Quaizar Vohra (qv@juniper.net)
+
+Copyright (C) 2005, Juniper Networks, Inc.
+
+NOTICE: This document contains proprietary and confidential
+information of Juniper Networks, Inc. and must not be distributed
+outside of the company without the permission of Juniper Networks
+engineering.
+
+
+{IMPORTANT: As necessary, note if this document discusses a feature
+which is export restricted or contains other limitations regarding who
+can receive it or learn about it.}
+
+
+1.  INTRODUCTION
+
+Please refer to {BGPNSR] specification for a general introduction
+to non-stop routing functionality and requirements.
+
+1.1 ISIS specific requirements.
+
+Applying the guidelines introduced by {BGPNSR], we come up with
+the following requirements for ISIS.
+
+ o Maintianing ISIS adjacencies across a swithchover - this is acheived
+   by replicating enough information about an adjacency, from the master
+   RE to the backup RE, that will allow the backup RE to continue
+   maintaing the adjacency after switchover.
+
+ o Minimizing routing convergence after a switchover - this is acheived
+   by replicating the link-state database and running SPF on an ongoing
+   basis on the backup RE.
+
+ o Minimizing performance impact on the master RE - this is acheived by
+   making the ISIS operation on the backup RE completely asynchronous to
+   the ISIS operation on the master. ISIS on backup RE simply operates
+   on replication messages sent by the master. There are no sync points
+   or acks for which the master has to wait before starting any of its
+   ISIS operations.
+
+ o Compatibility between different software versions running on the
+   master RE and backup RE - this is acheived by using protocol messages
+   as much as possible for replication to maintain backward
+   compatiblity. Also for information which cannot be replicated using
+   protocol messages, we will use TLVs for encoding.
+
+ o Maintaining correctness of operation on master as well as backup RE -
+   this has been acheived by careful implementation design which would
+   have minimal impact on the existing codebase. By using protocol
+   messages for replication, we have minimized the addition of new code
+   for encoding and parsing these messages. Also by keeping the
+   replicated information completely independent of the kernel state
+   on the backup RE, we have avoided nasty race conditions.
+
+2.  FUNCTIONALITY
+
+2.1 CLI Configuration
+
+A new traceflag is added under [protocols isis traceoptions].
+
+regress@pro6-d> show configuration protocols isis
+traceoptions {
+    file isis.log size 8m world-readable;
+    flag iih;
++   flag nsr-synchronization detail;
+}
+
+2.2 CLI Commands
+
+All ISIS CLI commands apply on the backup RE as well. The output of
+these commands on the master and backup RE may be inconsistent. The two
+important pieces which are being replicated within ISIS are the
+adjacency information which can be displayed by "show isis adjacency"
+and the link-state database which can be displayed by "show isis
+database".
+
+Three new additional commands have been defined for displaying and
+debugging the replicated isis information. These commands
+work on both the active as well as the standby RE.
+
+2.2.1 Displaying System-id Replication Database
+
+"Show isis system-id-replication-database" displays the list of per
+instance system-id replication entries.
+
+regress@pro2-a# run show isis system-id-replication-database    
+IS-IS system-id replication database:
+Instance name                    System-id                   Used
+RI                               0102.5500.1001               Yes
+master                           1921.6800.4217               Yes
+
+Explanation :
+  Instance name
+    Name of the routing-instance a particular system-id replication
+    entry corresponds to.
+  System-id
+    Per routing-instance ISIS system-id which is being replicated.
+  Used
+    Indicates whether the replication entry is tied to a configured
+    instance. On the master RE, this is always displayed as "Yes" since
+    the master RE originates a replication entry for each configured
+    routing-instance which has been assigned a system-id. On the backup
+    RE, it is displayed as "No" if the correponding routing-intance is
+    not present (which happens only when the configuration on the
+    master and backup RE is not consistent and should be a transient
+    situation). Otherwise, this field is displayed as "Yes".
+
+regress@pro2-a# ...-replication-database | display xml                      
+<rpc-reply xmlns:junos="http://xml.juniper.net/junos/7.6I0/junos">
+    <isis-system-id-replication-database-information xmlns="http://xml.juniper.net/junos/7.6I0/junos-routing">
+        <isis-system-id-replication-database>
+            <instance-name>RI</instance-name>
+            <system-id>0102.5500.1001</system-id>
+            <replication-entry-in-use>No</replication-entry-in-use>
+        </isis-system-id-replication-database>
+        <isis-system-id-replication-database>
+            <instance-name>master</instance-name>
+            <system-id>1921.6800.4217</system-id>
+            <replication-entry-in-use>Yes</replication-entry-in-use>
+        </isis-system-id-replication-database>
+    </isis-system-id-replication-database-information>
+</rpc-reply>
+
+ 
+2.2.2 Displaying Adjacency Replication Database
+
+"Show isis adjacency-replication-database" displays the list
+of adjacency replication entries across all ISIS instances
+
+regress@pro2-a# run show isis adjacency-replication-database 
+IS-IS adjacency replication database:
+If-index   System-id         Level                 SNPA
+68         0102.5500.1222    3      
+  Last event on active RE: Seenself           State on active RE: Up
+69         1921.6800.4218    1         0:12:1e:ff:ff:ff
+  Last event on active RE: Seenself           State on active RE: Up
+  Instance : master                           Interface : fe-0/1/0.0
+69         1921.6800.4218    2         0:12:1e:ff:ff:ff
+  Last event on active RE: Seenself           State on active RE: Up
+  Instance : master                           Interface : fe-0/1/0.0
+69         1921.6800.4220    1          0:90:69:69:74:0
+  Last event on active RE: Seenself           State on active RE: Up
+  Instance : master                           Interface : fe-0/1/0.0
+69         1921.6800.4220    2          0:90:69:69:74:0
+  Last event on active RE: Seenself           State on active RE: Up
+  Instance : master                           Interface : fe-0/1/0.0
+70         0102.5500.1222    1         0:12:1e:ff:ff:ff
+  Last event on active RE: Seenself           State on active RE: Up
+70         0102.5500.1222    2         0:12:1e:ff:ff:ff
+  Last event on active RE: Seenself           State on active RE: Up
+71         1921.6800.4218    3      
+  Last event on active RE: Seenself           State on active RE: Up
+  Instance : master                           Interface : so-0/2/1.0
+
+Explanation:
+
+  If-index
+    Interface-index identifying the interface where this adjacency is
+    formed.
+  System-id
+    ISIS system-id indentifying the adjacency neighbor.
+  Level
+    Level number received in the last hello packet over the adjacency.
+  SNPA
+    Subnetwork Point of Attachment, i.e. the neighbor's MAC address if
+    the link is LAN.
+  Last event on active RE
+    Last event that occured on this adjacency on the active RE.
+  State on active RE.
+    Current ISIS adjacency state on the active RE.
+  Instance
+    Name of the instance this adjacency replication entry is tied too.
+  Interface
+    Name of the interface this adjacency replication entry is tied too.
+
+On the standby RE, an adjacency replication entry is used in
+instantiating a corresponding ISIS adjacency whenver the interface
+sub-unit identified by the "If-index" field comes up (or is already
+present in UP state at the time of learning the adjacency replication
+entry). The "Instance" and "Interface" fields are displayed only if the
+adjacency replication entry has resulted in instantiation of an
+adjacency.
+
+regress@pro2-a# ...-replication-database | display xml                        
+<rpc-reply xmlns:junos="http://xml.juniper.net/junos/7.6I0/junos">
+    <isis-adjacency-replication-database-information xmlns="http://xml.juniper.net/junos/7.6I0/junos-routing">
+        <isis-adjacency-replication-database>
+            <interface-index>68</interface-index>
+            <system-name>0102.5500.1222</system-name>
+            <level>3</level>
+            <adjacency-state>Up</adjacency-state>
+            <adjacency-event>Seenself</adjacency-event>
+        </isis-adjacency-replication-database>
+        <isis-adjacency-replication-database>
+            <interface-index>69</interface-index>
+            <system-name>1921.6800.4218</system-name>
+            <level>1</level>
+            <snpa>0:12:1e:ff:ff:ff</snpa>
+            <adjacency-state>Up</adjacency-state>
+            <adjacency-event>Seenself</adjacency-event>
+            <instance-name>master</instance-name>
+            <interface-name>fe-0/1/0.0</interface-name>
+        </isis-adjacency-replication-database>
+        <isis-adjacency-replication-database>
+            <interface-index>69</interface-index>
+            <system-name>1921.6800.4218</system-name>
+            <level>2</level>
+            <snpa>0:12:1e:ff:ff:ff</snpa>
+            <adjacency-state>Up</adjacency-state>
+            <adjacency-event>Seenself</adjacency-event>
+            <instance-name>master</instance-name>
+            <interface-name>fe-0/1/0.0</interface-name>
+        </isis-adjacency-replication-database>
+        <isis-adjacency-replication-database>
+            <interface-index>69</interface-index>
+            <system-name>1921.6800.4220</system-name>
+            <level>1</level>
+            <snpa>0:90:69:69:74:0</snpa>
+            <adjacency-state>Up</adjacency-state>
+            <adjacency-event>Seenself</adjacency-event>
+            <instance-name>master</instance-name>
+            <interface-name>fe-0/1/0.0</interface-name>
+        </isis-adjacency-replication-database>
+        <isis-adjacency-replication-database>
+            <interface-index>69</interface-index>
+            <system-name>1921.6800.4220</system-name>
+            <level>2</level>
+            <snpa>0:90:69:69:74:0</snpa>
+            <adjacency-state>Up</adjacency-state>
+            <adjacency-event>Seenself</adjacency-event>
+            <instance-name>master</instance-name>
+            <interface-name>fe-0/1/0.0</interface-name>
+        </isis-adjacency-replication-database>
+        <isis-adjacency-replication-database>
+            <interface-index>70</interface-index>
+            <system-name>0102.5500.1222</system-name>
+            <level>1</level>
+            <snpa>0:12:1e:ff:ff:ff</snpa>
+            <adjacency-state>Up</adjacency-state>
+            <adjacency-event>Seenself</adjacency-event>
+        </isis-adjacency-replication-database>
+        <isis-adjacency-replication-database>
+            <interface-index>70</interface-index>
+            <system-name>0102.5500.1222</system-name>
+            <level>2</level>
+            <snpa>0:12:1e:ff:ff:ff</snpa>
+            <adjacency-state>Up</adjacency-state>
+            <adjacency-event>Seenself</adjacency-event>
+        </isis-adjacency-replication-database>
+        <isis-adjacency-replication-database>
+            <interface-index>71</interface-index>
+            <system-name>1921.6800.4218</system-name>
+            <level>3</level>
+            <adjacency-state>Up</adjacency-state>
+            <adjacency-event>Seenself</adjacency-event>
+            <instance-name>master</instance-name>
+            <interface-name>so-0/2/1.0</interface-name>
+        </isis-adjacency-replication-database>
+    </isis-adjacency-replication-database-information>
+</rpc-reply>
+
+
+2.2.3 Displaying Link-State Replication Database
+
+"Show isis link-state-replication-database" displays the list
+of link-state database replication entries across all ISIS instances
+
+regress@pro2-a# run show isis link-state-replication-database    
+IS-IS instance RI level 1 link-state database:
+LSP ID                      Sequence Checksum Lifetime Used
+0102.5500.1001.00-00            0x23   0x6776     1018  Yes
+pro2-b.00-00                   0xb4e   0x2a38     1016  Yes
+pro2-b.02-00                     0x1   0xd167      986  Yes
+  3 LSP Replication Entries
+
+IS-IS instance RI level 2 link-state database:
+LSP ID                      Sequence Checksum Lifetime Used
+0102.5500.1001.00-00            0x28   0x8fa0     1018  Yes
+pro2-b.00-00                   0xb6c   0xed56     1016  Yes
+pro2-b.02-00                     0xa   0xbf70     1014  Yes
+  3 LSP Replication Entries
+
+IS-IS instance master level 1 link-state database:
+LSP ID                      Sequence Checksum Lifetime Used
+pro2-a.00-00                    0x1d    0xca1     1017  Yes
+pro2-a.02-00                    0x17   0xab60     1013  Yes
+1921.6800.4218.00-00          0x13f0   0x6edd     1015  Yes
+pro2-d.00-00                  0x1424   0x4dcd     1011  Yes
+pro2-d.02-00                     0x2        0        0  Yes
+  5 LSP Replication Entries
+
+IS-IS instance master level 2 link-state database:
+LSP ID                      Sequence Checksum Lifetime Used
+pro2-a.00-00                    0x27   0x6f2b     1017  Yes
+pro2-a.02-00                    0x1b   0xf215     1013  Yes
+1921.6800.4218.00-00          0x14e3   0xe552     1015  Yes
+1921.6800.4218.02-00           0x6d1   0xece8      923  Yes
+pro2-c.00-00                   0x715   0xdb14      688  Yes
+pro2-d.00-00                  0x161e   0x9a57     1011  Yes
+pro2-d.02-00                     0x2        0        0  Yes
+pro2-f.00-00                   0x710   0xe788     1043  Yes
+  8 LSP Replication Entries
+
+{backup}[edit]
+
+Explanation:
+
+  Instance
+    Name of the routing-instance this link-state database replication
+    entry is tied too.
+  Level
+    Instance level to which this link-state database replication entry
+    belongs.
+  LSP-id
+    ISIS Link-state PDU indentifier.
+  Sequence
+    Sequence # carried inside the Link-state PDU sequence in question.
+  Checksum
+    checksum carried inside the Link-state PDU sequence in question.
+  Lifetime
+    Time to expiry for the Link-state PDU sequence in question.
+  Used
+    Indicates whether the replication entry is tied to a link-state
+    database entry. On the master RE, this is always displayed as "Yes"
+    since the master RE originates a replication entry for each link-
+    state database entry installed in its per-instance per-level 
+    database. On the backup RE, it is displayed as "No" if the
+    correponding link-state database entry has not been instantiated
+    (this happens during very short lived race conditions or
+    when the configuration is not consistent across the master and the
+    backup RE which should also be a very short lived transient
+    situation). Otherwise, this field is displayed as "Yes".
+
+On the standby RE, a link-state database replication entry is used in
+instantiating a corresponding ISIS link-state database entry whenver the
+associated routing-instance and level are created (or are already
+present at the time of learning the link-state database replication
+entry), and a system-id is assigned to the routing-instance by
+system-id replication.
+
+regress@pro2-a# ...e-replication-database | display xml                      
+<rpc-reply xmlns:junos="http://xml.juniper.net/junos/7.6I0/junos">
+    <isis-link-state-replication-database-information xmlns="http://xml.juniper.net/junos/7.6I0/junos-routing">
+        <isis-link-state-replication-database>
+            <instance-name>RI</instance-name>
+            <level>1</level>
+            <isis-link-state-replication-entry>
+                <lsp-id>0102.5500.1001.00-00</lsp-id>
+                <sequence-number>0x23</sequence-number>
+                <checksum>0x6776</checksum>
+                <remaining-lifetime>906</remaining-lifetime>
+                <replication-entry-in-use>Yes</replication-entry-in-use>
+            </isis-link-state-replication-entry>
+            <isis-link-state-replication-entry>
+                <lsp-id>pro2-b.00-00</lsp-id>
+                <sequence-number>0xb4e</sequence-number>
+                <checksum>0x2a38</checksum>
+                <remaining-lifetime>904</remaining-lifetime>
+                <replication-entry-in-use>Yes</replication-entry-in-use>
+            </isis-link-state-replication-entry>
+            <isis-link-state-replication-entry>
+                <lsp-id>pro2-b.02-00</lsp-id>
+                <sequence-number>0x1</sequence-number>
+                <checksum>0xd167</checksum>
+                <remaining-lifetime>874</remaining-lifetime>
+                <replication-entry-in-use>Yes</replication-entry-in-use>
+            </isis-link-state-replication-entry>
+            <link-state-replication-entry-count>3</link-state-replication-entry-count>
+        </isis-link-state-replication-database>
+        <isis-link-state-replication-database>
+            <instance-name>RI</instance-name>
+            <level>2</level>
+            <isis-link-state-replication-entry>
+                <lsp-id>0102.5500.1001.00-00</lsp-id>
+                <sequence-number>0x28</sequence-number>
+                <checksum>0x8fa0</checksum>
+                <remaining-lifetime>906</remaining-lifetime>
+                <replication-entry-in-use>Yes</replication-entry-in-use>
+            </isis-link-state-replication-entry>
+            <isis-link-state-replication-entry>
+                <lsp-id>pro2-b.00-00</lsp-id>
+                <sequence-number>0xb6c</sequence-number>
+                <checksum>0xed56</checksum>
+                <remaining-lifetime>904</remaining-lifetime>
+                <replication-entry-in-use>Yes</replication-entry-in-use>
+            </isis-link-state-replication-entry>
+            <isis-link-state-replication-entry>
+                <lsp-id>pro2-b.02-00</lsp-id>
+                <sequence-number>0xa</sequence-number>
+                <checksum>0xbf70</checksum>
+                <remaining-lifetime>901</remaining-lifetime>
+                <replication-entry-in-use>Yes</replication-entry-in-use>
+            </isis-link-state-replication-entry>
+            <link-state-replication-entry-count>3</link-state-replication-entry-count>
+        </isis-link-state-replication-database>
+        <isis-link-state-replication-database>
+            <instance-name>master</instance-name>
+            <level>1</level>
+            <isis-link-state-replication-entry>
+                <lsp-id>pro2-a.00-00</lsp-id>
+                <sequence-number>0x1d</sequence-number>
+                <checksum>0xca1</checksum>
+                <remaining-lifetime>905</remaining-lifetime>
+                <replication-entry-in-use>Yes</replication-entry-in-use>
+            </isis-link-state-replication-entry>
+            <isis-link-state-replication-entry>
+                <lsp-id>pro2-a.02-00</lsp-id>
+                <sequence-number>0x17</sequence-number>
+                <checksum>0xab60</checksum>
+                <remaining-lifetime>901</remaining-lifetime>
+                <replication-entry-in-use>Yes</replication-entry-in-use>
+            </isis-link-state-replication-entry>
+            <isis-link-state-replication-entry>
+                <lsp-id>1921.6800.4218.00-00</lsp-id>
+                <sequence-number>0x13f0</sequence-number>
+                <checksum>0x6edd</checksum>
+                <remaining-lifetime>903</remaining-lifetime>
+                <replication-entry-in-use>Yes</replication-entry-in-use>
+            </isis-link-state-replication-entry>
+            <isis-link-state-replication-entry>
+                <lsp-id>pro2-d.00-00</lsp-id>
+                <sequence-number>0x1424</sequence-number>
+                <checksum>0x4dcd</checksum>
+                <remaining-lifetime>898</remaining-lifetime>
+                <replication-entry-in-use>Yes</replication-entry-in-use>
+            </isis-link-state-replication-entry>
+            <isis-link-state-replication-entry>
+                <lsp-id>pro2-d.02-00</lsp-id>
+                <sequence-number>0x2</sequence-number>
+                <checksum>0</checksum>
+                <remaining-lifetime>0</remaining-lifetime>
+                <replication-entry-in-use>Yes</replication-entry-in-use>
+            </isis-link-state-replication-entry>
+            <link-state-replication-entry-count>5</link-state-replication-entry-count>
+        </isis-link-state-replication-database>
+        <isis-link-state-replication-database>
+            <instance-name>master</instance-name>
+            <level>2</level>
+            <isis-link-state-replication-entry>
+                <lsp-id>pro2-a.00-00</lsp-id>
+                <sequence-number>0x27</sequence-number>
+                <checksum>0x6f2b</checksum>
+                <remaining-lifetime>905</remaining-lifetime>
+                <replication-entry-in-use>Yes</replication-entry-in-use>
+            </isis-link-state-replication-entry>
+            <isis-link-state-replication-entry>
+                <lsp-id>pro2-a.02-00</lsp-id>
+                <sequence-number>0x1b</sequence-number>
+                <checksum>0xf215</checksum>
+                <remaining-lifetime>900</remaining-lifetime>
+                <replication-entry-in-use>Yes</replication-entry-in-use>
+            </isis-link-state-replication-entry>
+            <isis-link-state-replication-entry>
+                <lsp-id>1921.6800.4218.00-00</lsp-id>
+                <sequence-number>0x14e3</sequence-number>
+                <checksum>0xe552</checksum>
+                <remaining-lifetime>903</remaining-lifetime>
+                <replication-entry-in-use>Yes</replication-entry-in-use>
+            </isis-link-state-replication-entry>
+            <isis-link-state-replication-entry>
+                <lsp-id>1921.6800.4218.02-00</lsp-id>
+                <sequence-number>0x6d1</sequence-number>
+                <checksum>0xece8</checksum>
+                <remaining-lifetime>810</remaining-lifetime>
+                <replication-entry-in-use>Yes</replication-entry-in-use>
+            </isis-link-state-replication-entry>
+            <isis-link-state-replication-entry>
+                <lsp-id>pro2-c.00-00</lsp-id>
+                <sequence-number>0x715</sequence-number>
+                <checksum>0xdb14</checksum>
+                <remaining-lifetime>575</remaining-lifetime>
+                <replication-entry-in-use>Yes</replication-entry-in-use>
+            </isis-link-state-replication-entry>
+            <isis-link-state-replication-entry>
+                <lsp-id>pro2-d.00-00</lsp-id>
+                <sequence-number>0x161e</sequence-number>
+                <checksum>0x9a57</checksum>
+                <remaining-lifetime>899</remaining-lifetime>
+                <replication-entry-in-use>Yes</replication-entry-in-use>
+            </isis-link-state-replication-entry>
+            <isis-link-state-replication-entry>
+                <lsp-id>pro2-d.02-00</lsp-id>
+                <sequence-number>0x2</sequence-number>
+                <checksum>0</checksum>
+                <remaining-lifetime>0</remaining-lifetime>
+                <replication-entry-in-use>Yes</replication-entry-in-use>
+            </isis-link-state-replication-entry>
+            <isis-link-state-replication-entry>
+                <lsp-id>pro2-f.00-00</lsp-id>
+                <sequence-number>0x710</sequence-number>
+                <checksum>0xe788</checksum>
+                <remaining-lifetime>930</remaining-lifetime>
+                <replication-entry-in-use>Yes</replication-entry-in-use>
+            </isis-link-state-replication-entry>
+            <link-state-replication-entry-count>8</link-state-replication-entry-count>
+        </isis-link-state-replication-database>
+    </isis-link-state-replication-database-information>
+</rpc-reply>        
+
+{backup}[edit]
+                    
+2.2.4 Displaying ISIS replication statistics
+                
+"Show isis replication-statistics" displays the count of each
+replication operation for each replication database type.
+
+regress@pro2-a> show isis replication-statistics 
+IS-IS replication statistics:
+Database type                Adds      Modifications        Deletes
+System-id                       2                  0              0
+Adjacency                       8                121              0
+Link-state database            19                 46              2
+
+Explanation:
+
+  Adds
+    Counts the number of add replication operations sent from the master
+    to backup RE.
+  Modifications
+    Counts the number of modification replication operations sent from
+    the master to backup RE.
+  Deletes
+    Counts the number of delete replication operations sent from the
+    master to backup RE.
+
+regress@pro2-a# run show isis replication-statistics | display xml 
+<rpc-reply xmlns:junos="http://xml.juniper.net/junos/7.6I0/junos">
+    <isis-replication-statistics-information xmlns="http://xml.juniper.net/junos/7.6I0/junos-routing">
+        <isis-replication-statistics>
+            <isis-replication-database-statistics>
+                <isis-replication-database-type>System-id</isis-replication-database-type>
+                <add-messages>2</add-messages>
+                <change-messages>0</change-messages>
+                <delete-messages>0</delete-messages>
+            </isis-replication-database-statistics>
+            <isis-replication-database-statistics>
+                <isis-replication-database-type>Adjacency</isis-replication-database-type>
+                <add-messages>8</add-messages>
+                <change-messages>121</change-messages>
+                <delete-messages>0</delete-messages>
+            </isis-replication-database-statistics>
+            <isis-replication-database-statistics>
+                <isis-replication-database-type>Link-state database</isis-replication-database-type>
+                <add-messages>19</add-messages>
+                <change-messages>48</change-messages>
+                <delete-messages>2</delete-messages>
+            </isis-replication-database-statistics>
+            <isis-replication-statistics>
+            </isis-replication-statistics-information>
+        </rpc-reply>
+
+
+3.  CAVEATS
+
+{As necessary, describe any caveats, limitations and/or dependencies
+of the above functionality. This includes calling out non-goals that
+are specifically not supported for this feature}
+
+
+4.  OTHER REQUIREMENTS
+
+{As necessary, outline the general implementation requirements *not*
+covered in the project requirements (RLIs, etc.) and call out any
+specific additional requirements for protocols, edge cases, etc.  If
+there is a significant amount of the latter then you should break this
+section down in to subsections.}
+
+
+[=== Everything from here down is internal (white box) documentation
+and should not be documented or related to customers without a
+specific need. (e.g. customer support workarounds for critical issues,
+performance targets where the performance is the feature, etc.) ===]
+
+
+5.  ISIS NSR Implementation Details
+
+The 2 main pieces of ISIS information which are replicated for NSR are
+the ISIS adjacencies and the link-state database. 
+
+5.1 Mirroring subsystem
+
+For all our replication, we use a generic database mirroring mechanism.
+For each database entry which needs to be mirrored, a replication entry
+is maintained in the mirroring subsystem. This mechanism provides three
+basic operations on a replication entry which are ADD, UPDATE and
+DELETE.
+
+When a database entry is created, its replication entry is created in
+ADD mode and enqueued to the mirroring subsystem.  Subsequent
+modification on the database entry are replicated by setting its
+replication entry in UPDATE mode which is then enqueued to the mirroring
+subsystem. When the database entry is deleted, its replication entry is
+set in DELETE mode and enqueued to the mirroring subsystem.
+
+State compression is a salient feature of this mechanism, i.e 2 UPDATE
+operations on a given database entry may be compressed and only a single
+UPDATE may be handed over to the backup RE for a given database entry.
+
+For any database entry if a replication entry is already enqueued in the
+mirroring subsystem queue, i.e. pending transmission, a subsequent
+change or delete of the database entry will simply update the
+replication entry without reenqueuing it. The operation on the
+replicatin entry is updated in the following manner : 1) An add
+operation followed by an update operation will result in an add
+operation 2) A delete will simply cancel an add operation with the
+replication entry dequeued 3) An update followed by a delete operation
+will result in a delete operation.  Once a database replication entry
+has been successfully sent over to the backup RE, it will be dequeued
+from the mirroring subsystem.
+
+Also replication entries can be enqueued to the mirroring subsystem on
+the master RE even if the backup RE is not yet up. When the backup RE
+comes up, these database entries will be sent over.
+
+The mirroring subsystem maintains an active queue and an inactive queue.
+Any replication entry which is pending transmission is inserted in the
+active queue. Once a replication entry is successfully transmitted, it
+is moved to the inactive queue. A subsequent change or delete of the
+corresponding database entry will move the replication entry back to the
+active queue (by appending it to the tail of the existing active
+queue). If the backup RE dies, all the replication entries enqueued in
+the inactive queue are moved to the active queue.  All DELETE entries on
+the active queue will be nuked. Remainig entries in the active queue
+will be set in ADD mode so that when the backup RE comes up, it can be
+fed the most current set of entries.
+
+5.2 Replication of adjacency information
+
+For each adjacency in an isis instance, we replicate the last iih
+received on the adjacency from the master to the backup RE, along with
+the incoming interface index, current state of the adjacency and the
+nbr's snpa. We use the mirroring mechanism described in section 5.1
+for replication.
+
+The creation of adjacency from the replicated information on the backup
+RE requires certain kernel state, e.g. ifls, to be present on the backup
+RE. By caching the replication information in a separate data-structure
+(we call it adjacency replication entry and it should be noted that this
+entry is distinct from the replication entry in the mirroring subsystem)
+which is completely independent of the adjacency data-structure itself,
+we avoid any dependency on the kernel state in creation of the former
+data-structure. We maintain a tree of replicated adjacency entries keyed
+by the interface's ifl-index and the nbr's system-id. Since adjacencies
+are maintained per level on LAN interface, level is also part of the key
+for LAN interfaces (the interface type is gleaned from the replicated
+iih).
+
+Whenver the kernel state becomes available, we walk the pertinent
+adjacency replication entries and create the adjacency from
+there. Another way to think about this is that we cache the latest hello
+from each nbr and replay it whenever the isis interface becomes
+available upon learning of the kernel state which ultimately results in
+the creation of the adjacency.
+
+Almost all of the adj creation and maintanence code is unchanged as all
+the actions taken on the backup RE is completely independent of the
+order of actions taken on the master RE. Since the replicated adj
+information is simply a iih, it is processed in exactly the same manner
+as an iih received from the network. If the required kernel state was
+not present the processing of the replicated iih will simply be delayed.
+
+Some impact on the existing adjacency bringup and maintanence code is
+unavoidable due to state compression done by the mirroring subsystem.
+If some parameters in the iih change, e.g. supported set of route
+topologies, nbr's snpa etc, the master RE reacts by flapping the
+adjacency.  On the backup RE, we don't have this luxury if the down
+transition in the state was hidden away by the state compression.  THe
+backup RE can depend on the master to have done the appropriate
+groundwork of ensuring that the nbr transitioned thru an up->down->up
+cycle. So if the backup sees a parameter change without seeing the
+change in state in the replicated info, it can take appropriate actions
+that would have resulted from the change in that parameter,
+e.g. schedule an SPF, update some TLVs in its locally generated LSPs
+and so on.
+
+The adj replication entry also carries a hint about the current state of
+the adjacency on the master RE which allows us to get arround state
+compression to determine the final state of our adjacency (if we missed
+a few state transitions in the middle).
+
+5.3 System-id Database replication
+
+For each isis instance, its system-id is replicated using the database
+mirroring subsystem. For each isis instance, we replicate its system-id
+from master to the backup RE, along with the instance's name.
+
+Similar to adjacency replication entry, we maintain a new data-structure
+called system-id replication entry which is completely independent of
+the instance data-structure itself. The former is kept in it own tree
+keyed by the instance name. Whenever the backup RE creates the instance
+for a given name, we will lookup the relevant system-id replication
+entry (if it exists) and assign the instance with the system-id stored
+in the replication entry. This is done to get around the race condition
+where an instance's system-id may get replicated from active to standby
+RE before the instance itself gets created from configuration on the
+standby RE.
+
+
+5.4 Link State Database replication
+
+The isis link state database is replicated using the database mirroring
+subsystem. For each LSDB entry in an isis instance, we replicate the
+current LSP fragment from master to the backup RE, along with instance's
+name.
+
+Similar to adjacency replication entry, we maintain a new data-structure
+called LSDB replication entry which is completely independent of the
+existing LSDB entry data-structure itself. The former is kept in it own
+tree keyed by the instance name and the LSP-id. Whenever the backup RE
+creates the instance for a given name, we will walk all the relevant
+LSDB replication entries and create the corresponding LSDB entry. This
+is done to get around the dependency of an LSDB entry on the presence of
+an instance from configuration (which is very similar to what we do to
+get around the dependency of an adjacency on the presence of an isis
+interface which is created upong receiving the kernel ifl state).
+
+{As necessary, describe the internal implementation details including
+each of the following which are relevant to the functionality:
+
+Goals (and non-goals}
+Assumptions
+Description of the implementation
+    Description of whether the work is wholly new or extends existing work
+    Components
+    Data structures
+    Algorithms
+Rationale (for the design decisions made -- useful for the next person
+	  who touches this code)
+Internal APIs/Messages (and intent)
+Constraints and limitations
+Examples or interaction description
+}
+
+
+6.  PERFORMANCE
+
+{As necessary, describe any performance issues or that there are
+none.}
+
+6.1.  Performance Related Resources
+
+{As necessary, Describe the resource bottlenecks (e.g. CPU, RAM,
+interface bandwidth, # of logical interfaces, etc.) of the function
+and the general assumptions underlying any given performance
+calculation. Also mention any changes from previous releases. This
+includes any changes in microcode usage (Bchip. Lchip, Ichip, etc),
+either positive or negative. Please see
+<https://wintermute.juniper.net/junos/projects/microcode/> for more info.}
+
+6.2.  Target Performance
+
+{As necessary and appropriate, describe the target performance.  Where
+possible, justify this target based on the resource estimates.
+Specify if this target performance is based on believed maximum
+performance of the function or based on a comfortably achievable
+number.  Where relevant, specify where conditions will reduce the
+performance below the target performance (e.g. extended functionality,
+other load on the box, etc.).  It is also useful to return to this
+section and fill in the actual tested performance when the numbers are
+available.}
+
+
+7.  COMPATIBILITY ISSUES
+
+{As necessary, list any issues related to:
+1. migration to/from this feature
+2. any change of default system or software behavior
+3. backwards/forwards compatibility: this would include any places
+   old config will break, config will be deprecated, network layouts
+   must change, the feature will or will not work with new or old
+   hardware, etc.
+}
+
+
+8.  SECURITY ISSUES
+
+{As necessary, list any security considerations or issues here.}
+
+
+9.  Graceful RE Switchover (GRES), Hobson Impact
+
+{Generally, when you are updating state in the kernel which is to be
+consumed by other peers -- PFEs, LCCs --, you need to consider adding
+support for GRES.  Some examples of these are:
+- New ifstates
+- Change in the routing socket message format for an existing message
+- New daemons
+- Updating kernel state in non-rtsock context
+- State updates on the RE owing to messages from the PFE
+- New IPCs to the PFE/FPCs
+- New TLVs
+- New rtsock messages
+- New PICs
+If you have questions, send email to replicant-coders.
+}
+
+10.  NOTES
+
+{As necessary, add any additional notes which do not fit in the above
+sections.}
+
+
+11.  GLOSSARY
+
+{As necessary, define any terms or acronyms used.}
+
+
+12.  REVIEW COMMENTS
+
+{We use the audit trail of the RLI tracking PR to record review comments,
+so please include a pointer to the pr here. If the spec review is done
+via email, the owner of the spec will send it out for comments with
+"bugs@juniper.net" included on the To: or CC: line and the Subject:
+containing "<catagory>/<tracking pr number>:", as shown below:
+
+Subject: rli/12345: Code review for new frombitz feature
+
+More info on valid Subject: line formats can be found at
+http://www-in.juniper.net/useful_info/gnats-faq.html. All the reviewers
+have to do is reply to the email with their review comments, making
+sure "bugs@juniper.net" is in the To: or CC: and their comments will
+be automagically archived to the pr. In the case of a meeting to
+review the specs, the owner will add the review comments to the audit
+trail of the tracking pr themselves. Review comments would include who
+attended the meeting and the input provided by the reviewers.
+
+When the owner updates the spec in cvs, they include the changes
+made and the tracking pr number in the commit log, something like:
+
+   pr: 12345
+   Comments:
+
+   Updates from spec review:
+
+   - add description of ucode changes (jdoe)
+   - remove the "annoy user" config command (bsmith)
+}

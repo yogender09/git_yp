@@ -1,0 +1,337 @@
+$Id: l2vpn-vpls-funcspec.txt,v 1.6 2006/10/26 23:38:55 bhupesh Exp $
+
+		    NSR support for L2VPN and VPLS
+
+			       RLI 3169
+
+		       Functional Specification
+		
+		Bhupesh Kothari (bhupesh@juniper.net)
+
+Copyright (C) 2006, Juniper Networks, Inc.
+
+NOTICE: This document contains proprietary and confidential
+information of Juniper Networks, Inc. and must not be distributed
+outside of the company without the permission of Juniper Networks
+engineering.
+
+
+1. INTRODUCTION
+
+   This document describes the functional requirements of Non Stop
+   Routing support for L2VPN and VPLS.  The feature aims to provide no
+   traffic loss during a failover between a primary and secondary
+   Routing Engine (RE).  In addition to no traffic disruption, the
+   feature aims to avoid any additional control plane signaling
+   required as a result of a failover between a primary and secondary
+   RE.  Note that there is no guarantee for either of the two
+   goals -- traffic loss or routing updates can happen in few rare
+   cases during or after a failover. 
+
+   The L2VPN and VPLS control plane is responsible for two main
+   functions: auto-discovery of network peers participating in the VPN
+   and maintenance (creation and deletion) of pseudo-wires.  The L2VPN
+   and VPLS module itself does not interact with its network peers.
+   It uses BGP for both auto-discovery and signaling of pseudo-wires.
+   Section 2 gives more detail on the logical components that makes up
+   the complete VPLS and L2VPN functionality and also describes the
+   assumptions and dependency of this feature on functionality
+   provided by other components in the system.  
+
+   The overall functionality and requirements of NSR is described in
+   [NSR].  BGP NSR functionality is described in [NSR-BGP].  GRES
+   support for VPLS in kernel is described in [GRES-VPLS].  
+
+   Note on terminology: L2VPN module in RPD implements both L2VPN and
+   VPLS functionality.  In this document wherever L2VPN module is
+   mentioned, the text following it applies to both VPLS and L2VPN
+   functionality.  If only VPLS is mentioned, the text following it
+   applies to VPLS functionality only and similarly if only L2VPN is
+   mentioned, text is for L2VPN functionality.
+
+   Tracking RLI for this feature is 3169 and the tracking PR is 72239.
+
+
+2. FUNCTIONALITY
+
+2.1 L2VPN and VPLS specific NSR requirements
+
+    The overall functionality to support NSR for L2VPN and VPLS is
+    summarized below.
+
+   a) No traffic loss:  The forwarding state on the PFE is kept intact
+      during a failover.  As part of the transition, the backup RE
+      will construct the forwarding state in the kernel and will
+      download it to the PFE.  There is possibility that the new
+      forwarding state in the kernel on the backup RE does not
+      entirely match the forwarding state in the PFE. Such conditions
+      will cause traffic disruptions. 
+
+   b) No control plane signaling:  This is achieved by the following
+      requirements.
+
+      - Maintain pseudo-wire state:  Enough information will be
+	replicated on the backup RE that will obviate the need to
+	resynchronize with network peers by additional signaling.
+	Since BGP is used for signaling, BGP will maintain the
+	sessions during a failover.  BGP will also replicate the
+	inbound and outbound messages on the backup RE that contains
+	the L2VPN and VPLS information.
+
+      - Maintain advertised and received labels:  Label advertised to
+        the peers and label received from the peer will be replicated
+        on the backup RE.  The L2VPN NLRI in BGP update message
+        contains the labels advertised.
+
+      - Maintain state in kernel:  The key pieces of information in
+        the kernel that needs to be replicated on the backup RE are:
+      
+        o IFL state: The label information is also replicated on the
+	  backup RE by kernel but only for VPLS.  The VT or LSI
+	  interfaces are used for VPLS. Dynamic interfaces are not
+	  created for L2VPN.  The VPLS on the primary RE sends the
+	  label in the IFL create request to the kernel and kernel
+	  stores the label as opaque data.  As part of interface
+	  replication, all the information associated with the VPLS
+	  interface will get replicated, such as label, MAC limit.
+   
+        o forwarding state:  Kernel will replicate the flood next hops
+	  and learnt MAC addresses.  Kernel does not keep any
+	  VPLS statistics, so nothing to replicate for
+	  statistics. 
+
+   c) Minimize performance impact on the master RE:  L2VPN module on
+      the primary is not replicating any information on the
+      backup. L2VPN on the backup runs completely independent of L2VPN
+      on the master RE.  On the backup RE, L2VPN module relies on BGP
+      and kernel replication state to recreate the necessary L2VPN and
+      VPLS control plane state.
+
+   d) Minimize convergence after the failover:  The control plane
+      state on the backup RE is created as and when new state is
+      replicated by BGP and kernel.  Thus, there is no work that is
+      deferred until a failover occurs.
+
+      
+
+2.2 CLI Configuration
+
+
+2.2.1 Trace flags for NSR.
+
+      Enable traceoption flag 'nsr-synchronization' under 
+      [routing-options traceoptions flag] 
+      to trace the label and IFL association that VPLS
+      receives from the kernel replication state. The flag will also
+      trace the L2VPN signaling state replicated from BGP rib-out. The
+      traceoption 
+
+      All the other information can be traced or looked at by the
+      usual trace flags or show commands on the backup RE. Since L2VPN
+      module does not replicate any information on its own, there is
+      no other replication or synchronization state to be traced. For
+      eg., all the labels or VPN routes can be looked at by using the
+      'show route table <instance> detail' on the backup RE. The VPN
+      routes in this route table are created based on the BGP messages
+      replicated on the backup RE.
+
+      New show commands are added for debug capability and are
+      hidden. These two commands will display the state reconstructed
+      in L2VPN module from BGP rib-out and from notifications received
+      from kernel. 
+
+      The different states of the replication entry are as follows:
+
+      Inuse: Indicates that a site is currently using the label block.
+ 
+      Mismatch: Indicates that a site was able to find a match in the
+      repository but did not select the label block for it use. This
+      can happen say if the primary is configured for VT and the
+      standby is configured for LSI. The site will find a match but
+      the site should not start using the label block as specified in
+      the entry. Another case where there can be a mismatch is if the
+      block size don't match between what is in the repository and
+      what the site calculated on the standb based on the
+      configuration.
+ 
+      Release: Indicates that a site was earlier using the entry but
+      is no longer using it. The occurs when a site frees its label
+      blocks.
+ 
+      Orphan: Indicates that a site was earlier using the entry but is
+      no longer using it. In addition, it indicates that the label
+      base did not match between what the entry had and what the site
+      had.
+ 
+      The show commands are listed below.
+
+      1. show vpls replication dynamic-interface
+
+	This will display all the IFL state received from kernel. This
+	is only applicable to VPLS. 
+
+	Sample output:
+
+regress@pro5-e1> show vpls replication dynamic-interface 
+Instance   Interface   Local site   Remote site   Index   Label   State
+2          lsi.32769   2            1             85              Inuse    
+2          lsi.32770   2            10            86              Inuse    
+3          lsi.32771   2            1             87              Inuse    
+3          lsi.32768   2            3             84              Inuse    
+
+{backup}
+
+
+	Note that the label values are not displayed. This is becuase
+	labels are not replicated from the kernel state for
+	NSR. However, labels are replicated from the kernel state for
+	Graceful-restart. The same command can be used on the primary
+	for displaying the replicated state during graceful-restart
+	period. 
+
+
+      2. The two commands below will display all the VPN routes
+         advertised by the primary. On the standby, these VPN routes
+         are reconstructed from the state in BGP rib-out. When we have
+         LDP based VPLS, the vpls label repository will be 
+
+         (a) show vpls replication label <bgp [route-distinguisher <rd>] >
+      
+	     Displays label repository. The option 'bgp' will display
+	     all the labels in the repository reconstructed from the
+	     BGP rib-out. Note that this might also include
+	     advertisements that are for L2VPN. This is so because the
+	     NRLI itself is common to both L2VPN and VPLS. In future,
+	     when we have NSR for LDP based VPLS, another option 'ldp'
+	     will be added. The option 'ldp' will display all the
+	     labels in the repository reconstructed from the LDP
+	     rib-out. The option route-distinguisher will display all
+	     the labels advertised for a particular Route-distinguisher.
+
+	     Sample output:
+
+regress@pro5-e1> show vpls replication label bgp 
+Route Distinguisher: 10.255.245.54:1, Instance ID: 2
+
+  Site ID   Offset   Label base   Label block range
+  2         1        262160       8               
+  2         9        262168       2               
+
+Route Distinguisher: 10.255.245.54:2, Instance ID: 3
+
+  Site ID   Offset   Label base   Label block range
+  2         1        262152       8               
+
+Route Distinguisher: 4:4, Instance ID: 4
+
+  Site ID   Offset   Label base   Label block range
+  1         1        800000       4               
+
+{backup}
+
+
+
+         (b) show l2vpn replication label [route-distinguisher <rd>]
+
+             Displays label repository created from BGP rib-out.
+
+         The above two will display all the VPN routes advertised by
+         the primary. On the standby, these VPN routes are
+         reconstructed from the state in BGP rib-out.
+    
+
+2.2.2 Global configuration to enable NSR.
+
+      Graceful Switchover needs to be enabled for NSR. The CLI command
+      to enable GRES is:
+
+	 [chassis redundancy graceful-switchover enable]. 
+     
+      The CLI command to enable NSR is:
+
+	 [routing-options nonstop-routing enable].
+
+      Note that if graceful-restart is configured, it will take
+      precedence over NSR.
+
+
+2.2.3 Assumptions
+
+      The NSR support for L2VPN module relies on the NSR functionality
+      in BGP and GRES support in kernel for VPLS. BGP NSR support is
+      already available. GRES support for VPLS in kernel is scheduled
+      for 8.1R1. 
+
+
+3. CAVEATS
+
+   For creating MPLS LSPs in the core network, either RSVP or LDP can
+   be used. NSR support for RSVP or LDP will be required on the PE
+   routers. NSR support of LDP is currently available. If NSR support
+   for RSVP on the ingress is not available when this feature is
+   shipped, LDP would be required to provide L2VPN or VPLS NSR.
+ 
+   P2MP support for VPLS is currently in design state and is targeted
+   for release 8.2 as well. It would not be possible to add NSR
+   support in VPLS for P2MP as part of this RLI. The design might
+   consider anything that might be helpful for adding such support
+   later.
+
+4. OTHER REQUIREMENTS
+
+   N/A
+
+
+5. IMPLEMENTATION DETAILS
+
+   Implementation details will be provided in the design document. 
+
+
+6. PERFORMANCE
+
+   The performance requirement is covered in Section 2. L2VPN module
+   does not do anything more on the primary RE than it does without
+   NSR. The convergence time during switchover should be comparable to
+   a reconfiguration event.
+
+
+7. COMPATIBILITY ISSUES
+
+   N/A
+
+
+8. SECURITY ISSUES
+
+   N/A
+
+
+9. Graceful RE Switchover (GRES), Hobson Impact
+
+   GRES support for VPLS is described in [GRES-VPLS].
+
+
+10. NOTES
+
+    N/A
+
+
+11. GLOSSARY
+
+    N/A
+
+
+12. REVIEW COMMENTS
+
+
+13. REFERENCES
+
+[NSR]		Non-Stop Routing (NSR) - Functional specification
+		sw-projects/os/nsr/software_spec.txt
+
+[NSR-BGP]	BGP non-stop routing (RLI 2711)
+		sw-projects/os/nsr/bgp_software_spec.txt
+
+[GRES-VPLS]	RLI 2043: GRES: VPLS and Graceful RE switchover
+		sw-projects/interfaces/ether/tls/vpls_gres_funcspec.txt
+
+

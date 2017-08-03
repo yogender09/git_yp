@@ -1,0 +1,1520 @@
+$Header: /cvs/juniper/sw-projects/os/nsr/p2mp-nsr-transit-utp.txt,v 1.3 2010/09/16 20:54:24 mjork Exp $
+
+Process Template J3.02.P05.T04S
+{Standard Unit Test Plan Template}
+
+Copyright (C) 2010, Juniper Networks, Inc.
+Template Owner(s):  Owner(s) of Software Development Process J3.02.P05
+Template Version 1.15
+
+NOTICE: This document contains the proprietary and confidential
+information of Juniper Networks, Inc., and must not be
+distributed outside of the company without the
+permission of Juniper Engineering.
+
+
+-------------------------------
+NOTE TO USERS OF THIS TEMPLATE:
+-------------------------------
+
+Do not modify the Header keyword at the top of the specification
+template. When you add a new specification based on this template to
+CVS, do not use the '-ko' option, which will prevent expansion of the
+header keyword for the file you are adding. The Header keyword will be
+expanded by CVS to reflect the version of your specification each time
+you commit the document to CVS.
+
+
+1.  INTRODUCTION
+
+This is a unit test plan for RLI 9023 ("NSR: P2MP for multicast -
+transit only"). The tracking PR is 488772.
+
+The functional spec for the RLI is:
+http://cvs.juniper.net/cgi-bin/viewcvs.cgi/sw-projects/os/nsr/p2mp-nsr-funcspec.html?rev=1.5
+
+
+
+2.  SCOPE
+
+a.	Functional coverage
+
+All the transit/egress NSR functionality described in the functional
+spec will be covered.
+
+b.	Software change description
+
+The rsvp and tag tasks in rpd are modified to replicate p2mp transit
+state from the master to the backup RE. The krt code in rpd is
+modified to process p2mp tag route and flood nexthop updates from the
+kernel on the backup RE and to correlate those to rsvp route/nexthop
+requests.
+
+See the functional spec for details. All changes are to rpd and the
+cli only, no kernel or pfe changes are expected.
+
+c.	Feature intersection
+
+NSR support will not be tested for legacy flood-nexthop mode. Only
+platforms for which multicast composite nexthops (MCNH) have been
+implemented will be supported.
+
+d.	Platform and HW coverage scope
+
+The tests will only be performed on M10i routers.
+
+Note that the Trinity chipset currently only supports legacy
+flood-nexthop mode and is thus out of scope.
+
+
+
+3.  SETUP
+
+3.1 Topology
+
+Except where noted, tests will be automated via JCML and can be found
+in the source tree:
+src/functional-tests/apps/rpd/p2mp/nsr/p2mp_nsr_transit*
+
+NOTE: At this point in time, only one test is scripted and it doesn't
+exactly correspond to the test cases listed in this document. The
+existing JCML test script can be invoked with the "-so" option to just
+create the configuration on the routers. The test cases described in
+this document can then be performed manually.
+
+The scripts setup the following topology using two physical
+routers. R1 is the DUT which is going to perform NSR swichover. Thus
+it needs two REs and it cannot have any logical routers
+configured. The other router R0 is used to wrap around the DUT. Its
+main routing instance serves as the ingress for the P2MP LSP and a
+couple of logical routers simulate the rest of the network. Thus R0
+needs to have an "lt" tunnel interface to interconnect the LRs.
+R0 also has a dedicated logical router "src" just for injecting data
+traffic (pings) into the P2MP LSP for which R0 is ingress.
+
+  22.0.0.3                      22.0.0.4                     1.0.0.2               1.0.0.4
+  wfpro2-c           fe-0/0/0   wfpro2-d   so-0/1/2          wfpro2-c   lt-1/2/0   wfpro2-c
+     R0 ========================== R1 ------------------------- LR2 ----------------- LR4
+     |               t1-0/2/2      \                           /
+     |                              \  fe-0/0/1               /
+     |   lt-1/2/0                    \                       /  lt-1/2/0  
+     |                                \                     /
+    SRC                                ------------ LR3 ----
+  wfpro2-c                                        wfpro2-c
+  1.0.0.10                                        1.0.0.3
+
+ 
+   R0 (wfpro2-c)     m10i           11.1I20100826_1753_mjork
+                     lo0.0          22.0.0.3             ABCD:0:0:0:22::3
+     R0-R0:          lt-1/2/0                                      
+     R0-R1:          fe-0/0/0       1.1.0.1/24           200::1:1:0:1/120
+     R0-R1-1:        t1-0/2/2       1.1.1.1/24           200::1:1:1:1/120
+     R0-R1-2:        so-0/1/2       1.1.2.1/24           200::1:1:2:1/120
+     R0-R1-3:        fe-0/0/1       1.1.3.1/24           200::1:1:3:1/120
+
+   R1 (wfpro2-d)     m10i           11.1I20100826_1753_mjork
+                     lo0.0          22.0.0.4             ABCD:0:0:0:22::4
+     R0-R1:          fe-0/0/0       1.1.0.2/24           200::1:1:0:2/120
+     R0-R1-1:        t1-0/2/2       1.1.1.2/24           200::1:1:1:2/120
+     R0-R1-2:        so-0/1/2       1.1.2.2/24           200::1:1:2:2/120
+     R0-R1-3:        fe-0/0/1       1.1.3.2/24           200::1:1:3:2/120
+
+
+3.2 Configuration
+
+OSPF is used as the IGP and the path for the P2MP LSPs are computed
+dynamically by cspf. The sub-LSPs shown in the R0 ingress router
+config are activated as needed for each testcase.
+
+The 9.9.9.0/24 prefix is used for testing the data plane. The DUT and
+all of the logical routers are configured to discard traffic for this
+prefix except for one unique /32 host address assigned to each of
+them. The prefix is not advertised through the IGP but instead
+configured as a static route for the P2MP LSP on R0. So ping commands
+can be used to verify data plane connectivity to each P2MP LSP branch
+individually. The ping has to be issued from a dedicated logical
+router "src" on R0 because there is no support for injecting data into
+a P2MP LSP on the ingress router itself.
+
+
+3.2.1 Ingress Router R0
+
+interfaces {
+    fe-0/0/0 {
+        unit 0 {
+            family inet {
+                address 1.1.0.1/24;
+            }
+            family inet6 {
+                address 200::1:1:0:1/120;
+            }
+            family mpls;
+        }
+    }
+    t1-0/2/2 {
+        unit 0 {
+            family inet {
+                address 1.1.1.1/24;
+            }
+            family inet6 {
+                address 200::1:1:1:1/120;
+            }
+            family mpls;
+        }
+    }
+    lt-1/2/0 {
+        unit 0 {
+            encapsulation ethernet;
+            peer-unit 1;
+            family inet {
+                address 1.100.0.1/24;
+            }
+            family mpls;
+        }
+    }
+}
+routing-options {
+    static {
+        route 9.9.9.0/24 {
+            p2mp-lsp-next-hop test;
+        }
+    }                                   
+    router-id 22.0.0.3;
+    forwarding-table {
+        traceoptions {
+            file krt.log size 5m world-readable;
+            flag all;
+        }
+    }
+}
+protocols {
+    rsvp {
+        traceoptions {
+            file rsvp.log size 5m world-readable;
+            flag all;
+        }
+        interface all;
+        interface fxp0.0 {
+            disable;
+        }
+    }
+    mpls {
+        traceoptions {
+            file mpls.log size 5m world-readable;
+            flag all;
+        }
+        admin-groups {
+            preferred 1;
+            alt 2;
+        }
+        inactive: label-switched-path to4 {
+            to 1.0.0.4;
+            admin-group exclude alt;
+            p2mp test;
+        }
+        inactive: label-switched-path to2via3 {
+            to 1.0.0.2;
+            admin-group exclude alt;
+            p2mp test;
+            primary one_three_two;
+        }
+        inactive: label-switched-path to2 {
+            to 1.0.0.2;
+            admin-group exclude alt;
+            p2mp test;
+        }
+        inactive: label-switched-path to3 {
+            to 1.0.0.3;
+            admin-group exclude alt;
+            p2mp test;
+        }
+        inactive: label-switched-path to2via3alt {
+            to 1.0.0.2;
+            admin-group exclude preferred;
+            p2mp test;
+            primary one_three_two;
+        }
+        inactive: label-switched-path to3via2alt {
+            to 1.0.0.3;
+            admin-group exclude preferred;
+            p2mp test;
+            primary one_two_three;
+        }
+        inactive: label-switched-path to1 {
+            to 22.0.0.4;
+            admin-group exclude alt;
+            p2mp test;
+        }
+        inactive: label-switched-path to3alt {
+            to 1.0.0.3;
+            admin-group exclude preferred;
+            p2mp test;
+        }
+        path one_three_two {
+            22.0.0.4 strict;
+            1.0.0.3 strict;
+            1.0.0.2 strict;
+        }
+        path one_two_three {
+            22.0.0.4 strict;
+            1.0.0.2 strict;
+            1.0.0.3 strict;
+        }
+        path one_two_four {
+            22.0.0.4 strict;
+            1.0.0.2 strict;
+            1.0.0.4 strict;
+        }
+        path one_three {
+            22.0.0.4 strict;
+            1.0.0.3 strict;
+        }
+        interface fe-0/0/0.0 {
+            admin-group preferred;
+        }
+        interface t1-0/2/2.0 {
+            admin-group alt;
+        }
+        interface all;
+        interface fxp0.0 {
+            disable;
+        }                               
+    }
+    ospf {
+        traffic-engineering;
+        area 0.0.0.0 {
+            interface all {
+                metric 1;
+            }
+            interface fxp0.0 {
+                disable;
+            }
+        }
+    }
+}
+
+
+3.2.2 DUT R1
+
+system {
+    commit synchronize;
+}
+chassis {                               
+    redundancy {
+        graceful-switchover;
+    }
+}
+interfaces {
+    fe-0/0/0 {
+        unit 0 {
+            family inet {
+                address 1.1.0.2/24;
+            }
+            family inet6 {
+                address 200::1:1:0:2/120;
+            }
+            family mpls;
+        }
+    }
+    fe-0/0/1 {
+        unit 0 {
+            family inet {
+                address 1.1.3.2/24;
+            }
+            family inet6 {
+                address 200::1:1:3:2/120;
+            }
+            family mpls;
+        }
+    }
+    so-0/1/2 {
+        unit 0 {                        
+            family inet {
+                address 1.1.2.2/24;
+            }
+            family inet6 {
+                address 200::1:1:2:2/120;
+            }
+            family mpls;
+        }
+    }
+    t1-0/2/2 {
+        unit 0 {
+            family inet {
+                address 1.1.1.2/24;
+            }
+            family inet6 {
+                address 200::1:1:1:2/120;
+            }
+            family mpls;
+        }
+    }
+}
+routing-options {
+    nonstop-routing;
+    static {
+        route 9.9.9.1/32 receive;
+        route 9.9.9.0/24 discard;
+        route 9.9.9.4/32 {
+            p2mp-lsp-next-hop ingress_test;
+        }
+    }
+    router-id 22.0.0.4;
+    forwarding-table {
+        traceoptions {
+            file krt.log size 5m world-readable;
+            flag all;
+        }
+        export pplb;
+    }
+}
+protocols {
+    rsvp {
+        traceoptions {
+            file rsvp.log size 5m world-readable;
+            flag packets disable;
+            flag nsr-synchronization detail;
+            flag all;
+        }
+        interface all;
+        interface fxp0.0 {
+            disable;
+        }
+    }
+    mpls {
+        traceoptions {
+            file mpls.log size 5m world-readable;
+            flag all;
+        }
+        inactive: label-switched-path to4ingress {
+            to 1.0.0.4;
+            p2mp ingress_test;          
+        }
+        interface all;
+        interface fxp0.0 {
+            disable;
+        }
+    }
+    ospf {
+        traffic-engineering;
+        area 0.0.0.0 {
+            interface all {
+                metric 1;
+            }
+            interface fxp0.0 {
+                disable;
+            }
+        }
+    }
+}
+policy-options {
+    policy-statement pplb {
+        then {
+            load-balance per-packet;
+        }
+    }
+}
+
+
+3.2.3 Logical Routers on R0
+
+logical-systems {
+    lr2 {
+        interfaces {
+            so-0/1/2 {
+                unit 0 {
+                    family inet {
+                        address 1.1.2.1/24;
+                    }
+                    family mpls;
+                }
+            }
+            lt-1/2/0 {
+                unit 23 {
+                    encapsulation ethernet;
+                    peer-unit 32;
+                    family inet {
+                        address 1.123.0.2/24;
+                    }
+                    family mpls;
+                }
+                unit 24 {
+                    encapsulation ethernet;
+                    peer-unit 42;
+                    family inet {
+                        address 1.124.0.2/24;
+                    }
+                    family mpls;        
+                }
+            }
+            lo0 {
+                unit 2 {
+                    family inet {
+                        address 1.0.0.2/32;
+                    }
+                }
+            }
+        }
+        protocols {
+            rsvp {
+                interface all;
+            }
+            mpls {
+                interface all;
+            }
+            ospf {
+                traffic-engineering;
+                area 0.0.0.0 {
+                    interface all;
+                }
+            }
+        }
+        routing-options {
+            static {
+                route 9.9.9.0/24 discard;
+                route 9.9.9.2/32 receive;
+            }
+            router-id 1.0.0.2;
+        }
+    }
+    lr3 {
+        interfaces {
+            fe-0/0/1 {
+                unit 0 {
+                    family inet {
+                        address 1.1.3.1/24;
+                    }
+                    family mpls;
+                }
+            }
+            lt-1/2/0 {
+                unit 32 {
+                    encapsulation ethernet;
+                    peer-unit 23;
+                    family inet {
+                        address 1.123.0.3/24;
+                    }
+                    family mpls;        
+                }
+            }
+            lo0 {
+                unit 3 {
+                    family inet {
+                        address 1.0.0.3/32;
+                    }
+                }
+            }
+        }
+        protocols {
+            rsvp {
+                interface all;
+            }
+            mpls {
+                interface all;
+            }
+            ospf {
+                traffic-engineering;
+                area 0.0.0.0 {
+                    interface all;
+                }
+            }
+        }
+        routing-options {
+            static {
+                route 9.9.9.0/24 discard;
+                route 9.9.9.3/32 receive;
+            }
+            router-id 1.0.0.3;
+        }
+    }
+    lr4 {
+        interfaces {
+            lt-1/2/0 {
+                unit 42 {
+                    encapsulation ethernet;
+                    peer-unit 24;
+                    family inet {
+                        address 1.124.0.4/24;
+                    }
+                    family mpls;
+                }
+            }
+            lo0 {
+                unit 4 {
+                    family inet {
+                        address 1.0.0.4/32;
+                    }
+                }                       
+            }
+        }
+        protocols {
+            rsvp {
+                interface all;
+            }
+            mpls {
+                interface all;
+            }
+            ospf {
+                traffic-engineering;
+                area 0.0.0.0 {
+                    interface all;
+                }
+            }
+        }
+        routing-options {
+            static {
+                route 9.9.9.0/24 discard;
+                route 9.9.9.4/32 receive;
+            }
+            router-id 1.0.0.4;
+        }
+    }
+    src {
+        interfaces {
+            lt-1/2/0 {
+                unit 1 {
+                    encapsulation ethernet;
+                    peer-unit 0;
+                    family inet {
+                        address 1.100.0.2/24;
+                    }
+                    family mpls;
+                }
+            }
+            lo0 {
+                unit 100 {
+                    family inet {
+                        address 1.0.0.10/32;
+                    }
+                }
+            }
+        }
+        protocols {
+            ospf {
+                traffic-engineering;
+                area 0.0.0.0 {
+                    interface all;
+                }                       
+            }
+        }
+        routing-options {
+            static {
+                route 9.9.9.0/24 next-hop 1.100.0.1;
+            }
+            router-id 1.0.0.10;
+        }
+    }
+}
+
+
+3.3 Actual Hardware Used for Test Execution
+
+regress@wfpro2-d> show chassis hardware 
+Hardware inventory:
+Item             Version  Part number  Serial number     Description
+Chassis                                B0759             M10i
+Midplane         REV 06   710-008920   DK5574            M10i Midplane
+Power Supply 0   Rev 08   740-008537   TE50031           AC Power Supply
+Power Supply 1   Rev 08   740-008537   TE50952           AC Power Supply
+HCM 0            REV 05   710-010580   DK5495            M10i HCM
+HCM 1            REV 05   710-010580   DK5485            M10i HCM
+Routing Engine 0 REV 07   740-011202   1000730609        RE-850
+Routing Engine 1 REV 07   740-011202   1000724459        RE-850
+CFEB 0           REV 09   750-010465   DK5406            Internet Processor II
+FPC 0                                                    E-FPC
+  PIC 0          REV 12   750-002992   RG1653            4x F/E, 100 BASE-TX
+  PIC 1          REV 11   750-002971   RG0256            4x OC-3 SONET, MM
+  PIC 2          REV 10   750-003869   DE8324            4x T1, RJ48
+FPC 1                                                    E-FPC
+  PIC 0          REV 12   750-002992   RG1671            4x F/E, 100 BASE-TX
+  PIC 2          REV 06   750-002982   DJ1314            1x Tunnel
+Fan Tray 1                                               Rear Right Fan Tray
+
+
+
+4. FUNCTIONAL TEST CASES
+
+4.1 Basic NSR Failover on Transit Router
+
+4.1.1 Single Sub-LSP
+
+  Goal: P2MP LSP stays up across multiple NSR failovers and can be
+        brought up or down correctly inbetween the failovers.
+
+  Test Setup: activate sub-LSP "to4"
+
+  Test Steps:
+	1. Activate "to4"
+	2. Force failover via CLI
+	3. Force another failover
+	4. Deactivate "to4"
+
+  Success Criteria:
+	1. After bringing up the LSP, the "show task replication" and
+	   "show rsvp replication ..." commands show that rsvp state
+	   is correctly replicated on the backup RE. This is also
+	   checked by comparing the "show rsvp session" commands on
+	   master and backup RE.
+
+	2. After bringing up the LSP, the "show krt flood-nexthop" and
+	   "show route table mpls.0" commands issued on the backup RE
+	   demonstrate that rpd maintains correctly replicated
+	   forwarding information.
+
+	3. After each failover, the previous two criteria are still
+	   met and the new master has the correct forwarding state as
+	   shown by the ""show krt flood-nexthop" and "show route
+	   table mpls.0" commands.
+
+	4. After bringing down the LSP, no p2mp forwarding state is
+	   lingering on master or backup RE. This is checked by using
+	   "show krt flood-nexthop", "show krt next-hop ...", "show
+	   krt mcnh p2mp", "show route table mpsl.0", and "show route
+	   forwarding family mpls" commands.
+
+  Result: pass
+
+
+4.1.2 Two Sub-LSPs
+
+  Goal: All P2MP sub-LSPs stay up across multiple NSR failovers and
+        can be brought up or down correctly inbetween the failovers.
+
+  Test Setup: using sub-LSPs "to4" and "to2via3".
+
+  Test Steps:
+	1. Activate "to4"
+	2. Activate "to2via3"
+	3. Force failover via CLI
+	4. Deactivate "to2via3"
+	5. Force another failover
+	6. Activate "to2via3"
+	7. Deactivate "to4"
+	8. Deactivate "to2via3"
+
+  Success Criteria:
+	1. After bringing up a sub-LSP, the "show task replication"
+	   and "show rsvp replication ..." commands show that rsvp
+	   state is correctly replicated on the backup RE. This is
+	   also checked by comparing the "show rsvp session" commands
+	   on master and backup RE.
+
+	2. After bringing up a sub-LSP, the "show krt flood-nexthop"
+	   and "show route table mpls.0" commands issued on the backup
+	   RE demonstrate that rpd maintains correctly replicated
+	   forwarding information.
+
+	3. After each failover, the previous two criteria are still
+	   met and the new master has the correct forwarding state as
+	   shown by the ""show krt flood-nexthop" and "show route
+	   table mpls.0" commands.
+
+	4. After bringing down each sub-LSP, no p2mp forwarding state
+	   is lingering on master or backup RE. This is checked by
+	   using "show krt flood-nexthop", "show krt next-hop ...",
+	   "show krt mcnh p2mp", "show route table mpsl.0", and "show
+	   route forwarding family mpls" commands.
+
+  Result: pass
+
+
+4.2 NSR Failover on Penultimate Hop
+
+  Goal: All P2MP sub-LSPs stay up across multiple NSR failovers and
+        can be brought up or down correctly inbetween the failovers.
+	The clone route is replicated correctly on the backup RE.
+
+  Test Setup: using sub-LSPs "to2", "to3", and "to4".
+
+  Test Steps:
+	1. Activate "to2"
+	2. Activate "to3"
+	3. Force failover via CLI
+	4. Activate "to4"
+	5. Force another failover
+	6. Deactivate "to2"
+	7. Deactivate "to3"
+	8. Deactivate "to4"
+
+  Success Criteria:
+	1. After bringing up a sub-LSP, the "show task replication"
+	   and "show rsvp replication ..." commands show that rsvp
+	   state is correctly replicated on the backup RE. This is
+	   also checked by comparing the "show rsvp session" commands
+	   on master and backup RE.
+
+	2. After bringing up a sub-LSP, the "show krt flood-nexthop"
+	   and "show route table mpls.0" commands issued on the backup
+	   RE demonstrate that rpd maintains correctly replicated
+	   forwarding information.
+
+	3. After each failover, the previous two criteria are still
+	   met and the new master has the correct forwarding state as
+	   shown by the ""show krt flood-nexthop" and "show route
+	   table mpls.0" commands.
+
+	4. After bringing down each sub-LSP, no p2mp forwarding state
+	   is lingering on master or backup RE. This is checked by
+	   using "show krt flood-nexthop", "show krt next-hop ...",
+	   "show krt mcnh p2mp", "show route table mpsl.0", and "show
+	   route forwarding family mpls" commands.
+
+  Result: pass
+
+
+4.3 NSR Failover on Egress and Bud Node
+
+4.3.1 Bud Node
+
+  Goal: In a bud node scenario, the DUT is egress for some sub-LSPs
+        and transit for other sub-LSPs of the same P2MP tree.  The
+        test verifies that the signaling state is correctly replicated
+        to the backup RE. It also verifies that after failover, data
+        traffic continues to reach the DUT over the egress sub-LSP and
+        is forwarded on the transit sub-LSPs.
+
+  Test Setup: using sub-LSPs "to4", "to1", and "to3". The latter will
+        cause the creation of a clone route. So the first failover is
+        with and the second failover without clone route.
+
+  Test Steps:
+	1. Activate "to4"
+	2. Activate "to1"
+	3. Force failover via CLI
+	4. Activate "to3"
+	5. Force failover via CLI
+	6. Deactivate "to1", "to3", "to4"
+
+  Success Criteria:
+	1. After bringing up a sub-LSP, the "show task replication"
+	   and "show rsvp replication ..." commands show that rsvp
+	   state is correctly replicated on the backup RE. This is
+	   also checked by comparing the "show rsvp session" commands
+	   on master and backup RE.
+
+	2. After bringing up a transit sub-LSP, the "show krt
+	   flood-nexthop" and "show route table mpls.0" commands
+	   issued on the backup RE demonstrate that rpd maintains
+	   correctly replicated forwarding information.
+
+	3. After each failover, the previous two criteria are still
+	   met and the new master has the correct forwarding state as
+	   shown by the ""show krt flood-nexthop" and "show route
+	   table mpls.0" commands.
+
+	4. After the sub-LSPs have been established in step 2 and step
+           4, ping commands show that traffic reaches all configured
+           P2MP destinations. The same ping commands issued after each
+           of the two failovers show the same results.
+
+	5. After bringing down the sub-LSPs, no p2mp forwarding state
+	   is lingering on master or backup RE. This is checked by
+	   using "show krt flood-nexthop", "show krt next-hop ...",
+	   "show krt mcnh p2mp", "show route table mpsl.0", and "show
+	   route forwarding family mpls" commands.
+
+  Result: pass
+
+
+4.3.2 Egress
+
+  In the egress case, the DUT only deals with sub-LSPs that terminate
+  on it. This is just a special case of the bud node scenario and is
+  thus covered by the test above.
+
+
+4.4 Remerge and Crossover
+
+4.4.1 Crossover Without Clone Route
+
+  Goal: Two P2MP sub-LSPs which cross-over at the DUT stay up across
+        multiple NSR failovers and can be brought up or down correctly
+        inbetween the failovers.
+
+  Test Setup: using sub-LSPs "to4" and "to2via3alt". Toggling "to4"
+        after the first failover is designed to check for any
+        nexthop leaks.
+
+  Test Steps:
+	1. Activate "to4"
+	2. Activate "to2via3alt"
+	3. Force failover via CLI
+	4. Deactivate "to4"
+	5. Activate "to4"
+	6. Force another failover
+	7. Deactivate "to2via3alt"
+	8. Deactivate "to4"
+
+  Success Criteria:
+	1. After bringing up a sub-LSP, the "show task replication"
+	   and "show rsvp replication ..." commands show that rsvp
+	   state is correctly replicated on the backup RE. This is
+	   also checked by comparing the "show rsvp session" commands
+	   on master and backup RE.
+
+	2. After bringing up a sub-LSP, the "show krt flood-nexthop"
+	   and "show route table mpls.0" commands issued on the backup
+	   RE demonstrate that rpd maintains correctly replicated
+	   forwarding information.
+
+	3. After each failover, the previous two criteria are still
+	   met and the new master has the correct forwarding state as
+	   shown by the ""show krt flood-nexthop" and "show route
+	   table mpls.0" commands.
+
+	4. After bringing down each sub-LSP, no p2mp forwarding state
+	   is lingering on master or backup RE. This is checked by
+	   using "show krt flood-nexthop", "show krt next-hop ...",
+	   "show krt mcnh p2mp", "show route table mpsl.0", and "show
+	   route forwarding family mpls" commands.
+
+  Result: pass
+
+
+4.4.2 Crossover With Clone Route
+
+  Goal: P2MP sub-LSPs which cross-over at the DUT as the penultimate
+        router stay up across an NSR failover.
+
+  Test Setup: using sub-LSPs "to2", "to3alt", and "to4". The first
+        failover tests an all penultimate hop scenario while the
+        second failover mixes in a transit sub-LSP.
+
+  Test Steps:
+	1. Activate "to2"
+	2. Activate "to3alt"
+	3. Force failover via CLI
+	4. Activate "to4"
+	5. Force another failover
+	6. Deactivate all sub-LSPs
+
+  Success Criteria:
+	1. After bringing up a sub-LSP, the "show task replication"
+	   and "show rsvp replication ..." commands show that rsvp
+	   state is correctly replicated on the backup RE. This is
+	   also checked by comparing the "show rsvp session" commands
+	   on master and backup RE.
+
+	2. After bringing up a sub-LSP, the "show krt flood-nexthop"
+	   and "show route table mpls.0" commands issued on the backup
+	   RE demonstrate that rpd maintains correctly replicated
+	   forwarding information.
+
+	3. After each failover, the previous two criteria are still
+	   met and the new master has the correct forwarding state as
+	   shown by the ""show krt flood-nexthop" and "show route
+	   table mpls.0" commands.
+
+	4. After bringing down the sub-LSPs, no p2mp forwarding state
+	   is lingering on master or backup RE. This is checked by
+	   using "show krt flood-nexthop", "show krt next-hop ...",
+	   "show krt mcnh p2mp", "show route table mpsl.0", and "show
+	   route forwarding family mpls" commands.
+
+  Result: pass
+
+
+4.4.3 Simple Remerge
+
+  Goal: Two P2MP sub-LSPs which re-merge at the DUT stay up across
+        multiple NSR failovers and can be brought up or down correctly
+        inbetween the failovers.
+
+  Test Setup: using sub-LSPs "to4" and "to3via2alt"
+
+  Test Steps:
+	1. Activate "to4"
+	2. Activate "to3via2alt"
+	3. Force failover via CLI
+	4. Deactivate "to4"
+	5. Activate "to4"
+	6. Force another failover
+	7. Deactivate "to4"
+	8. Deactivate "to3via2alt"
+
+  Success Criteria:
+	1. After bringing up a sub-LSP, the "show task replication"
+	   and "show rsvp replication ..." commands show that rsvp
+	   state is correctly replicated on the backup RE. This is
+	   also checked by comparing the "show rsvp session" commands
+	   on master and backup RE.
+
+	2. After bringing up a sub-LSP, the "show krt flood-nexthop"
+	   and "show route table mpls.0" commands issued on the backup
+	   RE demonstrate that rpd maintains correctly replicated
+	   forwarding information.
+
+	3. After each failover, the previous two criteria are still
+	   met and the new master has the correct forwarding state as
+	   shown by the ""show krt flood-nexthop" and "show route
+	   table mpls.0" commands.
+
+	4. After bringing down each sub-LSP, no p2mp forwarding state
+	   is lingering on master or backup RE. This is checked by
+	   using "show krt flood-nexthop", "show krt next-hop ...",
+	   "show krt mcnh p2mp", "show route table mpsl.0", and "show
+	   route forwarding family mpls" commands.
+
+  Result: pass
+
+
+4.4.4 Remerge With Clone Route
+
+  Goal: P2MP sub-LSPs which re-merge at the DUT stay up across
+        multiple NSR failovers and can be brought up or down correctly
+        inbetween the failovers. The DUT is penultimate hop for one of
+        the sub-LSPs.
+
+  Test Setup: using sub-LSPs "to4", "to2", and "to3via2alt". The second
+        failover does not involve any discard route because the DUT is
+	penultimate hop for one sub-LSP and transit for the other. So
+        two floodNHs are used to implement this remerge case.
+
+  Test Steps:
+	1. Activate "to4"
+	2. Activate "to2"
+	3. Activate "to3via2alt"
+	4. Force failover via CLI
+	5. Deactivate "to4"
+	6. Force another failover
+	7. Deactivate "to2"
+	8. Deactivate "to3via2alt"
+
+  Success Criteria:
+	1. After bringing up a sub-LSP, the "show task replication"
+	   and "show rsvp replication ..." commands show that rsvp
+	   state is correctly replicated on the backup RE. This is
+	   also checked by comparing the "show rsvp session" commands
+	   on master and backup RE.
+
+	2. After bringing up a sub-LSP, the "show krt flood-nexthop"
+	   and "show route table mpls.0" commands issued on the backup
+	   RE demonstrate that rpd maintains correctly replicated
+	   forwarding information.
+
+	3. After each failover, the previous two criteria are still
+	   met and the new master has the correct forwarding state as
+	   shown by the ""show krt flood-nexthop" and "show route
+	   table mpls.0" commands.
+
+	4. After bringing down each sub-LSP, no p2mp forwarding state
+	   is lingering on master or backup RE. This is checked by
+	   using "show krt flood-nexthop", "show krt next-hop ...",
+	   "show krt mcnh p2mp", "show route table mpsl.0", and "show
+	   route forwarding family mpls" commands.
+
+  Result: fail (after step 6, the backup has the wrong state)
+
+
+4.5 Ultimate Hop Popping
+
+4.5.1 Explicit Null
+
+  Goal: Test handling of explicit null labels for sub-LSPs where the DUT
+        is either egress or penultimate hop.
+
+  Test Setup: using sub-LSPs "to1" and "to2". Both R1 and LR2 are
+        configured to request explict-null labels for LSPs that they
+        are egress for.
+
+  Test Steps:
+	1. Configure R1 and LR2 with "protocols mpls explicit-null"
+	2. Activate "to1" and "to2" on R0
+	3. Force failover via CLI
+	4. Remove "explicit-null" config from R1 and LR2
+	5. Force another failover via CLI
+	6. Deactivate "to1" and "to2"
+
+  Success Criteria:
+	1. The correct replication and forwarding state is maintained
+	   on master and backup RE before and after each failover.
+
+	2. Ping commands through the P2MP LSP to each destination
+           succeed before and after both failover.
+
+	3. Removing the explicit-null config results in a clean change
+	   of the sub-LSPs on both master and backup RE and no leaked
+	   NHs.
+
+  Result: pass
+
+
+4.5.2 Tunnel-Services
+
+  Same as explicit-null test above. But now use "protocols rsvp
+  tunnel-services" instead of "protocols mpls explicit-null".  The
+  main difference to the previous test is that now "to1" is terminated
+  on a vt interface which shows up as a branch in the flood nexthop on
+  R1.
+
+  Result: pass
+
+
+4.6 Link Protection
+
+  Goal: Two P2MP sub-LSPs which are link-protected by the DUT stay up
+        across NSR failovers. The DUT is penultimate hop for one of
+        the sub-LSPs.
+
+	A protected sub-LSP for which protection is not active during
+        failover (i.e. the protected link is up) is expected to stay
+        up. The bypass tunnel which protects it will also stay up (P2P
+        ingress NSR functionality). But any backup state for the
+        protected sub-LSP needs to be recreated on the new master
+        RE. So there is a time window during failover when no
+        protection is available.
+
+	A protected sub-LSP for which protection is active during
+	failover (i.e. the protected link is down and a backup LSP
+	sending traffic throught the bypass exists) is not expected to
+	stay up during failover. Traffic loss may occur until the new
+	master RE recreates the backup LSP.
+
+  Test Setup: using sub-LSPs "to3" and "to4". They get configured with
+        a strict path so that they don't reroute when a link failure
+        occurs. They also get configured with link-protection.
+	This test will not be automated. The test will no longer be
+	valid once ingress P2MP NSR is implemented by RLI 12173.
+
+  Test Steps:
+	1. Configure strict hops and activate "to4"
+	2. Configure strict hops and activate "to3"
+	3. Wait for the DUT to establish the two bypass tunnels and
+           protect both "to3" and "to4"
+	4. Force failover via CLI
+	5. Wait for link-protection to get setup again on the backup RE
+	6. Bring down the link between R1 and LR2 to activate
+	   the "to4" link protection
+	7. Force another failover
+	8. Bring up the R1 - LR2 link and wait for "to4" to revert
+           from link protection to its primary path
+	9. Bring down the link between R1 and LR3 to activate
+	   the "to3" link protection
+	10. Force another failover
+	11. Bring up the R1 - LR3 link and wait for "to3" to revert
+            from link protection to its primary path
+	12. Deactivate "to3"
+	13. Force another failover
+	14. Deactivate "to4"
+
+  Success Criteria:
+	1. The correct replication and forwarding state is maintained
+	   on master and backup RE before and after each failover.
+
+	2. Ping commands through the P2MP LSP to each destination
+           succeed before and after failover. The exception is
+	   the failover scenario with activated link protection
+	   as discussed in the goals section above.
+
+	3. After each failover, link-protection gets re-established
+	   correctly for all sub-LSP.
+
+	4. After bringing down the sub-LSPs, no p2mp forwarding state
+	   is lingering on master or backup RE. This is checked by
+	   using "show krt flood-nexthop", "show krt next-hop ...",
+	   "show krt mcnh p2mp", "show route table mpsl.0", and "show
+	   route forwarding family mpls" commands.
+
+  Result: fail
+
+
+4.7 Failover During MBB
+
+  Goal: P2MP tree rerouting is done in make-before-break (MBB)
+        fashion: a new instance of the tree with a new lsp-id is
+        created, and after traffic is switched over to it, the old
+        instance will be deleted. The NSR failover must be able to
+        deal with the existance of two P2MP tree instances (each
+        sub-LSP exists twice with a different lsp-id) and this test
+        verifies that.
+
+  Test Setup: using sub-LSPs "to2", "to3", and "to4". This results in
+        a mix of penultimate and non-penultimate sub-LSPs.
+
+  Test Steps:
+	1. Activate "to4"
+	2. On R0, trigger a MBB reroute by configuring a bandwidth
+           value for "to4"
+	3. Force failover via CLI
+	4. Activate "to2" and "to3"
+           (after configuring same bandwidth as "to4")
+	5. On R0, trigger a MBB reroute by removing the bandwidth
+	   configuration from all sub-LSPs
+	6. Force another failover
+	7. Deactivate all sub-LSPs
+
+  Success Criteria:
+	1. The correct replication and forwarding state is maintained
+	   on master and backup RE before and after each
+	   failover. Both tree instances need to be replicated.
+
+	2. After each failover, the MBB procedure eventually completes
+	   and the old tree instance gets cleaned up correctly.
+
+  Result: pass
+
+
+
+5.  BOUNDARY TEST CASES
+
+5.1 No Replication of Ingress LSPs
+
+  Goal: Ensure that the NSR feature is not applied to ingress P2MP
+        LSPs.  There should be no replication of ingress RSVP state
+        (PSBs and RSBs) to the backup RE. After performing an NSR
+        switchover, the new master RE must bring up a new instance of
+        all P2MP trees for which it is ingress.
+
+  Test Setup: This test will not be automated. Sub-LSP "to4" is used
+        to ensure transit NSR is not affected when an ingress LSP is
+        present.  A new ingress p2mp LSP will be created.
+
+  Test Steps:
+	1. Activate "to4" on R0
+
+	2. Create ingress p2mp LSP on the DUT R1:
+	   label-switched-path to4ingress {
+	     to 1.0.0.4;
+	     p2mp ingress_test;
+	   }
+
+	3. Create a static route to use the ingress P2MP LSP so that
+           a routing table entry and NH gets installed:
+	   routing-options {
+	     static {
+	       route 9.9.9.4/32 {
+	       p2mp-lsp-next-hop ingress_test;
+	     }
+	   }
+
+	4. Force failover via CLI
+
+  Success Criteria:
+	1. After step 3, ingress LSP "to4ingress" comes up correctly
+	   but is not replicated to the backup RE.
+
+	2. Transit LSP "to4" fails over correctly.
+
+	3. During failover, ingress LSP "to4ingress" goes down and
+           comes back up on new master RE.
+
+  Result: pass
+
+
+5.2 Upstream Label Allocation (ULA)
+
+  Goal: This RLI does not provide NSR support for ULA. But this test
+        checks that there are no unexpected problems when both, ULA
+        and NSR are configured.
+
+  Test Setup: Using sub-LSP to1 from R0 to R1 and to4ingress from R1
+        to LR4. This will test both, the ingress and egress behavior.
+        Additionally, sub-LSP "to4" is used to test the ULA bud node
+        case.
+	This test will not be automated.
+
+  Test Steps:
+	1. Configure ULA on R0:
+	   set protocols mpls label-switched-path to1 upstream-assignment
+	   set protocols mpls label-switched-path to4 upstream-assignment
+	   set routing-options static route 7.7.7.0/24 p2mp-lsp-next-hop test
+	       lsp-context rsvp-te 1000042
+	2. Configure ULA on R1 for egress "to1":
+	   set protocols rsvp tunnel-services lsp-aggregation
+	   set protocols rsvp upstream-label-lookups
+	   set protocols mpls lsp-egress-context label-switched-path test
+	       rsvp-te 1000042 next-table inet.0
+	3. Configure ULA on R1 for ingress "to4ingress":
+	   set protocols mpls label-switched-path to4ingress upstream-assignment
+	   set routing-options static route 7.7.7.0/24
+	       p2mp-lsp-next-hop ingress_test lsp-context rsvp-te 1000043
+	4. Configure ULA on LR4:
+	   set protocols rsvp tunnel-services lsp-aggregation
+	   set protocols rsvp upstream-label-lookups
+	   set protocols mpls lsp-egress-context label-switched-path ingress_test
+	       rsvp-te 1000043 next-table inet.0
+	5. Activate "to1" and "to4ingress"
+	6. Force failover via CLI
+	7. Activate "to4"
+	8. Force another failover via CLI
+	9. Deactivate all sub-LSPs
+
+  Success Criteria:
+	1. No crash or other major problem is seen.
+
+  Result: pass
+	However, rpd on the backup RE does not create the right route
+	entries for the egress LSP. After failover, the egress LSP
+	goes down and comes back up as a regular LSP without ULA
+	active. The bud node case has the same problem although it
+	recovers some time after the failover.
+	There is also a floodnh leak at the end of the test.
+
+
+5.3 CCC
+
+  Goal: This RLI does not provide NSR support for CCC. But this test
+        checks that there are no unexpected problems when both, CCC
+        and NSR are configured.
+
+  Test Setup: Using sub-LSP to1 from R0 to R1. Additionally, sub-LSP
+        "to4" is used to test the CCC bud node case.
+	This test will not be automated.
+
+  Test Steps:
+	1. Configure CCC on R0:
+	   set protocols connections p2mp-transmit-switch s
+	       transmit-p2mp-lsp test input-interface so-0/1/1.0
+	   set interfaces so-0/1/1 encapsulation ppp-ccc unit 0
+	2. Configure CCC on R1:
+	   set protocols connections p2mp-receive-switch s
+	       receive-p2mp-lsp test output-interface so-0/1/1.0
+	   set interfaces so-0/1/1 encapsulation ppp-ccc unit 0
+	3. Activate "to1"
+	4. Force failover via CLI
+	5. Activate "to4"
+	6. Force another failover via CLI
+	7. Deactivate all sub-LSPs
+
+  Success Criteria:
+	1. No crash or other major problem is seen.
+
+  Result: pass
+	However, the backup RE shows the LSP as down and does not
+	create the mpls.0 routing table entry. The flood NH is
+	correctly replicated. After failover, the LSP is shown as up
+	by rsvp but still not routing table entries are present and
+	the CCC connection does not come up. Bringing up "to4" after
+	failover fixes things.
+	Second failover as bud node works fine.
+
+
+
+6.  GRES TEST CASES
+
+Graceful-restart and NSR are mutually exclusive. But due to the extend
+of infrastructure changes done as part of this RLI, the
+graceful-restart functionality might be affected. So some regression
+testing needs to be performed as part of this UTP.
+
+These tests will not be automated.
+
+6.1 Graceful-Restart of RPD on Same RE
+
+  Test Setup: Deactivate NSR configuration on the DUT and instead
+	configure it for graceful restart. Activate multiple sup-LSPs
+	on R0 to test the various transit and egress roles of R1. Also
+	activate an ingress P2MP LSP on R1 to test ingress
+	functionality.
+
+  Test Steps:
+	1. Deactivate NSR and activate graceful restart:
+	   set routing-options graceful-restart
+	2. Activate "to1", "to3", "to4" on R0
+	3. Activate "to4ingress" on R1 and configure a static route for it
+	4. Restart routing
+
+  Success Criteria:
+	1. All PFE forwarding state related to the LSPs remains in place
+	   during the restart.
+
+	2. At the end of the restart period, the LSP state, related routing
+	   table entries and flood NHs are essentially the same as before.	
+
+  Result: pass
+
+
+6.2 Graceful-Restart on Backup RE
+
+  Test Setup: Deactivate NSR configuration on the DUT and instead
+	configure it for graceful-restart and
+	graceful-switchover. Activate multiple sup-LSPs on R0 to test
+	the various transit and egress roles of R1. Also activate an
+	ingress P2MP LSP on R1 to test ingress functionality.
+
+  Test Steps:
+	1. Deactivate NSR and activate GRES:
+	   set routing-options graceful-restart
+	   set chassis redundancy graceful-switchover
+	   set system commit synchronize
+	2. Activate "to1", "to3", "to4" on R0
+	3. Activate "to4ingress" on R1 and configure a static route for it
+	4. request chassis routing-engine master switch
+
+  Success Criteria:
+	1. All PFE forwarding state related to the LSPs remains in place
+	   during the switchover to the backup RE.
+	2. At the end of the restart period, the LSP state, related routing
+	   table entries and flood NHs are essentially the same as before.	
+
+  Result: pass
+
+
+
+7.  ISSU TEST CASES
+
+These tests will not be automated.
+
+7.1 Upgrade from Earlier Release Without P2MP NSR Support
+
+  Test Setup: Load the same 11.2 jinstall build on both REs of
+	R1. Activate multiple sup-LSPs on R0 to test the various
+	transit and egress roles of R1. Also activate an ingress P2MP
+	LSP on R1.
+
+  Test Steps:
+	1. Copy a jinstall build with P2MP NSR support to both REs.
+	   Check that ISSU is supported:
+	   request system software validate in-service-upgrade <new_build>
+	2. Initiate ISSU:
+	   request system software in-service-upgrade <new_build>
+
+  Success Criteria:
+	1. The validation process in step 1 notifies the operator that
+	   NSR is not supported for the ingress LSP "to4ingress".
+
+	2. None of the P2MP LSPs get replicated to the backup RE.
+
+	3. All P2MP LSPs get re-established after ISSU.
+
+  Result: not tested
+
+	The M10i chassis used for unit testing apparently does not
+	support ISSU. The following output was shown by the ISSU
+	command:
+	"error: ISSU not supported on chassis
+	 warning: The FPC state on LCC may not be ONLINE"
+
+
+7.2 Upgrade from Build With P2MP NSR Support
+
+  Test Setup: Load the same jinstall build on both REs of R1. Activate
+	multiple sup-LSPs on R0 to test the various transit and egress
+	roles of R1. Also activate an ingress P2MP LSP on R1 as a
+	negative test case.
+
+  Test Steps:
+	1. Copy another jinstall build to both REs. Check that ISSU
+           is supported:
+	   request system software validate in-service-upgrade <new_build>
+	2. Initiate ISSU:
+	   request system software in-service-upgrade <new_build>
+
+  Success Criteria:
+	1. The validation process in step 1 notifies the operator that
+	   NSR is not supported for the ingress LSP "to4ingress".
+
+	2. The correct replication and forwarding state is maintained
+	   on master and backup RE before and after the switch-over.
+
+	3. All transit and egress sub-LSPs stay up during ISSU.
+
+	4. The ingress LSP gets re-established after ISSU.
+
+  Result: not tested
+
+	The M10i chassis used for unit testing apparently does not
+	support ISSU. The following output was shown by the ISSU
+	command:
+	"error: ISSU not supported on chassis
+	 warning: The FPC state on LCC may not be ONLINE"
+
+
+
+8. TX TEST CASES
+
+Not tested.
+
+
+
+9.  AGGREGATED ETHERNET/SONET TEST CASES
+ 
+Not tested.
+
+
+ 
+10.  REGRESSION TEST CASES
+
+Except for the GRES test cases, no explicit regression testing is done
+as part of this UTP. But almost all the test cases implicitly also
+verify the existing P2MP functionality.
+
+
+
+11.  INTEROPERABILITY TEST CASES
+
+No interop testing will be performed.
+
+
+
+12.  MIGRATION & COMPATIBILITY TEST CASES
+
+The ISSU test cases fall into this category.
+
+
+
+13.  TEST COVERAGE REMAINING
+
+Scaling testing is not part of this UTP and will be covered by the dev
+test and sys test groups. This includes tests with a larger number of
+branches (and outgoing interfaces) than tested here.
+
+The ISSU test cases could not be performed on the chosen test setup
+and still need to be done.
+
+
+
+14.  DEFECTS REMAINING
+
+{List PRs filed at dev complete for test failures from this plan
+which were not fixed by dev complete.}
+(Provide estimate on # of defects which downstream test is expected to find)
+
+
+
+15. SCALING AND PERFORMANCE
+ 
+This RLI should not significantly affect the scaling and performance
+numbers. Verification will be done by dev dest and sys test.
+
+
+
+16. STATIC ANALYSIS 
+
+Coverty analysis will be done on the DEV_RPD_FEB11_BRANCH after the
+private RLI 9023 development branch collapses into it. This will be
+after the dev-complete milestone.
+
+
+
+17. CODE COVERAGE
+
+{ Apply code coverage tool to provide % code covered during unit
+testing. The threshold for % code coverage is determined by JUNOS
+Governance policies https://matrix.juniper.net/docs/DOC-3957}
+
+No code coverage analysis will be performed.
+
+
+
+18. AUTOMATION
+
+All test cases will be automated except where stated otherwise.
+
+
+
+19. UNIT TEST PLAN REVIEW FEEDBACK
+
+(A) A formal Review of the final Test Plan draft must be held with the following participants
+
+- Responsible Development Engineer (Software): Host, mandatory, interactive presence required (in person or over the phone)
+- Responsible Test Engineer: Mandatory, interactive presence required (in person or over the phone)
+  {If needed the Test Manager can represent the Responsible Test Engineer}
+- Area Lead or Expert (may be a Software or Systest Manager): Mandatory (e-mail feedback accepted)
+
+
+The review minutes and agreed action items must be captured <somewhere>
+for the review of the test plan during the scheduled SW release. The notification list must contain 
+all mandatory and invited people. Subsequent changes to the test plan or closure of action items must
+be captured <somewhere>, which will trigger an automatic notification to all reviewers.
+

@@ -1,0 +1,934 @@
+Header: /cvs/juniper/sw-projects/os/nsr/pim-modular-nsr-ds.txt,v 1.4 2012/04/04 20:45:05 afuellemann Exp $
+
+Process Template J3.02.P05.T03S
+
+PIM Modular NSR Design Specification
+
+Authors:
+Andy Fuellemann <afuellemann@juniper.net>
+
+Copyright (C) 2012, Juniper Networks, Inc.
+
+NOTICE: This document contains proprietary and confidential
+information of Juniper Networks, Inc. and must not be distributed
+outside of the company without the permission of Juniper Networks
+engineering.
+
+TABLE OF CONTENTS
+
+1.	INTRODUCTION
+1.1	SCOPE
+1.2	REVISION HISTORY
+1.3	REFERENCED DOCUMENTS
+1.4	GLOSSARY
+2.	ARCHITECTURE OVERVIEW
+2.1	DESIGN REQUIREMENTS
+3.	DESIGN DETAILS
+3.1	ASSUMPTIONS AND DEPENDENCIES
+3.1.1   Core PIM "APIs"
+3.1.2   How Master to Backup RE replication Really Works
+3.1.3   Backup RE PIM State Derivation
+3.1.4   Backup RE PIM State Imposition
+3.2	HIGH LEVEL DESIGN
+3.2.1   PIM and libmirror
+3.2.2   PIM NSR replicated state
+3.2.3   PIM NSR replicated packets
+3.2.4   EXISTING PIM NSR CODE/DESIGN
+3.2.5   PIM NSR CODE/DESIGN CHANGES
+3.2.6   Phantom Multicast Route Resolution
+3.3	DESIGN RISK ITEMS
+3.4	IMPACTED SOFTWARE COMPONENTS
+3.4.1	SOFTWARE COMPONENTS IMPACTED BY DESIGN
+3.4.2	POTENTIALLY IMPACTED SOFTWARE COMPONENTS
+3.5	COMPONENT INTERACTIONS
+3.5.1   GENERAL STRATEGY
+3.5.1.1 MIRRORING ENCODING STRATEGY
+3.5.1.2 MIRRORING STRATEGY
+3.5.1.3 ISSU STRATEGY
+3.5.1.4 Resolver strategy
+3.5.1.5 Master RE RDB data retention
+3.5.1.6 Backup RE RDB data retention
+3.5.1.7 CODE ORGANIZATION
+3.5.1.8 PIM RUNTIME CODE
+3.5.2   COMPONENT <foo>
+3.5.2.1 Master RE RDB
+3.5.2.2 Backup RE RDB
+3.5.2.3 MIRRORING
+3.5.2.4 ISSU MIRRORING (IF NEEDED)
+3.6	INTER PROCESS COMMUNICATION
+3.7	CONCURRENCY STRATEGY
+3.8	STARTUP STRATEGY
+3.9	RESOURCE MANAGEMENT
+3.9.1   MEMORY ALLOCATION STRATEGY
+3.9.2   MEMORY UTILIZATION
+3.9.3   STORAGE UTILIZATION
+3.9.4   SYSTEM RESOURCE UTILIZATION
+3.10	FAULT AND EXCEPTION HANDLING
+3.11	DEBUG SUPPORT
+3.12	TESTABILITY, SERVICEABILITY AND DIAGNOSE-ABILITY
+3.13	CONSTRAINTS AND LIMITATIONS
+3.14	REJECTED DESIGN ALTERNATIVES
+4.	PATENT OPPORTUNITIES
+5.	PERFORMANCE
+5.1	PERFORMANCE RELATED RESOURCES
+5.2	TARGET PERFORMANCE
+5.3	64-BIT KERNEL SUPPORT
+6.	SCALING
+6.1     Mirror Connection GENID
+6.2     RDB resolver job
+6.3     RDB repopulation
+6.4     RE switchover
+7.	MULTI-CORE ENVIRONMENT
+8.	COMPATIBILITY ISSUES
+9.	HIGH AVAILABILITY (HA)
+9.1	GRACEFUL RE SWITCHOVER (GRES), ISSU/ NSSU IMPACT
+9.2	NSR IMPACT
+10.	LOGICAL SYSTEM / ROUTING INSTANCE IMPACT
+11.	MULTI / VIRTUAL CHASSIS IMPACT (HOBSON/ FIXX/ CHAI)
+12.	PLATFORMS SUPPORTED
+13.	SDK IMPACT
+13.1	SDK CUSTOMER USAGE
+14.	JUNOS READY SOFTWARE CONSIDERATIONS
+15.	FREE SOFTWARE CONSIDERATIONS
+16.	3RD PARTY SOFTWARE CONSIDERATIONS
+16.1	FUNCTIONAL ROLE OF 3RD PARTY CODE WITHIN JUNOS
+16.2	INTEGRATION DETAILS OF 3RD PARTY CODE WITHIN JUNOS
+17.	POSIX NON-COMPLIANCE
+18.	FUTURE CONSIDERATIONS
+19.	REVIEW COMMENTS
+19.1	REVIEW STAKEHOLDER MATRIX
+
+1. INTRODUCTION
+
+Non Stop Routing (NSR) attempts to preserve routing control state when there
+is a Routing Engine (RE) failover.
+
+In the case of PIM, this is achieved by replicating enough PIM control state
+from the master RE to the backup RE to recreate the PIM runtime state on the
+backup RE such that it matches that of the master RE.
+
+In addition, a subset of the PIM packet types are also mirrored to recreate
+their associated PIM runtime state on the backup RE.
+
+1.1 SCOPE
+
+The current PIM NSR implementation has several structural flaws in it,
+which are listed below:
+
+   1) The PIM NSR code is not very readable.  It is very hard to
+      determine from just looking at the code which RE it is 
+      supposed to be running on.
+
+   2) The data structures used to define the replication database
+      (RDB) are defined so that they can be used on the master and
+      backup REs.
+
+      This makes it impossible to determine from looking at the 
+      structures which RE the code that is manipulating them is
+      supposed to be running on.
+
+   3) Some of the RDB data structures are tightly coupled to their
+      associated PIM control state.
+
+      This results in the PIM control code having to know too much
+      about the RDB state and vice versa.
+
+   4) Some of the TLVs used to replicate state from the master RE
+      to the backup RE are unversioned flat data structures.  This
+      does not work when the format of these data structures has to
+      be changed (ISSU).
+
+These structural flaws are causing the following issues:
+
+   1) A steady stream of PIM NSR related PRs that is consuming 
+      engineering resources to deal with.
+
+   2) The NSR code occasionally causes issues to arise in the 
+      core PIM code (resulting in more PRs).
+
+   3) There are latent ISSU issues due to unversioned data 
+      structures being embedded in the TLVs used to replicate
+      state to the backup RE.
+
+   4) The PIM NSR code is not readily extensible.
+
+This RLI will refactor/redesign the existing PIM NSR code to resolve these
+issues.  This is an engineering-driven change to improve the maintainablity
+and extensibility of the current PIM NSR implementation.
+
+1.2 REVISION HISTORY
+
+  Revision 1.1
+    Andy Fuellemann
+    02/15/12
+    Created.
+
+  Revision 1.2
+    Andy Fuellemann
+    03/13/12
+    Updated based on further research.
+
+  Revision 1.3
+    Andy Fuellemann
+    03/20/12
+    Updated based on review comments.
+
+  Revision 1.4
+    Andy Fuellemann
+    04/04/12
+    Updated based on review comments.
+    Add pim mirror base class.
+    Update backup RE RDB data retention policy.
+    Add description of mcast phantom route handling.
+
+  Revision 1.5
+    Andy Fuellemann
+    05/07/12
+    Remove PIM packet mirroring for NSR.
+    Add hidden command "request pim mirroring reset".
+
+1.3 REFERENCED DOCUMENTS
+
+  PIM Modular NSR Functional Specification
+
+  /cvs/juniper/sw-projects/os/nsr/pim-modular-nsr-fs.txt,v 1.4
+
+1.4 GLOSSARY
+
+ISSU - In Service Software Upgrade
+
+NSR - Non Stop Routing
+
+PIM - Protocol Independent Multicast
+
+RE - Routing Engine
+
+RDB - Replication database
+
+RPD - Routing Protcol Daemon
+
+2. ARCHITECTURE OVERVIEW
+
+The changes made for this RLI do not affect the overall JUNOS architecture.
+However, there is a large impact to the core (RFC-specific) and non-core
+(NSR glue code) PIM architecture.
+
+2.1 DESIGN REQUIREMENTS
+
+1) Complete separation of PIM runtime and NSR state.
+
+2) Explicitly separate master RE code/state from backup RE code/state.
+
+3) Handle scaling issues (PR 611113).
+
+3. DESIGN DETAILS
+
+3.1 ASSUMPTIONS AND DEPENDENCIES
+
+3.1.1 Core PIM "APIs"
+
+The PIM internal data structures are defined in public header files and are
+liberally accessed by lots of non-core PIM code.
+
+The PIM NSR code on the backup RE will also access the PIM runtime state
+in order to resolve replicated state from the master RE.
+
+This is done to do the following:
+
+  1) To determine if the state needed to resolve a particular RDB record
+     is available.
+
+     This is done fairly often (e.g. PIF lookup).
+
+  2) To directly manipulate the PIM runtime state during the process of 
+     resolving RDB records.
+
+     This is done minimally (e.g. set self-nbr generation ID).
+
+Ideally, this should all be replaced with API calls into the core PIM code,
+but until that code is refactored to do proper data hiding, the existing
+non-existing APIs will be used as sparingly as possible.
+
+3.1.2 How Master to Backup RE replication Really Works
+
+JUNOS replicates state from the master to the backup RE via several
+paths:
+
+  1) Configuration changes are mirrored to the backup RE at commit time.
+
+     The config file is copied to the backup RE and committed there 
+     first before being committed on the master RE.
+
+     This is beyond the control of RPD.
+
+  2) The kernel replicates state that it is aware about.
+
+     This includes, but is not limited to interfaces, routing instances,
+     and unicast and multicast routes.
+
+     This is beyond the control of RPD.
+
+  3) Protocol-specific state in RPD via libmirror.
+
+     The libmirror code is responsible for deciding when the objects
+     that are queued for mirroring actually get mirrored.
+
+     This is beyond the control of the individual protocols in RPD.
+
+It is important to note that each of these three replication channels IS
+NOT co-ordinated with the others.
+
+It is therefore impossible to assume that other state an object depends
+on will be present on the backup RE at the time the object arrives on the
+backup RE.
+
+It is safest to assume complete chaos w.r.t object dependencies on the
+when trying to resolve replicated state on the backup RE.
+
+3.1.3 Backup RE PIM State Derivation
+
+The existing PIM NSR design requires that a large amount of PIM runtime
+state be derived from what has been mirrored.  This most visibly done for
+sgnodes and a subset of PIM packet types.
+
+The sgnode objects on the backup RE are derived from a combination of
+mirrored PIM neighbor state and PIM rxjp state.
+
+Certain PIM packets are sent either infrequently and/or rarely.  These 
+are BSR, auto-rp, register and register-stop packets.  The current PIM
+NSR design mirrors these packets (sort of) and processes them on the
+backup RE.
+
+Note that this project is not changing the existing state derivation model
+for PIM sgnodes.  However, PIM packets will no longer be replicated and
+the state that was derived from them will now be directly replicated.
+
+The PIM packet state derivation model will be retained for ISSU.
+
+3.1.4 Backup RE PIM State Imposition
+
+The existing PIM NSR design also requires that a large amount of PIM 
+runtime state be imposed from the master RE.  This is most visibly done
+for PIM neighbors, rxjp objects and RPF state.
+
+These runtime objects are created when the backup RE RDB determines that
+any state that they rely on is present.  At that time, the objects are 
+considered to be resolved and the corresponding runtime state is created.
+
+This project will extend the state imposition model to all PIM state that
+used to be derived from replicated PIM packets.
+
+3.2 HIGH LEVEL DESIGN
+
+3.2.1 PIM and libmirror
+
+The PIM NSR design relies on libmirror to replicate state from the master
+RE RPD process to the backup RE RPD process.
+
+The libmirror module provides a mechanism to mirror individual objects as
+a set of TLVs from the master RE to the backup RE.
+
+The libmirror module does not directly access the objects being mirrored,
+but controls how and when they are replicated to the backup RE.
+
+It is up to the owner of the objects to encode and decode them and to decide
+on what mirroring strategy to use.
+
+3.2.2 PIM NSR replicated state
+
+The following sections apply to all PIM state that is being replicated to
+the backup RE.  Each of the separate bits of PIM state being replicated
+will follow to varying degrees the design template that will be described
+in this document.
+
+Below is the list of PIM state that is currently replicated
+to the backup RE:
+
+  o neighbors
+  o RPF active and standby paths
+  o pseudo-gmp
+  o BiDir DF
+  o RXJP nodes
+  o MDT
+
+This list will not change for this project.
+
+Note that not all portions of the following design template are applicable
+to all of the objects listed above.
+
+For example, PIM RPF state does not need a resolver to run on the backup RE
+as RPF state is created as needed by the runtime code.  When RPF processing
+runs on the backup RE, it will query the backup RE RPF RDB instead of the
+unicast routing table to decide what to do.
+
+3.2.3 PIM NSR replicated packets
+
+Below is the list of PIM packet types that is currently replicated to the
+backup RE.
+
+  o auto-rp
+  o BSR
+  o register
+  o assert
+
+This project will replace all PIM packet replication with equivalent PIM
+state replication.
+
+Note that backup RE PIM packet replication support will be retained to 
+support ISSU.
+
+3.2.4 EXISTING PIM NSR CODE/DESIGN
+
+The current PIM NSR design relies on a tight coupling of PIM runtime data
+structures with their replication database counterparts.  For example,
+the existing pim_rdb_jp structure (in pim_nsr.h) has a pim_nbr pointer 
+that it dereferences. 
+
+Conversely, the pim_nbr structure (in pim_common.h) has a pim_rdb_nbr_
+pointer to its RDB counterpart that it dereferences.
+
+Cross-boundary pointers and their management issues have been one of the
+sources of the steady stream of PIM NSR PRs.
+
+Using pointers in this manner has resulted in the PIM runtime code having
+to be overly aware of what is going on with PIM NSR replication.  This 
+is another source of the steady stream of PIM NSR PRs.
+
+3.2.5 PIM NSR CODE/DESIGN CHANGES
+
+This project will replace either in whole (or in part) the repliction 
+and resolution mechanisms for each of the objects listed in sections
+3.2.2 and 3.2.3.
+
+The common PIM NSR code that handles mirroring, master RE RDB population,
+RE switchover and backup RE RDB resolution will also be replaced.
+
+3.2.6 Phantom Multicast Route Resolution
+
+Phantom multicast routes are currently resolved via a combination of 
+calls to mc_resolve_wrapper() and if not immediately resolved, by the
+mc_nsr.c module.
+
+The mc_nsr.c module tracks unresolved mcast phantom routes until they
+resolved.  It will attempt to resolve these mcast phantom routes.
+
+Unfortunately, this does not work if PIM NSR is explicitly disabled and
+then re-enabled as resolved multicast phantom routes are not tracked
+(PR 753813), so they will not be resolved again when PIM NSR is turned
+back on again.
+
+For this RLI, the mc_nsr.c/h files will be replaced with mc_phantom_rt.c/h
+files (to make things obvious).
+
+Additionally, the mc_phantom_rt.c module will track the multicast phantom
+route as long as it is in the routing table.
+
+3.3 DESIGN RISK ITEMS
+
+There are two major risk items:
+
+  1) It's PIM.
+
+  2) This is NSR.
+
+Mitigation:
+
+  1) Lots and lots and lots of testing.
+
+  2) By refactoring/privatising code and data structures, PIM (and PIM NSR)
+     will (hopefully) end up being more readable/maintainable/fixable.
+
+3.4 IMPACTED SOFTWARE COMPONENTS
+
+The existing PIM runtime code/data structures will no longer directly
+access PIM NSR data structures.  All code and data structures that are
+used to do this will be removed.
+
+The PIM NSR code will be reworked to match what is described below.
+
+3.5 COMPONENT INTERACTIONS
+
+3.5.1 GENERAL STRATEGY
+
+3.5.1.1 MIRRORING ENCODING STRATEGY
+
+To be able to support ISSU and new features, it is critical that each
+field in the object being mirrored be encoded as a separate TLV.
+
+Encoding of a block of structured data in an individual TLV is to be
+avoided at all costs.
+
+Once structured data is encoded as an individual TLV and then its
+format is changed in a future release, ISSU becomes almost imposssible
+to support as it is impossible to determine what the format of the
+replicated data is.
+
+When using a full TLV encoding, new features that change the format of
+an existing object will be added as additional TLVs.
+
+Then when doing ISSU, the absence of a TLV can be handled by providing
+a default value when decoding the older version of an object.
+
+3.5.1.2 MIRRORING STRATEGY
+
+To simplify PIM NSR replication interactions with the mirroring library,
+a subset of the available mirroring operations will be used.  This will
+be done by using state compression when mirroring PIM state to the
+backup RE.
+
+This means that only the last change to a PIM object will be mirrored
+to the backup RE.
+
+This means that PIM will only request MIRROR_OP_ADD or MIRROR_OP_DEL
+operations.  This means that MIRROR_OP_ADD means modify as well as add.
+
+This implies that the backup RE will have to be able to handle MIRROR_OP_DEL
+requests for objects that it does not know about.
+
+This also implies that the backup RE will have to be able to handle 
+MIRROR_OP_ADD operations for RDB state that already exists.
+
+3.5.1.3 ISSU STRATEGY
+
+Most of the replication formats will be changed as a part of this project.
+To handle ISSU, new TLV definitions will be created as needed for objects
+that need to be replicated via full TLV encoding.
+
+Knowledge of the existing (now old) TLV formats will be retained by 
+object type specific decode routines in pim_<foo>_bkup_re_rdb.c.
+
+These routines will translate the old TLV format and mirror operations into
+the new backup RE RDB structures.
+
+In the case of packets, the old format replicated "packets" will be resolved
+and passed onto the PIM runtime code via the current APIs used for PIM
+packet replication on the backup RE.  The "packets" will not be retained
+once they are resolved.
+
+3.5.1.4 Resolver strategy
+
+Each set of PIM state that is replicated needs to be resolved.  This is
+done by a resolver job per backup RE RDB.
+
+Instead of using explicit routine calls in the core PIM code to trigger
+the resolver job (as is done today), the backup RE RDBs will have a 
+resolver job that manages itself.
+
+It will periodically run until there is no more state in that RDB that
+needs to be resolved.
+
+This will remove the need for the core PIM logic to have to know when to
+make resolver calls.
+
+3.5.1.5 Master RE RDB data retention
+
+On the master RE, once state has been mirrored to the backup RE, the RDB
+entry will be discarded as it is no longer needed.  The RDBs that are
+used to mirror state will be repopulated from the runtime PIM state that
+they were derived from when needed.
+
+3.5.1.6 Backup RE RDB data retention
+
+On the backup RE, once mirrored state has been resolved, there is no 
+need to retain it as updates will be sent from the master RE.
+
+There are two execptions to this, which are PIM RPF state (which is not
+actively resolved) and mcast phantom routes (which are mirrored only
+once upon creation).  These will have to be retained after they are 
+resolved.
+
+To handle mirror connection lost events, the core PIM logic will have to
+be able to teardown all state that has been created via mirroring.
+
+There is existing code to teardown all PIM runtime state when PIM NSR is
+explicitly disabled.  Something similar will have to be written to delete
+all PIM state that has been created via mirroring.
+
+3.5.1.7 CODE ORGANIZATION
+
+Code that is specific to a class of objects will be contained in the
+following files:
+
+  pim_<foo>_mstr_re_rdb.c/h - Master RE RDB.
+  pim_<foo>_bkup_re_rdb.c/h - Backup RE RDB.
+
+The intent is to clearly separate where each portion of functionality
+exists so that developers know where things are.
+
+Code that is not specific to a class of objects will be contained in
+the following files.
+
+  1) pim_mirror.c/h
+
+     Mirroring utility functions.
+     Handle direct libmirror interaction.
+
+  2) pim_nsr.c/h
+
+     PIM NSR utility functions.
+     Will handle RE switchover.
+
+These files will contain various utility routines needed by each RDB.
+They will also handle RE switchover.  As needed, they will call RDB APIs
+for each class of object that is being mirrored.
+
+3.5.1.8 PIM RUNTIME CODE
+
+The PIM runtime code will (as much as possible) be unaware of which RE
+it is running on.
+
+It will blindly call the various RDB APIs and it will be up to the RDB
+modules themselves to decide what to do based on what RE they are 
+running on.
+
+For example when pim_nbr_mstr_re_rdb_add_entry() is called on the backup
+RE, the routine will do nothing.
+
+3.5.2 COMPONENT <foo>
+
+This section describes the common template to apply to all state that is
+replicated by PIM.  There may be some minor differences between each 
+object type, but the differences should be minor.
+
+3.5.2.1 Master RE RDB
+
+The master RE PIM state is (by definition) fully resolved, so the master
+RE RDB is only concerned with replication.  Therefore its structure is
+likely to be simpler than the backup RE RDB counterpart.
+
+Its internal data structures will be hidden inside the .c file.
+
+This module will be called pim_<foo>_mstr_re_rdb.c/h.
+
+The PIM runtime code will not have any direct access to the RDB state.
+
+The PIM runtime code will make requests to add (modify) or delete state 
+from the RDB via a set of APIs.
+
+The RDB will interact with mirroring library to encode its records to be
+sent to the backup RE.
+
+Its APIs will be more complex than its backup RE counterpart as it
+has to interact with the mirror library.
+
+State in the master RE can briefly outlive its runtime counterpart so 
+that a MIRROR_OP_DEL can be sent to the backup RE.
+
+This RDB will need to have a purge job to discard stale records when 
+there is a change to the mirror connection status.
+
+3.5.2.2 Backup RE RDB
+
+The backup RE PIM state is assumed to be not fully resolved, so the backup
+RE RDB is concerned with state resolution.  Its structure is likely to be
+more complex than its master RE RDB counterpart.
+
+Its internal data structures will be hidden inside the .c file.
+
+This module will be called pim_<foo>_bkup_re_rdb.c/h.
+
+The PIM runtime code will not have any direct access to the RDB state.
+
+Its APIs will be simpler than the master RE as it does not have to
+directly interact with the mirroring library.
+
+However, it will have to provide mirror decode routines for all mirror
+data types that it is responsible for.
+
+It may also have to provide a resolver job that will traverse the
+database and attempt to resolve any unresolved records.
+
+The backup RE RDB will have to provide a purge job to discard stale 
+records when there is a change to the mirror connection status.
+
+These jobs can be combined to reduce the amount of code that needs to
+be written to implement the backup RE RDB.
+
+These jobs will have to be able to handle records being shot out from
+underneath it.  It will also have to be able to start over when it reaches
+the end of the database if needed.
+
+3.5.2.3 MIRRORING
+
+Interaction with the mirroring subsystem will be handled by a single file
+(pim_mirror.c) that contains code that runs on the master and backup RE.
+
+A set of generic functions will be used to directly interact with libmirror.
+
+A list of PIM mirror client objects (sorted by mirror data ID) will be
+maintained in pim_mirror.c.  These PIM mirror client objects contain a
+set of function handles that are called by the generic functions that are
+used to interact with libmirror.
+
+The generic mirror functions will search for the appropriate PIM mirror
+client object and pass the libmirror request onto the appropriate function
+handle contained in the PIM mirror client object.
+
+To handle mirror connection status updates, one PIM mirror client will
+register for mirror connection status updates.  This has to be done this
+way as the mirror data ID is not provided for mirror connection status
+updates.
+
+The mirror connection status handler will walk all PIM mirror client objects
+and call the appropriate function handles based on the mirror status value.
+
+3.5.2.4 ISSU MIRRORING (IF NEEDED)
+
+To support ISSU, a separate routine per old format mirror data ID will have
+to be provided by each backup RE RDB that needs to handle ISSU.
+
+The old format PIM mirror data ID will be registered as a PIM mirror client
+in pim_mirror.c.  Note that this client will only need to fill in the decode
+function handle.
+
+3.6 INTER PROCESS COMMUNICATION
+
+IPC is handled via libmirror.
+
+3.7 CONCURRENCY STRATEGY
+
+RPD is a single-threaded process at this time.
+
+3.8 STARTUP STRATEGY
+
+Not applicable.
+
+3.9 RESOURCE MANAGEMENT
+
+3.9.1 MEMORY ALLOCATION STRATEGY
+
+The existing RPD memory management mechanism is used for this project.
+
+3.9.2 MEMORY UTILIZATION
+
+PIM NSR currently uses alot of memory to manage state replication on the
+master and backup RE.  Currently this is either directly embedded in the
+PIM runtime structures or tightly coupled to them.
+
+This project will remove all of that and replace it with roughly the same
+sized objects in individual RDBs.
+
+This model applies to the master and backup RE RDBs.
+
+On the master RE, once the RDB entry has been mirrored, it will be deleted
+as it is no longer needed.
+
+This means that the amount of memory used on the master RE will be much
+lower (except for spikes during initial synchronization).
+
+On the backup RE, once the RDB entry has been resolved, it will be deleted
+as it is no longer needed.  The two exceptions are PIM RPF state and mcast
+phantom routes.
+
+This means that the amount of memory used on the backup RE will be much
+lower (except for spikes during initial synchronization).
+
+3.9.3 STORAGE UTILIZATION
+
+Not applicable.
+
+3.9.4 SYSTEM RESOURCE UTILIZATION
+
+Not applicable
+
+3.10 FAULT AND EXCEPTION HANDLING
+
+No new fault detection mechanisms are needed.
+
+3.11 DEBUG SUPPORT
+
+The existing PIM NSR logging will be extended to log events on a per RDB
+record basis.
+
+3.12 TESTABILITY, SERVICEABILITY AND DIAGNOSE-ABILITY
+
+A new hidden command "request pim mirroring reset" will be added.
+
+This command is used to simulate a bounce in the mirroring connection
+between the master and backup REs.
+
+On the master RE, this will result in the RDBs being purged, repopulated 
+and then mirrored to the backup RE.
+
+On the backup RE, this will result in the RDBs being purged and the 
+associated PIM runtime state being deleted.
+
+3.13 CONSTRAINTS AND LIMITATIONS
+
+Per existing PIM implementation.
+
+3.14 REJECTED DESIGN ALTERNATIVES
+
+The original PIM NSR design replicated a subset of PIM control packets.
+This has been rejected and replaced with full PIM control state replication.
+
+4. PATENT OPPORTUNITIES
+
+None.
+
+5. PERFORMANCE
+
+Per existing PIM implementation.
+
+5.1 PERFORMANCE RELATED RESOURCES
+
+Not applicable.
+
+5.2 TARGET PERFORMANCE
+
+Not applicable.
+
+5.3 64-BIT KERNEL SUPPORT
+
+Not applicable.
+
+6. SCALING
+
+6.1 Mirror Connection GENID
+
+To track what version of the mirror connection a RDB record belongs to,
+each RDB will have a mirror connection generation ID.
+
+Each RDB record will store the mirror connection generation ID that is 
+present at the time it is created/updated.
+
+This is independently done on the master and backup REs.
+
+This mirror connection genid will change when the mirror connection is
+deemed to be "down".
+
+The mirror connection is deemed to "down" when libmirror tells RPD or when
+PIM NSR is explicitly disabled or when an RE switchover happens.
+
+The PIM mirror code will notify each RDB when PIM NSR is disabled or an RE 
+switchover has happened.
+
+Each RDB will have to provide a "<foo>_purge()" API that will change its
+generation ID and trigger a chunked job that removes all stale records.
+
+6.2 RDB resolver/purge job
+
+Each RDB will have one chunked job that traverses the database.
+
+When the mirror connection status changes or a resolve request is made,
+this chunked job will be triggered.
+
+For master RE RDBs, this job will purge stale records.
+
+For backup RE RDBs, this job will purge stale records and attempt to 
+resolve any unresolved active records.
+
+6.3 RDB repopulation
+
+Chunked jobs will be created to traverse the PIM runtime state and populate
+their respective RDBs.  This code exists today but is not chunked.
+
+This code will live in the PIM runtime codebase.
+
+6.4 RE switchover
+
+RE switchover is a variant of the mirror connection lost event and will be
+handled as a mirror connection status change event from the RDB's POV.
+
+The only difference is that on the new master RE, some of the existing PIM
+runtime state needs to be kick started (e.g. timer activation) after a 
+mastership change.
+
+This code exists today and will be partially reused for this project.
+There is still a risk for scheduler slips if enough PIM state runtime
+state exists.
+
+However, since RDB teardown and repopulation will be chunked, the amount of
+immediate work that PIM has to do on a mastership change will be reduced
+in comparison to the current PIM NSR design.
+
+7. MULTI-CORE ENVIRONMENT
+
+Not applicable.
+
+8. COMPATIBILITY ISSUES
+
+None.
+
+9. HIGH AVAILABILITY (HA)
+
+9.1 GRACEFUL RE SWITCHOVER (GRES), ISSU/ NSSU IMPACT
+
+See section 3.
+
+9.2 NSR IMPACT
+
+Read this document.
+
+10. LOGICAL SYSTEM / ROUTING INSTANCE IMPACT
+
+RPD does not support NSR for non-default logical systems.
+Routing instance information is replicated for each object.
+
+11. MULTI / VIRTUAL CHASSIS IMPACT (HOBSON/ FIXX/ CHAI)
+
+Not applicable.
+
+12. PLATFORMS SUPPORTED
+
+RPD is platform independent.
+
+13. SDK IMPACT
+
+Not applicable.
+
+13.1 SDK CUSTOMER USAGE
+
+Not applicable.
+
+14. JUNOS READY SOFTWARE CONSIDERATIONS
+
+Not applicable.
+
+15. FREE SOFTWARE CONSIDERATIONS
+
+Not applicable.
+
+16. 3RD PARTY SOFTWARE CONSIDERATIONS
+
+Not applicable.
+
+17. POSIX NON-COMPLIANCE
+
+Not applicable.
+
+18. FUTURE CONSIDERATIONS
+
+The core PIM code does not have a clean set of APIs.  Its internal data
+structures are visible in public header files.
+
+The backup RE RDB code will directly access internal PIM data structures
+where needed to determine when an object is considered to be resolved.
+
+Additionally, it may (on occasion) directly manipulate these internal
+objects.
+
+When the core PIM code is reworked to hide these internal structures, the
+PIM NSR code that directly accesses these structures will have to be changed
+to use the new APIs that will be created.
+
+19. REVIEW COMMENTS
+
+The tracking PR is 717454.
+
+19.1 REVIEW STAKEHOLDER MATRIX
+
+Function			Name			Required?	Approval State
+---------------------------------------------------------------------------------------------------------------
+SW1 (RPD)			aasthana		Yes		Approved/Rejected/Approved with actions
+SW2 (kernel, RPD, PFE etc)				Yes/No/Optional	Approved/Rejected/Approved with actions
+SW3 (kernel, RPD, PFE etc)				Yes/No/Optional	Approved/Rejected/Approved with actions
+SW Manager			kdegraaf		Yes		Approved/Rejected/Approved with actions
+JAB							No		Approved/Rejected/Approved with actions
+HW							No		Approved/Rejected/Approved with actions
+---------------------------------------------------------------------------------------------------------------
+
+Copyright 2012 Juniper Networks, Inc. -- Proprietary and Confidential
+
+Do not distribute outside of the company without the permission of
+Juniper Networks engineering.  Printed copies are for reference only!

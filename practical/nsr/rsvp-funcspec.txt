@@ -1,0 +1,1123 @@
+o	$Header: /cvs/juniper/sw-projects/os/nsr/rsvp-funcspec.txt,v 1.11 2009/10/21 20:52:53 avneesh Exp $
+
+S3.02.P05.T01
+
+
+                    RSVP/MPLS support of NSR 
+
+                    Functional specification
+
+                  Arthi Ayyangar (arthi@juniper.net)
+                  Sukhesh Halemane (sukhesh@juniper.net)
+
+Copyright (C) 2005, Juniper Networks, Inc.
+
+NOTICE: This document contains proprietary and confidential
+information of Juniper Networks, Inc. and must not be distributed
+outside of the company without the permission of Juniper Networks
+engineering.
+
+Please DO NOT expose IMPLEMENTATION DETAILS to customer or document 
+the same.
+
+
+1.  INTRODUCTION
+
+This feature adds Non stop routing (NSR) support for RSVP-TE LSPs.
+In 9.5, NSR support will only be added on transit LSRs. In 10.1, 
+support for head-end (ingress) MPLS NSR will be added.
+
+The NSR feature will allow graceful switchover of RSVP LSPs from
+master to backup RE, in such a way that the network is unaware
+of this event. Unlike graceful restart this solution is completely
+local and does NOT rely on network neighbors to "support" this
+event. In fact, one of the goals is to keep this event as invisible
+to the neighbors as possible.
+
+NOTE on terminology:-
+
+primary, master - adjectives to describe current active RPD or RE
+backup, secondary, standby - describe the other RPD/RE which is
+currently passive and not participating in routing. This is the RE/rpd
+that will takeover from the current active one, if the active one  
+crashes or if a graceful switchover is triggered.
+
+o Goals
+
+The following are the goals for the first version:-
+
+1) The RSVP sessions that were up will continue to remain after 
+   switchover. RSVP messages and refreshes should be sent in timely 
+   fashion to avoid timeouts.
+2) Traffic on the LSPs should continue to flow as before without 
+   changes to traffic pattern.
+3) Labels should be preserved on successful switchover.
+4) No visible change should be notices by RSVP neighbors. RSVP 
+   Hellos should be exchanges in a timely manner.
+5) There should be preferably no unecessary changes (flux) to 
+   nexthops/routes after switchover.
+6) Eventually, this should be supported on both ingress and
+   transit routers. This work, however, will be split over
+   versions. Please check Section on Caveats for this.
+7) Traffic statistics on the LSPs should be maintained over a 
+   switchover.
+
+o Non-Goals
+
+1) Not all RSVP/MPLS features/knobs will be supported in phase I
+   Please check section on Caveats for this. The priority for
+   first version is to support basic RSVP-TE LSPs switchover 
+   on transit LSR only.
+2) SNMP support is not a priority for the first version.
+
+o Tracking
+This feature is being tracked by:
+RLI 3167 and PR 66381 (RSVP transit NSR)
+RLI 4211 and PR 81731 (RSVP ingress NSR)
+and RLI 2720
+
+[RSVP-NSR-DESIGN] describes some of the design issues and the design
+decisions made for RSVP NSR support. Since this is completely local 
+implementation, there are no standard specs describing this.
+
+2.  FUNCTIONALITY
+
+Overall goal os NSR is to switchover to a standby RE In such a way that
+the neighbor is unaware of the event. In reality, switchover is not
+going to be completely unnoticed. As long as its not harmful, it is
+acceptable. 
+
+2.1 before the switchover
+
+First of all, before the switchover can be initiated, standby RE should
+bootup and synchronize with the master. One can monitor the progress of
+the standby RE using 'show rsvp version' command. It display NSR mode
+and NSR state fields. An NSR switchover can occur only after NSR state
+on the standby shows initial synchronization is complete.
+
+While the RPD on the standby RE starts up, neighbors might notice one
+thing, all new LSP setups going via the router may see a slight delay.
+We don't generate Resv messages for a new LSP until the allocated
+label (psbtag) has been replicated to the standby RE.
+
+Once the standby is up and synchronized to the master, it will learn
+about all new LSPs that are being setup. All display commands that are
+available on the master are also available on the standby. One can
+look at the state of routing protocols on standby using these
+commands. One exception is commands that show traffic statistics (such
+as 'show mpls lsp statistics') -- they'll not be functional on the
+standby.  Control packet statistics for RSVP on the standby RE do not
+reflect the control packets sent/received by the master RE. In case of
+Ingress LSPs, path log messages will not be available on the standby
+as well. TE-database can be displayed on both master and standby.
+Standby does not do any CSPF calculations on its own, it uses the CSPF
+calculations done by the master. Standby does not send out any packets
+to the network.
+
+2.1.1 Config differences
+
+JUNOS currently requires that 'commit synchronize' be used whenever
+NSR is configured. The configurations on the master and standby REs
+should, therefore, be identical in steady state.
+
+In case the configurations are different (transiently in practice),
+the standby may not be able to create the same state as the master. If
+such a condition occurs, we correct it as soon as the configuration is
+brought back to same on both REs.
+
+2.2 RE Switchover
+
+2.2.1 RSVP transit sessions
+Once the switchover is performed, the new master takes over the
+resposibility of all LSPs. If the standby hadnt reached the 'Init sync
+complete' state, It tears down all LSPs. First thing it does is, it
+tears down all LSPs it knew(or partially new) about. It sends a hello
+message to its neighbor with a new neighbor sequence number. This causes
+the neighbors to realize the router has reset. So, the neighbors will
+tear down any LSPs passing thru the router and let the LSPs ingress
+point know about the LSP down event. Neighbors might also take any
+local-repair action if configured. If the router itself was the ingress
+node of the LSP, standby has no way of tearing down the LSPs because it
+wasnt completely syncd with the master. In this case, its upto the
+neighbors to tear down or timeout the LSP once they see thier neighbor
+has reset the sequence number.
+
+If the standby was in sync with the master, first, it sends out Hello
+messages to all of its neighbors to make sure neighborship is not
+lost.  It uses the same sequence number as the old master to make
+sure neighbors dont realize the switchover event. Then, it sends out
+refresh messages to its neighbors using message IDs replicated from
+the master.  Message IDs allocated by a master RE are replicated so
+that the standby can take over in large scale deployments before
+the state times out on neighbors (see PR 95650 for more information).
+
+It might happen that one of the neighbor was waiting for an
+acknowledgement for a PATH/RESV message when switchover happened. New
+master has no way of knowing about this. This is usually fine because
+the neighbor will wait for a fixed amout of time and resend the same
+message. Now, the new master can process the message and acknowledge
+it.
+
+2.2.2 Ingress LSPs
+If we are performing NSR switchover on LSP ingress router, there are
+couple of other things to keep in mind. We assume TE database on master
+and standby are in sync. Assuming NSR is enabled on IGPs, they'll ensure
+TE databses is in sync. Once the RE switchover happens, we take the ERO
+computed by the old master and verify it against the TE databses on new
+master. If we notice any difference, we signal a new path and tear down
+the old path. All LSP timers like retry timers and reoptimization timers
+start running after the RE switchover is completed. Till then standby
+does not perform any reoptimization or any retries for the LSP. If
+auto-bandwidth is configured on an LSP, auto-bandwidth statistics
+collection will start fresh on the new master. This would mean in the
+first averaging interval, we have no bandwidth to work with. To avaoid
+this problem, we periodically tell the standby about the average
+computed on the master. This is not going to be a fool-proof mechanism.
+It rather prevents LSP bandwidth from becoming zero after the
+switchover.
+
+There are couple of things to remember when it comes to switching from a
+primary path to secondary path and make-before-break reoptimization. Its
+possible that RE switchover happened immediately after an LSP is
+switched from primary to a secondary path. In this case, standby may not
+realize that the LSP had switched paths on the master. So, the new
+master might continue to use the primary path. For the neighboring
+routers, this will look like traffic was switched from primary to a
+secondary path and later it was switched back to primary. This is
+usually not a problem. But, if master was switching to a secondary due
+to receipt of a pathErr, we might end up blockholing traffic for a
+while. But, same thing would have happened if the old master had missed
+the pathErr message. Similar case can be made about make-before-break
+optimizations. Whenever such a switchover is happening, we try to keep
+the old path alive for long enough time so that possibility of traffic
+blackholing becomes pretty low.
+
+2.2.3 Bypass LSPs
+Bypass LSPs are preserved across failover. Backup LSPs, which are
+established between PLR and MP routers to stich the main data LSP is not
+preserved across the switchover. Assumption here is, backup LSPs are
+used for a short periodis to reroute the traffic till the Ingress node
+can discover the failuer and reroute the LSP. So, they dont need to be
+preserved across switchovers.
+
+2.3 CLI changes
+
+2.3.1 Configuration
+
+I)  Global config needed to enable NSR
+
+    The NSR functionality is enabled globally for all protocols.
+    [NSR-SPEC] describes the configuration required to enable NSR
+    on the box.
+
+
+II) RSVP tracing related to NSR
+
+    To trace RSVP specific events and processing related to NSR,
+    the following new trace flags have been added. These are currently 
+    *hidden*. These are available on both primary and standby.
+
+arthi@pro4-d> show configuration protocols rsvp
+traceoptions {
+    file rsvp.log size 3m world-readable;
+    flag event;
+    flag state;
++   flag nsr-synchronization detail;
+}
+
+'flag nsr-synchronization' can be used to trace all NSR related 
+events/activities.
+
+III) MPLS tracing related to NSR[10.1+]
+
+arthi@pro4-d> show configuration protocols mpls
+traceoptions {
+    file mpls.log size 3m world-readable;
+    flag error;
+    flag state;
++   flag nsr-synchronization;
+}
+
+2.3.2 CLI commands
+
+All existing CLI commands work on both primary and standby.
+
+o Changes to existing cli commands outputs
+
++ show rsvp version
+
+This command has been updated to display RSVP NSR mode and current state
+of master <-> standby synchronization.
+NSR mode displays If RSVP NSR is enabled/disabled. If NSR is enabled, it
+also displays If the RE is a master or a standby.
+Possible values for NSR state are:
+Idle                   - Master's state and standby's initial state
+TE-link sync complete  - Interfaces states are syncd
+Neighbor sync complete - Neighbor state is syncd.
+Path state sync complete - RSVP PATH state is syncd.
+Resv state sync complete - RSVP RESV state is syncd.
+Init sync complete       - Standby is completely in sync with master.
+
+This will allow the user to see which stage of sync we are and in and to decide 
+when to issue a switchover. Master is always in Idle state. Standby
+starts in Idle state and slowly progresses towards Init sync complete
+state. If standby hasnt reached Init sync complete state and if the
+switchover is initiated, switchover will not be hitless. All LSPs will
+be teared down. Neighbors will notice the switchover event. This is
+equivalent to non-NSR switchover.
+
+Sample output:-
+arthi@pro4-d1> show rsvp version 
+Resource ReSerVation Protocol, version 1. rfc2205 
+   RSVP protocol                = Enabled
+   R(refresh timer)             = 30 seconds
+   K(keep multiplier)           = 3
+   Preemption                   = Normal
+   Soft-preemption cleanup      = 30 seconds
+   Graceful deletion timeout    = 30 seconds
+   NSR mode                     = Enabled/Master <<<<<
+   NSR state                    = Idle <<<<<
+   Graceful restart             = Disabled
+   Restart helper mode          = Enabled
+   Maximum helper restart time  = 20000 msec
+   Maximum helper recovery time = 180000 msec
+   Restart time                 = 0 msec
+
+
+o New CLI commands
+
+There are four new hidden show commands to display the replication
+state. These should be used for debugging only.
+Note: Please do not document this. For internal purpose only.
+
+"show rsvp replication interface"
+"show rsvp replication neighbor"
+"show rsvp replication session"
+"show rsvp replication path-state"
+"show rsvp replication resv-state"
+
+"show mpls replication path [detail]"
+"show mpls replication pvc [detail]"
+"show mpls replication lsp [detail]"
+
+Sample output
+=============
+{backup}[edit]
+regress@pro9-b# run show rsvp replication interface 
+     TE link ID       Interface ID    Reference count
+     2147483649                 70                 1
+     2147483650                 71                 1
+
+{backup}[edit]
+regress@pro9-b# run show rsvp replication neighbor     
+Address          Interface ID     Status
+1.1.6.7                    71         Up
+
+{backup}[edit]
+regress@pro9-b# run show rsvp replication session     
+To              From            Labelin  Session       ID State LSPname 
+10.0.0.11       10.255.165.3          -        2 536870914 Sync INGRESS-to-EGRESS
+10.0.0.11       10.255.165.3          -        4 536870920 Sync test2
+
+{backup}[edit]
+regress@pro9-b# run show rsvp replication path-state 
+        Label  Interface ID     Session ID             ID
+   4294967295             0              2      536870914
+   4294967295             0              4      536870920
+
+{backup}[edit]
+regress@pro9-b# run show rsvp replication resv-state    
+ Interface ID     Session ID        Self ID
+           71              2      536870918
+           71              4      536870922
+{backup}[edit]
+regress@pro9-b# run show mpls replication path 
+Name                     Type        ReplicationType  Status
+INGRESS-to-EGRESS        Primary                      Resolved
+INGRESS-to-EGRESS        Secondary                    Unresolved
+test2                    Primary                      Resolved
+
+{backup}[edit]
+regress@pro9-b# run show mpls replication pvc     
+Name                    DstPort    Status      ID
+INGRESS-to-EGRESS       39406      Resolved    2
+test2                   39407      Resolved    3
+
+{backup}[edit]
+regress@pro9-b# run show mpls replication lsp    
+Name                     State   Status      PrimaryPathStatus
+INGRESS-to-EGRESS        Up      Resolved    Resolved
+test2                    Up      Resolved    Resolved
+
+{backup}[edit]
+regress@pro9-b# 
+
+These commands will display the mirrored state.
+
+2.3.3 JUNOScript
+
+XML tag names:-
+
+1) show rsvp version
+
+arthi@pro4-d1> show rsvp version | display xml 
+<rpc-reply xmlns:junos="http://xml.juniper.net/junos/8.0I0/junos">
+    <rsvp-version-information xmlns="http://xml.juniper.net/junos/8.0I0/junos-routi
+ng">
+        <rsvp-version>
+            <rsvp-status>Enabled</rsvp-status>
+            <refresh-timer>30</refresh-timer>
+            <keep-multiplier>3</keep-multiplier>
+            <preemption-type>Normal</preemption-type>
+            <soft-preemption-cleanup-timer>30</soft-preemption-cleanup-timer>
+            <graceful-deletion-timeout>30</graceful-deletion-timeout>
+            <rsvp-nsr-mode>Enabled/Master</rsvp-nsr-mode> <<<<< new
+            <rsvp-nsr-state>Idle</rsvp-nsr-state> <<<<<<<<<     new
+            <rsvp-graceful-restart>
+                <restart-status>Disabled</restart-status>
+                <helper-status>Enabled</helper-status>
+                <maximum-helper-restart-time>20000</maximum-helper-restart-time>
+                <maximum-helper-recovery-time>180000</maximum-helper-recovery-time>
+                <restart-time>0</restart-time>
+            </rsvp-graceful-restart>
+        </rsvp-version>
+    </rsvp-version-information>
+    <cli>
+        <banner>{backup}</banner>
+    </cli>
+</rpc-reply>        
+
+3.  CAVEATS
+
+1) GMPLS, LSP hierarchy etc will not be supported. These
+   require lmpd to be NSR aware. There will be a seperate RLI to track
+   these.
+
+2) In addition there will NOT be support for inter-domain LSP (loose hop
+   expansion) 
+
+3) P2MP LSPs will not be supported.
+
+4) For any LSP that was successfully created on master but failed on the
+   standby, We dont make any effort to let our neighbors know about the
+   failure once the switchover happens. Its expected that this state will
+   eventually timeout and the neighbors will clear this state. An LSP
+   creation might succeed on master but might fail on standby if there is
+   any difference in the two configs. Another potential reason could be
+   differences in admission control.
+
+5) Control plane statistics corresponding to 'show rsvp statistics'
+   or 'show rsvp interface detail | extensive' will NOT be
+   maintained across RE switchover.
+
+6) Statistics commands like "show mpls lsp statistics" and "monitor mpls
+   label-switched-path" will nto report any stats on Standby RE. Once the
+   switchover happens, new master will start reporting the statistics.
+   Any 'clear statistics' commands issues on old master will not take
+   effect on new master. New master will start reporting uncleared
+   statistics.
+
+7) During NSR switchover any state timeouts could take slightly longer
+   than the configured timeout period. Eg. A neighbor might have missed two
+   Hellos on master, If the swithover happens at this moment, New master
+   will wait for another three hello periods before timeouting the
+   neighbor. This will look as if the router waited for 5 hello intervals
+   before timeouting the neighbor.
+
+8) If an RE switchover is performed immediately after an LSP is
+   reoptimized or immediately after an LSP switchoved over from primary to
+   a secondary, Traffic might switch back to the primary. No effort is made
+   to ensure standby is aware of master's decision to switchover before
+   changing the routes in the forwarding path. This could pose couple of
+   problems. Eg, if the primary path is down and master switched ove to a
+   standby path. If RE switched over before standby got to know about this,
+   standby will not realize path is down. This might result in blockholing
+   of traffic for a short while. But, this is identical to what happens if
+   we miss a pathErr message on the master. traffic is blackholed till IGPs
+   updated the TED database.
+
+9) After the RE switchover, new master does a fresh CSPF computation. If
+   the new master sees any difference in LSP parameters(or ERO), we'll
+   signal a new path and tear down the old one.
+
+10) Most of the SNMP values will be kept same across RE switchover. There
+    might be few values that might change. This is still requires further
+    investigation.
+
+11) Graceful restart is not supported along with nonstop-routing.
+    Graceful restart helper mode is supported along with nonstop-routing.
+
+12) MPLS OAM is not supported with NSR.
+
+13) Bypass LSPs are preserved across NSR switchover. backup LSPs are not
+    preserved. Backup LSPs are the LSPs established between PLR and MP
+    nodes while the LSP is being locally repaired.
+
+14) The RSVP ingress code now uses a deterministic algorithm to select
+    maximum-ecmp paths if more paths are available. An LSP that just
+    came up may hence displace an existing LSP in an rsvp route nexthop
+    that has maximum-ecmp paths. Some consequences of such a route
+    change:
+
+      - It may result in traffic loss. This is similar to (and less
+        likely than) the case where a route points to n LSPs 
+        (where n < maximum-ecmp) and we add a newly established LSP to 
+        the route.
+
+      - It may cause l2circuits bound to the displaced LSP to rebind
+        to other LSPs in the new RSVP route that can meet their
+        contraints.
+
+3.1.2 Junos 9.5 specific caveats:
+
+These caveats will not be applicable after 9.5
+
+1) Only transit RSVP NSR support will be added in 9.5.
+   Support for NSR on ingress router will be added in 10.1. 
+
+2) This means that any ingress related features such as, CCC,
+   LSP advertise, shortcuts, LDP tunneling; etc will NOT be
+   supported in 9.5.
+
+3) Link protection will not be supported in 9.5. Reason for this is,
+   Bypass LSPs, which are required for link protection is considered an
+   Ingress feature. Fast-reroute on transit nodes will be supported.
+   
+
+4.  OTHER REQUIREMENTS
+
+{As necessary, outline the general implementation requirements *not*
+covered in the project requirements (RLIs, etc.) and call out any
+specific additional requirements for protocols, edge cases, etc.  If
+there is a significant amount of the latter then you should break this
+section down in to subsections.}
+
+
+[=== Everything from here down is internal (white box) documentation
+and should not be documented or related to customers without a
+specific need. (e.g. customer support workarounds for critical issues,
+performance targets where the performance is the feature, etc.) ===]
+
+
+5.  IMPLEMENTATION DETAILS
+
+*** Do NOT document this section and do NOT share this section with 
+customer ****
+
+RSVP/MPLS will use the Mirror API (MAPI) to do state replication
+between primary and secondary RE.
+
+5.1 Assumptions
+
+- It is assumed that protocols DO NOT  need to check if "NSR is 
+  enabled" to carry out the additional procedures related to NSR 
+  on the master. While this simplifies design and makes the code 
+  more readable the flip side is that: a) it will use additional
+  memory for replication entries even if NSR is not enabled and
+  b) it could expose bugs in NSR related processing on primary. 
+
+- It is, however, required that any lock-step mechanism where 
+  primary expects to see something from secondary to proceed with 
+  regular processing MUST check if rpd is running on secondary, 
+  before waiting for secondary. This is orthogonal to whether NSR
+  is enabled. 
+
+  The mirror library (MAPI) provides a function to check if the
+  connection with the other RE is up or not.
+
+5.2 Functional components
+
+o NSR infrastructure: Making RSVP "NSR ready"
+
+- task_re_mode_master will be set on master and reset on secondary.
+  Check this variable to determine master or slave.
+  On a switchover this variable will get set on current master 
+  i.e. previous secondary. So all registered protocol routines for
+  var_init/init/cleanup; including switchover routine will be 
+  executed assuming this is master.
+
+- In case of RSVP, no new task is created on standby. There is 
+  just one task rsvp_task that gets initialized on the standby 
+  similar to that on primary. We will however, prevent RSVP on
+  standby from opening any sockets. So no network pkts will be
+  sent or read on standby. Also, we want to initialize different 
+  function vectors for primary and standby (see below), so we 
+  need different rsvp_var_init. All the task callbacks will be the
+  same on primary and secondary. Task creation does, however, vary
+  since we do not want rsvp_task on secondary to open any sockets.
+  But, just before we switchover, we will make sure to open the
+  RSVP socket on secondary and set the required socket options.
+  Also cleanup or initializations for NSR specific data structures
+  could be different. This will be handled by running different
+  init/cleanup routines on primary and standby. Also we do not
+  prevent secondary from reacting to ifa/ifl changes or router
+  id changes.
+
+- While task registered callbacks are common between primary and
+  secondary, certain protocol related routines could be different on
+  primary and secondary. This applies to all routines where secondary
+  cannot make independent decisions/assignments, but must rely on the
+  outcome of primary's decision. Instead of placing 'if (secondary)'
+  everywhere in the code we will organize the master and secondary
+  functions into different function vectors. Debugging is also easier
+  this way because the same routine couldn't possibly have run on
+  primary and secondary. Also, in some cases, we may wish to prevent 
+  standby from running a particular routine that is run on primary.
+  The function vecotrs are initialized during var_init.
+
+- RSVP interfaces creates a dummy LMP peer on all interfaces that rsvp 
+  is enabled. The creation/association of this peer to the interface
+  is required for RSVP to be enabled on the interface. To facilitate
+  this, LMP task (in RPD) will be run on backup, similar to that on
+  master.
+
+- A new flag "nsr" will be added to trace NSR activity on primary 
+  and backup. This is a hidden traceoption.
+
+o Other infrastructure support/APIs
+
+- We use the IDL infrastructure to encode/decode MAPI messages between
+  the two REs.
+
+o RSVP NSR state transitions
+
+  For ISSU it would be important to know what stage in NSR process 
+  the primary and standby are, so a user knows when to issue switchover.
+  We keep an RSVP NSR state to know the stage of RSVP NSR. The states 
+  would be: Idle, TE-link sync complete, Nbr sync complete, Path
+  state sync complete, Resv state sync complete, Init sync complete.
+
+  The main replication db of interest is psb repl entry, since 
+  it contains the Resv Label sent upstream. So it is important 
+  to ensure that standby has seen the Label that primary has
+  allocated and that it plans to distribute upstream. During 
+  ongoing sync this is taken care of by waiting for Ack from standby.
+
+  If a switchover occurs before the initial sync is complete, then the
+  new master RE "resets" all known neighbors by changing the source
+  instance number in outgoing hello messages. Prior versions of this
+  spec toyed with the idea of only flapping neighbors for which the
+  synchronization was incomplete. The current thinking is that
+  this is too much work/complexity to address the narrow window 
+  before initial sync.
+
+o Work on primary
+  (irrespective of NSR enabled or disabled)
+
+
+o Work on secondary when it comes up
+
+  Will connect with primary. RSVP NSR state is Idle. 
+  No other work on standby. MAPI will cause all entries to be
+  replicated from primary to standby. State transitions occur during Init 
+  sync will triggered by MAPI callbacks as and when dbs get replicated 
+  to standby.
+
+o Work during initial sync
+
+  Desired order of sync:
+  TE-link
+  NBR
+  PSB
+  RSB
+
+  MAPI will walk through dbs in the above order and replicate them to 
+  standby.
+
+o Work during ongoing sync
+
+  Covered in individual repl entry sections below.
+
+o Work after switchover - new primary
+  - Make one last attempt to resolve any unresolved state.
+  - If an initial sync was not completed, flap all neighbors.
+  - Clean up "unresolved states"
+  - Trigger refresh messages
+  - Enqueue any repl entries for replication via MAPI to new standby.
+  - Go through SIGHUP reconfiguration
+    + open sockets
+    + initialize new nsr function vector
+    + config parsing
+
+o Work after switchover - old primary
+
+  rpd will exit and restart. This will take care of any 
+  cleanup.
+
+o Handling configuration changes during ongoing sync
+
+o Errors on secondary
+
+
+o NSR infrastructure: Making MPLS (tag code) "NSR ready"
+
+  FIXME -- Add required discussion about tag code here.
+
+  Routines in MPLS:-
+
+  tag_pvc_add - use ID from replication db entry
+  ted_cspf_enqueue - skip on secondary
+  tag_setup_path - obtain pvc_params from replication db entry
+
+5.3 Organization of code
+
+  rsvp_nsr.h:
+  - NSR related definitions/routines used by both primary/standby
+  rsvp_standby.c:
+  - All routines to be implemented only on secondary.
+  rsvp_standby.h:
+  - Secondary specific data strucutres/definitions
+  rsvp_mirror_*.c:
+  - All routines on primary/secondary related to interaction with MAPI
+    one for each entity to be replicated.
+  rsvp_mirror_*.h
+  - Any definitions or new data structures related to RSVP-MAPI
+    interaction, one for each entity to be replicated.
+  rsvp_path_repl.*
+  - All definitions and routines related to replication of RSVP path 
+    state from primary to standby
+
+5.4 MAPI interaction
+
+- A new flag "mirror" will trace all RSVP-MAPI interactions
+- MAPI will be used to replicate the following databases from in 
+  RSVP
+    - RSVP neighbor
+    - RSVP path state
+    - RSVP resv state
+    - RSVP TE-link
+
+5.4.1 RSVP neighbor db replication
+
+- Data structure: nbr_repl_entry is maintained both on master and
+standby. Nbr and corresponding nbr_repl_entry maintain link to each
+other. We replicate all RSVP nbrs irrespective of their state from
+primary to standby.
+
+o  Master - embeds the mirror node in the corresponding nbr repl
+   entry. Mirror nbr traversal corresponds to traversing the nbr
+   repl db. Add/update/delete to RSVP nbr will result in corresponding
+   add/update/delete of mirror node embedded in the RSVP nbr repl
+   entry. Nbr repl entry is created from Nbr, so Nbr "owns" nbr repl
+   entry.
+o  Standby - maintains nbr db replication entry for each RSVP
+   neighbor replicated from the master. A delete to RSVP nbr
+   on standby or any event that can cause nbr to be unresolved
+   will simply delink the RSVP nbr from the corresponding replication
+   entry. Nbr is created from nbr repl entry and nbr repl entry is
+   created from MAPI. Therefore, Nbr does NOT own nbr repl entry, only
+   MAPI does.
+
+- It is possible that when an MAPI update is received, it is not 
+  possible to resolve the nbr_repl_entry to a nbr. Unresolved
+  nbr_repl_entries are kept around and an interface_add event will
+  cause re-attempt of resolution. Also, on a resolution failure 
+  for existing nbr repl entries, the correpsonding real nbr is 
+  deleted.
+
+- Reasons why an RSVP nbr_repl_entry on standby may be unresolved:-
+  + RSVP interface corresponding to the IFL index sent by primary
+    doesn't exist
+  + RSVP is disabled on the interface
+  + RSVP interface is down
+  Note, however that for an existing nbr, rsvp interface disable or
+  rsvp interface down events on primary does not delete existing rsvp
+  nbr. We follow the same logic on standby when updates are recvd
+  for nbr_repl_entry and resolution fails due to one of these 
+  reasons.
+
+- RSVP neighbor state changes are prevented on standby. Nbr state 
+  change can only be triggered from MAPI. However, MAPI may compress 
+  multiple nbr state transitions (if they occur one after the other),
+  so on standby we need to deal with such jumps in state. RSVP nbr 
+  state FSM is such that it is okay to skip certain states in between.
+  So we simply get rid of the strict checks for state transitions on
+  the standby.
+
+- Hello stats on standby will remain 0. After switchover they start 
+  getting incremented.
+
+- *** FIXME: REMOVE LATER
+  Currently, nbr idle_time in 'show rsvp neighbor detail' will keep
+  increasing and will show very high value, this should get fixed once
+  we start processing Path/Resv and other messages from neighbor and
+  do a rsvp_neighbor_refresh.
+  
+5.4.2  RSVP PSB/RSB db replication
+
+- Data structures: psb_repl_entry and rsb_repl_entry are two
+independent databases maintained both on master and standby. 
+Both databases are replicated from the master to the standby.
+PSB and psb_repl_entry maintain link to each other on master, and
+on standby, when resolved. This is true for RSB and rsb_repl_entry 
+as well.
+
+Transit & Egress
+----------------
+
+We create psb_repl_entry when PSB is added and delete it when 
+PSB is deleted.
+
+If the psb_tag (label sent upstream in Resvs) changes (for instance,
+when it is first allocated), the psb mirror node is replicated to
+standby with Ack_desired set and standby sends back an Ack for this
+psb_repl_entry. Till Ack is received primary will not send a Resv out
+for this psb. The receipt of an Ack for a psb_repl_entry will cause
+the pending Resv to be sent out.
+
+[We need to remember at any time whether a particular PSB has 
+been ACKed or not. Also, the above delay in sending Resv is not 
+needed if connection to standby is not Up.]
+
+On the standby, the events occur in the following order:
+- a psb mirror node with Ack_desired is received
+- an Ack is sent out for the received psb mirror node ** even before 
+  processing/validating any of the contents **
+- a psb_repl_entry is created for the first time. This will be 
+  treated as a recv_path and a path state is created for it.
+- nhop_lookup on standby is modified so that it retrieves nhop 
+  info from the psb_repl_entry
+- an rsb mirror node is received and an rsb_repl_entry is created 
+  for it. This is treated as a recv_resv.
+
+Handling updates to psb_repl_entry info :-
+
+o If the nexthop info on primary changes at any time, once psb_tag 
+  has been ACKed, all updates are immediately queued for 
+  replication. On secondary a change in nexthop info, is handled by 
+  marking corresponding PSB with NH_refresh which will cause a 
+  nhop_lookup to occur soon. This is not changed inline.
+
+Handling updates to rsb_repl_entry info:-
+
+o The only info we plan to mirror in rsb_repl_entry is the 
+  incoming Resv and the incmoing interface. So any change to 
+  this should cause an update to be sent to standby, if
+  rsb_repl_entry has already been sent.
+
+
+A psb_repl_entry can be deleted due to receipt of PathTear. There 
+is no need for an Ack from standby for this, since the assumption 
+here is that the upstream would have deleted path state in this
+case, so even if standby hangs on to path state after switchover,
+there is no traffic disruption.
+
+The psb_tag in psb_repl_entry may released due to various reasons. 
+One such could be before sending ResvTear. Unlike the alloc case
+(for send Resv), it is believed that the release of psb_tag does
+not necessarily require an Ack from standby (for deletion of
+psb_repl_entry). So, we will not wait for standby to delete
+psb_repl_entry in order to send out a ResvTear upstream.
+So, on switchover, it is possible that standby is left with 
+stale control plane state (including RIB route) which does not
+have an associated data plane state. But no traffic will be sent
+on the LSP since the ResvTear is assumed to have deleted the
+resv state (& routes) from upstream. However, after switchover
+the router will try to refresh downstream with Path (which is
+okay) and upstream with Resv based on its stale states. This may
+cause upstream to re-create rsb if a psb still exists. If the
+Resv is thereby propagated all the way upstream the LSP could
+be re-established upto the restarting router. krt will make 
+sure the RIB routes are downloaded to the FIB. But the node 
+downstream would still drop the traffic if he doesn't
+re-establish the LSP. But delaying ResvTear to solve this 
+case after switchover is not worth it because delaying 
+ResvTears will cause trafic blackhole in steady state.
+
+Handling message loss is considered to be an orthogonal issue 
+to the issue of replication (or lack thereof) of state to standby,
+leaving standby in a different state than primary.
+
+Order of handling Path & Resv on standby :-
+
+o Since psb_repl_entry and rsb_repl_entry are managed as two 
+  different databases by the MAPI, and each database is 
+  independently processed by background jobs, there can be no 
+  guarantee that a particular psb_repl_entry will arrive before 
+  the corresponding rsb_repl_entry on the standby. For init sync 
+  we ensure ordering by ensuring order in which db's are walked.
+  For ongoing sync, there could still be cases where, on a standby,
+  an rsb repl entry is received before corresponding psb repl 
+  entry has been received. In such cases, rsb repl entry will 
+  remain unresolved (i.e. no RSB is created for this) and a
+  re-resolution attempt will be made on standby to try again
+  after some time.
+
+o Re-resolve attempts / triggers for psb_repl_entry & rsb_repl_entry
+
++ When is a psb_repl_entry considered unresolved (i.e. no PSB is
+  created for it or existing PSB is deleted) ?
+  - No rsvp_interface is found corresponding to incoming ifl index
+    (transit or egress case).
+  - RSVP is disabled on the incoming interface
+  - RSVP interface is in down state
+  - There is a processing error in the incoming Path Msg which 
+    results in PSB deletion. (The existing code will take care 
+    of this).
+
++ What are the events that will attempt to re-resolve psb_repl_entry ?
+  - re-resolution of psb_repl_entry is periodic till the 
+  attempt is successful. A PSB deletion or resolution failure on 
+  receipt of path repl entry ; etc will schedule re-resolution
+  attempts.
+
++ When is an rsb_repl_entry considered unresolved (i.e. no RSB is
+  created for it or existing RSB is deleted)?
+  - No rsvp_interface is found corresponding to incoming ifl index
+    (transit case).
+  - RSVP is disabled on the incoming interface
+  - RSVP interface is in down state
+  - No path state exists corresponding to the incoming Resv.
+    (The existing code will automatically take care of this. If we 
+     want to even avoid processing Resv, then we have to add code 
+     to optimize this, but easiest way is to simply reply on 
+     existing code.)
+
++ What are the events that  will attempt to re-resolve rsb_repl_entry ?
+  - re-resolution of rsb_repl_entry is periodic till the 
+  attempt is successful. An RSB deletion or resolution failure on 
+  receipt of rsb repl entry ; etc will schedule re-resolution
+  attempts.
+
+Identifying PSB->psb_repl_entry & RSB->rsb_repl_entry:-
+
++ For the relation between PSB and psb_repl_entry, we can use 
+  psb_selfID as key for psb_repl_entry.
++ For rsb_repl_entry we need a similar ID key to simplify tree 
+  maintenance. So we will add an rsb_selfID and use this to 
+  key rsb_repl_entry and manage RSB->rsb_repl_entry relation.
++ Also, we would need to get to one repl_entry from the other 
+  in the absence of PSB and RSB to avoid traversing all entries.
+  For this, there may be a need to have a common session ID in 
+  addition to the psb_selfID and rsb_selfID to group together 
+  psb_repl_entries and rsb_repl_entries belonging to the same 
+  session.
+
+
+o Explanation of psb_repl_entry states
+
+  Primary maintains a simple FSM for psb_repl_entry (Init, 
+  Transmit, Ack desired, Acked)
+
+  Each entry starts in Init state. 
+  Init->Ack desired - when standby is up and a new entry is replicated
+  Ack_desired->Acked - when standby sends back an Ack
+  Ack_desired->Transmit - is some other changes have been sent
+
+  Standby only has two states for psb_repl_entry:
+  Init and this is changed to Acked when it has replied to an 
+  Ack desired sent by primary.
+
+o Explanation of rsb_repl_entry states
+
+  On primary an rsb_repl_entry can have the following states:
+  Init, Transmit
+
+  Init -> Transmit : rsb_repl_entry has been sent to the standby
+  
+  On standby, the rsb repl entry is always in Init state.
+
+Ingress
+--------
+** FIXME. Please expand this later.
+
+o This needs to cover replication in case of : 
+  client TAG: any local pvc/path info  &
+  client Link protection: any local bypass/backup info.
+
+o Main difference is the lack on incoming path msg. So input 
+  msg processing cannot drive the procedures on standby. 
+
+o We could replicate path/pvc/bypass info to standby that 
+  needs to be in sync with primary. This could either be a separate 
+  db such that we should make sure that for ingress, we do not 
+  replicate psb and rsb repl entries without corresponding 
+  "client info" available.  Or this could be TLVs (instead of IIP, 
+  for ingress PSB, we process client info TLV).
+  E.g. client info for a regular LSP at ingress would be path/pvc 
+  info whereas client info for a bypass LSP (anywhere) would be 
+  Bypass Blk info. On standby, an ingress psb repl entry would 
+  be unresolved if corresponding repl entry based on "client info" 
+  is not found or is unresolved.
+
+  We should prevent localPSB_add from pvc/path or bypass on 
+  standby. Instead this should only be triggered on receipt of 
+  corresponding pvc/path or bypass info from primary.
+  Also, on standby IDs (lsp id, tunnel id) should be allocated 
+  from corresponding repl entry.
+
+o NOTE that lsp_id is used in gateway, so would be useful to keep 
+  this consistent.
+
+o Other issue is that of path computation. We have to run CSPF 
+  on standby to create cross-connects (relationship between path 
+  and TE-links that a path traverses). But a) when we run CSPF on 
+  standby, TED need not be in sync with primary yet and b) results 
+  have a certain dependence on order in which CSPF is run.
+  To relieve ourselfs of order dependency, we will make standby 
+  replicate results of primary path computation (aka outgoing 
+  ERO) as part of Ingress TLV info and use this to run cspf on 
+  standby to simply validate that ERO. But this means that if 
+  this fails the path should remain unresolved.
+
+  As to when does cspf run:-
+  Option 1: As soon as we get outgoing ero info from primary and 
+  keep retrying till we succeed or
+  Option 2: Do all computations after switchover
+
+o GMPLS
+  - LMPD does label allocation in this case based on information that
+  RPD sends. There is LMP state in LMPD and LMP component in RPD. We
+  need to deal with consistent state maintenance for LMPD.
+
+o LSP hierarchy
+  - LMPD also keeps state in this case.
+
+o Link protection
+  - We also need to worry about replicating Backup LSP state.
+
+o On ingress we would need to worry about re-optimization as well.
+  i.e. we need to know if a particular path state is PSB or PSB_2 
+  for a path. This linkage needs to be consistent on primary and 
+  standby.
+
+o Multi Path
+
+  When there are more RSVP LSPs (really paths) available for a given
+  destination than the configured maximum-ecmp limit, the RSVP module
+  selects the subset of paths to be installed in the routing table.
+
+  The method for selecting paths previously depended on the order in
+  which LSPs came up. This could result in the master and standby REs
+  computing a different set of paths, in which case the forwarding
+  table would be modified on switchover (See PR 475950).
+
+  The RSVP ingress path selection algorithm has been made fully
+  deterministic in order to keep the standby RE consistent with the
+  master and to prevent churn on switchover.
+
+  See item 14 in section 3 for related caveats.
+
+5.4.2  RSVP TE-link db replication
+
+The main intention of this replication is to ensure that TE-link 
+IDs are allocated consistently on primary and standby. For 
+each rsvp interface we allocate a peer and te-link and this 
+marks the interface as rsvp enabled. On standby we prevent this 
+allocation of peer and te-link based on configuration. Instead
+when we receive the TE-link repl entry from primary, we allocate 
+the peer (based on given peer ifl index) and te-link and assign 
+the replicated te-link ID to it.
+
+5.5 Internal APIs/Messages / Data structures
+
+5.5.1 RSVP Neighbor replication
+
+RSVP NSR uses the IDL infrastructure to encode/decode messages between
+REs. IDL definitions can be found at
+junos/usr.sbin/rpd/rsvp/rsvp_mirror_msg.idl in the source respository.
+
+5.6 Rationale for design decisions
+    For design considerations and discussion please check
+    [RSVP-NSR-DESIGN].
+
+5.7 TODO list
+
+1) Add display for all repl_entries, as well as option to display 
+   unresolved entries alone. If entry is unresolved, display reason 
+   why the entry is unresolved. 
+2) Need to implement ordering among db's for init sync based on 
+   API added by Jeelani. Need to set donot_chunk_dbwalk to FALSE to 
+   make replication more scalable, otherwise we will walk all entries 
+   in one shot. Order should be: TE-link, NBR, PSB, RSB.
+3) Add knobs or test code to simulate scenarios for testing.
+
+5.8 Open issues
+
+o What about versioning support ?
+  - Is this required or is it enought to make code changes 
+    backward compatible ?
+  - If required, then at what granularity ?
+
+o Any issues with Integrity ?
+  - since password is configured under rsvp interface both REs should
+    be able to maintain the same password in outgoing messages.
+
+6.  PERFORMANCE
+
+{As necessary, describe any performance issues or that there are
+none.}
+
+6.1.  Performance Related Resources
+
+{As necessary, Describe the resource bottlenecks (e.g. CPU, RAM,
+interface bandwidth, # of logical interfaces, etc.) of the function
+and the general assumptions underlying any given performance
+calculation. Also mention any changes from previous releases. This
+includes any changes in microcode usage (Bchip. Lchip, Ichip, etc),
+either positive or negative. Please see
+<https://wintermute.juniper.net/junos/projects/microcode/> for more info.}
+
+6.2.  Target Performance
+
+{As necessary and appropriate, describe the target performance.  Where
+possible, justify this target based on the resource estimates.
+Specify if this target performance is based on believed maximum
+performance of the function or based on a comfortably achievable
+number.  Where relevant, specify where conditions will reduce the
+performance below the target performance (e.g. extended functionality,
+other load on the box, etc.).  It is also useful to return to this
+section and fill in the actual tested performance when the numbers are
+available.}
+
+
+7.  COMPATIBILITY ISSUES
+
+{As necessary, list any issues related to:
+1. migration to/from this feature
+2. any change of default system or software behavior
+3. backwards/forwards compatibility: this would include any places
+   old config will break, config will be deprecated, network layouts
+   must change, the feature will or will not work with new or old
+   hardware, etc.
+}
+
+
+8.  SECURITY ISSUES
+
+{As necessary, list any security considerations or issues here.}
+
+
+9.  Graceful RE Switchover (GRES), Hobson Impact
+
+{Generally, when you are updating state in the kernel which is to be
+consumed by other peers -- PFEs, LCCs --, you need to consider adding
+support for GRES.  Some examples of these are:
+- New ifstates
+- Change in the routing socket message format for an existing message
+- New daemons
+- Updating kernel state in non-rtsock context
+- State updates on the RE owing to messages from the PFE
+- New IPCs to the PFE/FPCs
+- New TLVs
+- New rtsock messages
+- New PICs
+If you have questions, send email to replicant-coders.
+}
+
+10.  NOTES
+
+11.  GLOSSARY
+
+{As necessary, define any terms or acronyms used.}
+
+
+12.  REVIEW COMMENTS
+
+See Audit-trail for PR66381.
+
+In addition:-
+
+1) State RLI number for 8.1 ingress NSR support (stringer)
+
+FIXME -- Meeting/mailing-list for spec review.

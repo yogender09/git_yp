@@ -1,0 +1,959 @@
+$Id: pim-nsr-6259-11800-ut-plan.txt,v 1.5 2010/08/06 11:11:10 vikramna Exp $
+                  NSR: PIM stateful replication
+                     Phase II  and Phase III
+                         Unit Test Plan
+
+                  Vikram Nagarajan <vikramna@juniper.net>
+                  Abhishek Asthana <aasthana@juniper.net>
+
+
+Copyright (C) 2010, Juniper Networks, Inc.
+
+NOTICE: This document contains proprietary and confidential
+information of Juniper Networks, Inc. and must not be distributed
+outside of the company without the permission of Juniper Networks
+engineering.
+
+1.  INTRODUCTION
+
+
+The UTP in this document caters mainly to NSR on the RP Router, Anycast RP, Assert state and policies. 
+For other usecases, the other UTP documents should be used.
+They are listed below for reference. 
+
+    http://cvs.juniper.net/cgi-bin/viewcvs.cgi/sw-projects/os/nsr/pim-nsr-v6-ut-plan.txt?view=markup
+    http://cvs.juniper.net/cgi-bin/viewcvs.cgi/sw-projects/os/nsr/pim-nsr-ut-plan.txt?view=markup
+
+Related Functional Spec:
+    http://cvs.juniper.net/cgi-bin/viewcvs.cgi/sw-projects/os/nsr/pim-nsr-6259-11800-funcspec.txt?view=markup
+
+RLI Page:
+    https://deepthought.juniper.net/app/do/showView?tableName=RLI&record_number=6259
+    https://deepthought.juniper.net/app/do/showView?tableName=RLI&record_number=11800
+PR Page:
+    https://gnats.juniper.net/web/default/238121-1
+    https://gnats.juniper.net/web/default/535652-1
+
+Related RLIs
+
+https://deepthought.juniper.net/app/do/showView?tableName=RLI&record_number=2728 (Phase-1)
+https://deepthought.juniper.net/app/do/showView?tableName=RLI&record_number=6259 (Phase-2)
+https://deepthought.juniper.net/app/do/showView?tableName=RLI&record_number=11800 (Phase-3)
+https://deepthought.juniper.net/app/do/showView?tableName=RLI&record_number=9022 (IPv6)
+
+Other Related specs and docs
+
+http://cvs.juniper.net/cgi-bin/viewcvs.cgi/sw-projects/os/nsr/pim-nsr-funcspec.txt?view=markup
+http://cvs.juniper.net/cgi-bin/viewcvs.cgi/sw-projects/os/nsr/pim-nsr-v6-funcspec.txt?view=markup
+http://cvs.juniper.net/cgi-bin/viewcvs.cgi/sw-projects/os/nsr/pim-nsr-designspec.txt?view=markup
+
+http://cvs.juniper.net/cgi-bin/viewcvs.cgi/sw-projects/os/nsr/pim-nsr-unsupported-features-upgrade-path.txt?view=markup
+http://cvs.juniper.net/cgi-bin/viewcvs.cgi/sw-projects/os/nsr/NSR-PIM_in_9%203_7-Nov08.doc?rev=1.1&sortby=author&view=log
+
+http://cvs.juniper.net/cgi-bin/viewcvs.cgi/sw-projects/os/nsr/pim-nsr-ut-plan.txt?view=markup
+http://cvs.juniper.net/cgi-bin/viewcvs.cgi/sw-projects/os/nsr/pim-nsr-v6-ut-plan.txt?view=markup
+http://cvs.juniper.net/cgi-bin/viewcvs.cgi/sw-projects/os/nsr/igmp-nsr-ut-plan.txt?rev=1.3&view=markup
+
+
+Supported Platforms: M/MX, T
+
+Tracks:
+  RLI 6259: NSR:NSR: PIM stateful replication phase 2
+  PR: 238121 
+  Functional spec:       sw-projects/os/nsr/pim-nsr-6259-11800-funcspec.txt
+
+Enabling NSR:
+         set routing-options nonstop-routing 
+         set chassis redundancy graceful-switchover
+         set system commit synchronize
+
+Terminology:
+  ISS:  Initial State Sync. This would be done when the backup rpd is just
+        starting or NSR just got enabled or if PIM just got enabled on the
+        backup rpd already configured for NSR.
+  RESO: RE SwitchOver
+
+
+2.  SCOPE
+
+    a. Functional coverage
+    The main features that are supported as part of Phase II of PIM NSR are below.
+        (i)   PIM NSR on an RP Router (Static, BSR, AutoRP, Embedded RP)
+        (ii)  PIM NSR on an Anycast RP Router
+        (iii) PIM NSR for Anycast RP behavior 
+        (iv)  IPv4 and IPv6 co-existence
+        (v)   ISSU on RP Router 
+        (vi)  Register State Mechanisms on RP and non-RP Routers 
+        (vii) Flow-maps
+        (viii)Join-Load-Balance (in Phase III)
+
+
+    The main features that are supported as part of Phase III (RLI 11800) of PIM NSR are below.
+        (i)   Assert State Synchronization
+        (ii)  BSR Policies Import/Export 
+        (iii) Neighbor policy
+        (iv)  Scope Policies 
+        (v)   rpf-check policies
+
+    b. Software Change description:
+        (i)   pim_recv_register_common();
+        (ii)  struct _pim_rdb_rp;
+        (iii) pim_rpif_alloc();
+        (iv)  struct _pim_assert();
+
+
+
+3.  SETUP Topology
+
+3.1.1 NSR on RP Router:
+
+                  source 
+                    +
+                    |
+                    |
+              +-----+------+
+              |    DR      |
+              |     B      +------------------+
+              |            |                  |
+              +-----+------+                  |
+                    |                  +------+------+  
+                    |                  |    RP       |
+                    |                  |     G       |
+                    |                  |   DUT       |
+                    |                  +------+------+
+              +-----+------+                  |
+              |    LHR     |                  |
+              |     E      +------------------+
+              |    DUT     |
+              +-----+------+
+                    |
+                    |
+                    +
+                Receiver
+
+B: DR towards source
+G: RP Router 
+E: Last Hop Router 
+
+
+3.1.2 NSR Support for Anycast RP:
+
+
+     Src-1+------
+                 \
+                  \
+                   \
+                    +B+------+G
+                   /          |              -------Recv-1
+                  /           |             /
+     Recv-2+-----/            |            / 
+                               E+--------+I+
+                                            \
+                                             \
+                                              ---------Src-2
+
+G and E are Anycast RPs
+
+For Flow-1: Src-1  => source 
+            B      => DR 
+            Recv-1 => receiver 
+            I      => Last Hop Router 
+
+For Flow-2: Src-2  => source 
+            I      => DR 
+            Recv-2 => receiver 
+            B      => Last Hop Router 
+
+
+Sample configs are available in /homes/vikramna/NSR-CONFIGS.
+
+
+3.1.3 Comprehensive Testing of all features of PIM NSR with JCML
+
+    D+==============+B+-----------------+G+=========+
+                     \                 ||||          \\
+                      \                ||||           \\
+                       \               ||||            \\
+                        \              ||||             \\
+                         \             ||||              \\
+                          \            ||||               +
+                           +-----------+ E +=============+I+==============+J 
+
+
+      In the above setup, D and J act as end hosts. They send joins and traffic.
+      Routers B, E, G and I are DUTs. They have local-RP configured for different group-ranges.
+      They have join-load-balance configured. In some tests, E and G will be configured with Anycast-RP config. 
+      By way of these, the routers act as DR, LHR, Middle Router for different group-ranges. 
+      The following is the classification of different group-ranges and their RP information. 
+
+      B is local RP for 224.1.1.1/24             ff00:0224:1:1::1/64
+                        225.1.1.1/24     &       ff00:0225:1:1::1/64
+                        226.1.1.1/24             ff00:0226:1:1::1/64
+
+      G is local RP for 227.1.1.1/24             ff00:0227:1:1::1/64
+                        228.1.1.1/24     &       ff00:0228:1:1::1/64
+                        229.1.1.1/24             ff00:0229:1:1::1/64
+
+      E is local RP for 230.1.1.1/24             ff00:0230:1:1::1/64
+                        231.1.1.1/24     &       ff00:0231:1:1::1/64
+                        232.1.1.1/24             ff00:0232:1:1::1/64
+
+      I is local RP for 233.1.1.1/24             ff00:0233:1:1::1/64
+                        234.1.1.1/24     &       ff00:0234:1:1::1/64
+                        235.1.1.1/24             ff00:0235:1:1::1/64
+
+      For Anycast RP, B and I will retain the same group ranges. E and G will collectively act as RP for 227 to 232 group-ranges. 
+
+      E & G is local RP for 227.1.1.1/24             ff00:0227:1:1::1/64
+                            228.1.1.1/24             ff00:0228:1:1::1/64
+                            229.1.1.1/24             ff00:0229:1:1::1/64
+                            230.1.1.1/24     &       ff00:0230:1:1::1/64
+                            231.1.1.1/24             ff00:0231:1:1::1/64
+                            232.1.1.1/24             ff00:0232:1:1::1/64
+
+
+      In order to have Joins and Traffic well-distributed over the network, 
+the following pattern is used to send and receive Joins from the end-hosts D and J. 
+This way, there will be a lot of varied paths for SPT and RPT. Join-load-balance code
+will also be tested extensively. 
+
+      J sends out Joins for 224.1.1.1    &       ff00:0224:1:1::1
+                            226.1.1.1    &       ff00:0226:1:1::1
+                            228.1.1.1    &       ff00:0228:1:1::1
+                            230.1.1.1    &       ff00:0230:1:1::1
+                            232.1.1.1    &       ff00:0232:1:1::1
+                            234.1.1.1    &       ff00:0224:1:1::1
+
+
+      D sends out Joins for 225.1.1.1    &       ff00:0225:1:1::1
+                            227.1.1.1    &       ff00:0227:1:1::1
+                            229.1.1.1    &       ff00:0229:1:1::1
+                            231.1.1.1    &       ff00:0231:1:1::1
+                            233.1.1.1    &       ff00:0233:1:1::1
+                            235.1.1.1    &       ff00:0235:1:1::1
+
+      J sends Traffic for   225.1.1.1    &       ff00:0225:1:1::1
+                            227.1.1.1    &       ff00:0227:1:1::1
+                            229.1.1.1    &       ff00:0229:1:1::1
+                            231.1.1.1    &       ff00:0231:1:1::1
+                            233.1.1.1    &       ff00:0233:1:1::1
+                            235.1.1.1    &       ff00:0235:1:1::1
+
+      D sends Traffic for   225.1.1.1    &       ff00:0225:1:1::1
+                            227.1.1.1    &       ff00:0227:1:1::1
+                            229.1.1.1    &       ff00:0229:1:1::1
+                            231.1.1.1    &       ff00:0231:1:1::1
+                            233.1.1.1    &       ff00:0233:1:1::1
+                            235.1.1.1    &       ff00:0235:1:1::1
+
+
+     (i)   Static IGMP and MLD are used to configure Joins and 
+     (ii)  Multicast ping and ping6 utilities are used to send traffic as a background process.
+             /sbin/ping -c 200 -C -I so-0/0/0 -T 32 -Jr 225.1.1.1 >/var/tmp/x &
+             /sbin/ping6 -c 200 -C -I so-0/0/0 -h 32 -Jr -J6 ff00:0225:1:1::1 >/var/tmp/y &
+
+     (iii) Both IPv4 and IPv6 functionality is tested with the above.  
+     (iv)  With the above provision, different RP mechanisms can be easily tested. 
+     (v)   Since the local-RPs are set, we can just configure static, BSR, AutoRP and AnycastRP functionality and test for traffic flows.
+      
+3.1.4 Assert State Synchronization 
+
+              Src+-------------+R1
+                               /  \
+                              /    \
+                             /      \
+                            R2      R3 (higher IP)
+                            +        +
+                            |        |
+                            |        |
+                            |        |
+                         +--+--------+--+--- (LAN)
+                         |              |
+                         |              |
+                         |              |
+                         +              +
+                         R4            R5
+                         |              |
+                         |              |
+                        Rcv1           Rcv2
+
+R2: Upstream Assert Loser
+R3: Upstream Assert Winner
+R4 & R5: Downstream Routers 
+
+
+3.1.5 BSR Policies
+ 
+                local-RP
+         R0+-------R1+---------R2
+       BSR=50       \        /
+                     \      /
+                      \    /
+                       \  /       local-RP
+                        R3----------R4-------R5
+                       DUT                  BSR=30
+
+R0, R1 and R2 are in one BSR domain while R3, R4 and R5 in a different BSR domain.
+R3 is DUT which is configured with BSR export/import policies to suitably filter out BSR and C-RP messages
+R3,R4 and R5 elects R4 as Local-RP and R5 as BSR.
+R0,R1 and R2 elects R1 as Local-RP and R0 as BSR.
+
+On DUT R3, configure 
+set protocols pim rp bootstrap family inet import mypim-importer
+set protocols pim rp bootstrap family inet export mypim-exporter
+
+set policy-options policy-statement mypim-exporter to interface ge-0/1/0.0 (to-R4)
+set policy-options policy-statement mypim-exporter then reject
+set policy-options policy-statement mypim-importer from interface ge-0/2/3.0 (from-R1)
+set policy-options policy-statement mypim-importer from interface so-0/0/0.0 (from-R2)
+set policy-options policy-statement mypim-importer then reject
+ 
+
+3.1.6 Neighbor Policy
+
+                 R0    R1      R2      R3
+                DUT    +       +       +
+                 |     |       |       |
+                 |     |       |       |
+                 |     |       |       |
+                 --------------------------(LAN)
+
+R0 is the DUT. R0 should not form neighborship with R1 and R2.   
+R0 should form neighborship only with R3.
+
+
+On DUT R0, configure 
+set policy-options prefix-list nbrGroup1 100.1.1.10/32
+set policy-options prefix-list nbrGroup1 100.1.1.20/32
+set policy-options policy-statement mypim-nbr-policy from prefix-list nbrGroup1
+set policy-options policy-statement mypim-nbr-policy then reject
+set protocols pim interface fe-1/3/3.0 neighbor-policy mypim-nbr-policy
+
+
+3.2 Hardware
+
+Routers: M/MX, T640/T1600 
+BSD Hosts as Sources and Receivers
+
+4. FUNCTIONAL TEST CASES
+
+4.1 Local-RP Testing 
+
+4.1.a Goal: General criteria for all test-cases to be verified in topology section 3.1.1:
+
+    Test Steps:
+          1. In topology section 3.1.1, configure local RP on Router G.  
+          2. Start Joins from Downstream (towards E)
+          3. Start Traffic from Upstream (towards E)
+          4. Perform failovers on the RP router (G)
+          5. Check for traffic flowing for existing flows
+          6. During failover, introduce new flows (new joins from downstream and traffic from upstream)
+
+          7. Configure BSR in setup and verify 
+          8. Configure autoRP in setup and verify (IPv4 only) 
+          9. Configure static in setup and verify  
+          10.Configure embedded RP in setup and verify  (IPv6 only) 
+
+          11. Configure setup with IPv4 only configured 
+          12. Configure setup with IPv6 only configured 
+          13. Configure setup with both IPv4 and IPv6 configured 
+
+          14. Traffic sequence: Perform the below sequence and verify traffic flow
+               14.a Receiver started
+               14.b Receiver stopped
+               14.c Source started
+               14.d Source stopped
+               14.e Changing order in which source/receiver show up. 
+
+    Success Criteria:
+
+          1. The pd interfaces on the RP router should be up after failovers. 
+          2. The Join state info on RP router should be replicated and retained after multiple switchovers  
+          3. The Mcast route state info on RP router should be replicated and retained after multiple switchovers  
+          4. The timer states should be relevant on backup. 
+          5. Traffic should flow uninterrupted for existing flows
+          6. Traffic for new flows should flow with no or little traffic loss 
+          7. There should not be any rpd crash. 
+          8. Backup rpd should respond to cli operational mode commands 
+
+    Result:
+
+
+4.1.b Goal: Testing pd interface on the master and backup REs 
+   Test Steps: 
+          1. Configure steps as listed in section 4.1.a
+          2. Check for pd interfaces on master and backup after failovers by running below cmd:
+                cli>show pim interfaces
+
+
+   Success Criteria:
+          1. Check for the General criteria listed in section 4.1.a
+          2. pd interfaces on the RP router should be after multiple failovers
+
+   Result:
+
+
+4.1.c Goal: NSR with PIM RP and IPv4 and IPv6 interfaces
+   Test Steps: 
+          1. Configure steps as listed in section 4.1.a
+
+   Success Criteria:
+          1. Check for the General criteria listed in section 4.1.a
+
+   Result:
+
+               
+4.1.d Goal: Register State Replication 
+
+   Test Steps: 
+          1. In topology section 3.1.1, stop all joins and traffic
+          2. Start the traffic from Source.
+          3. Register message will be sent by DR to RP 
+          4. Register Stop message will be sent by RP to DR 
+          5. This will go on once in 60 seconds 
+
+          6. This will result in Register state being created in DR
+                cli>show pim rps extensive
+          7. This will also create Register state on the RP.
+                cli>show pim rps extensive
+          8. Check that the Register state information for that particular source is replicated to the backup. 
+          9. Perform a failover  
+          10. Check for the Register states on the RP.
+             
+
+   Success Criteria:
+          1. The DR should create appropriate Register states  
+          2. The Register state should get replicated. Verify it by running the below cmd on master and backup 
+                cli>show pim rps extensive
+
+          3. The RP should create appropriate Register states  
+          4. The Register state should get replicated. Verify it by running the below cmd on master and backup  
+                cli>show pim rps extensive
+
+          5. After failover, the Register state on the new master should become active
+          6. Verify by checking timer status and value on the new master from below cmd output.
+                cli>show pim rps extensive
+
+   Result:
+               
+4.1.e Goal: Register State Replication with Traffic
+   Test Steps: 
+          1. In topology section 3.1.1, stop all joins and traffic
+          2. Start the traffic from Source.
+          3. Register message will be sent by DR to RP 
+          4. Register Stop message will be sent by RP to DR 
+          5. This will go on once in 60 seconds 
+          6. As verified in section 4.1.c, Register state will be replicated to the backup on DR and RP
+
+          7. Perform a failover
+          8. During the failover event, send Joins from downstream
+
+   Success Criteria:
+          1. The RP should recognize that there is a source active for the group 
+          2. Based on the Register state that got replicated. 
+          3. The RP should send out a SG towards the source and the traffic should start flowing right away 
+
+   Result:
+               
+
+4.1.f Goal: Register State Replication for different RP mechanisms
+          
+   Test Steps: 
+          1. Verify section 4.1.c, section 4.1.d and section 4.1.e for   
+                a. Static RP
+                b. BSR 
+                c. autoRP 
+                d. embedded-RP 
+   Success Criteria:
+          1. Verify success criteria listed in section 4.1.c, section 4.1.d and section 4.1.e
+
+   Result:
+               
+
+4.1.g Goal: PIM NSR on RP with configured with different group-ranges
+
+   Test Steps: 
+          1. In topology section 3.1.1, configure local-RP with different group-ranges
+          2. Start different flows with groups falling in different group-ranges
+          3. Check for Register state being replicated
+          4. Perform failovers
+          5. Perform section 4.1.c and section 4.1.d Test Cases related to Register state  
+          6. Perform Generic testing outlined in section 4.1.a
+        
+   Success Criteria:
+          1. Register state should get replicated to the backup for the respective flows
+          2. After failovers, the new master should pickup the Register state and traffic as listed in section 4.1.d
+          3. The Generic testing criteria as listed in section 4.1.a should be successful
+
+   Result:
+               
+
+4.1.h Goal: Testing the behavior of rpd restart on master and backup RE  
+
+   Test Steps: 
+          1. With a stable NSR setup passing section 4.1.c test case, restart rpd on the master 
+          2. With a stable NSR setup passing section 4.1.c test case, restart rpd on the backup 
+
+   Success Criteria:
+          1. Master rpd should come up again and system should get to stable state similar to non-NSR behavior 
+          2. Backup rpd should come up again and the Initial State replication should occur 
+          3. System should get to stable state similar to non-NSR behavior 
+
+   Result:
+               
+
+
+
+4.2 Anycast RP Related Tests
+
+4.2.a Goal: Testing Anycast RP in topology section 3.1.2
+
+   Test Steps: 
+          1. Configure topology section 3.1.2 with G and E as RPs
+          2. B and I as DR and LHR for Src1-Src2 and Rcv1-Rcv2 
+          3. Pump traffic from Src1 
+          4. Appropriate Anycast RP Register states should get created on E and G  
+          5. Start joins from Rcv1
+          6. Traffic should reach Rcv1 via Anycast RP mechanism 
+          7. Repeat Steps 3-6 with Src2 and Rcv2
+          8. Check for CLI output of cmd
+             cli>show pim rps extensive
+          9. It should display Anycast RP related state information
+
+   Success Criteria:
+          1. Anycast RP functionality should work fine 
+          2. SG should get resolved on the appropriate Anycast RP rotuers 
+          3. Anycast Register Messages should be appropriately sent between G and E 
+
+   Result:
+                
+
+4.2.b Goal: Testing PIM NSR with Anycast RP in topology section 3.1.2 
+
+   Test Steps: 
+          1. Don't send joins or traffic in topology section 3.1.2
+          2. Send only traffic from Src1 and Src2  
+          3. Check if Anycast RP state is replilcated to backup
+          4. Check if Anycast RP Register state is replilcated to backup
+          5. In setup, perform a failover on the RP Routers G and E 
+          6. In setup, perform a failover on the DR and LHR Routers B and I 
+ 
+
+   Success Criteria:
+          1. Anycast RP and Anycast RP Register state should get replicated to backup 
+          2. After failover, the new master should pick up the Anycast RP and Anycast RP Register state
+          3. After failover, the new backup should get replicated with the Anycast RP and Anycast RP Register state
+
+   Result:
+                
+      
+4.2.c Goal: Testing PIM NSR with Anycast RP with Failovers and Flows in topology section 3.1.2 
+
+   Test Steps: 
+          1. Don't send joins or traffic in topology section 3.1.2
+          2. Send only traffic from Src1 and Src2  
+          3. Check if Anycast RP state is replilcated to backup
+          4. Check if Anycast RP Register state is replilcated to backup
+          5. In setup, perform a failover on the RP Routers G and E 
+          6. In setup, perform a failover on the DR and LHR Routers B and I 
+          7. During failovers, start Joins from downstream Rcv1 and Rcv2
+          8. After failover completes, the Traffic for the two flows should start flowing 
+
+   Success Criteria:
+          1. Anycast RP and Anycast RP Register state should get replicated to backup 
+          2. After failover, the new master should pick up the Anycast RP and Anycast RP Register state
+          3. After failover, the new backup should get replicated with the Anycast RP and Anycast RP Register state
+          4. The sources are known to the RPs new master because of the Anycast RP Register state replication 
+          5. After failover, appropriate SG Joins should be sent upstream 
+          6. Traffic for the flows should flow with no or little traffic loss
+
+   Result:
+                
+
+4.2.d Goal: Anycast RP with IPv4 and IPv6
+    
+   Test Steps: 
+          1. Check for section 4.2.a, section 4.2.b and section 4.2.c with IPv4 alone configured 
+          2. Check for section 4.2.a, section 4.2.b and section 4.2.c with IPv6 alone configured 
+          3. Check for section 4.2.a, section 4.2.b and section 4.2.c with both IPv4 and IPv6 configured 
+
+   Success Criteria:
+          1. Criteria in section 4.2.a, section 4.2.b and section 4.2.c should pass for IPv4 alone configured 
+          2. Criteria in section 4.2.a, section 4.2.b and section 4.2.c should pass for IPv6 alone configured 
+          3. Criteria in section 4.2.a, section 4.2.b and section 4.2.c should pass for IPv4 and IPv6 configured 
+   Result:
+
+                
+4.2.e Goal: Anycast RP with different rp-groups configured 
+   Test Steps: 
+          1. Check for section 4.2.a, section 4.2.b and section 4.2.c with different RP-groups configured 
+
+   Success Criteria:
+          1. Criteria in section 4.2.a, section 4.2.b and section 4.2.c should pass for different RP-groups configured 
+   Result:
+
+
+4.3 PIM Join Load Balance Testing
+
+4.3.a Goal: Join and Mroute outputs should be same on master and backup 
+   Test Steps: 
+        1. In section 3.1.3 setup, configure PIM Join-load-balance knob. 
+        2. Start sending Joins from downstream and traffic from upstream
+        3. Check for PIM Joins output and multcast route output on master and backup 
+        4. Do a failover. 
+        5. Check for PIM Joins output and multcast route output on master and backup 
+        6. Do a failover. 
+  
+   Success Criteria:
+          1. In Step 3, 5 and 6, the output files of master and backup should be the same. 
+          2. No rpd crashes.
+          3. During failover, there should not be no traffic loss for existing flows and minimal loss for new flows.
+   Result:
+
+4.3.b Goal: Change in Unicast route should be taken care of for join-load-balance. 
+   Test Steps: 
+        1. In section 3.1.3 setup, configure PIM Join-load-balance knob. 
+        2. Start sending Joins from downstream and traffic from upstream
+        3. Check for PIM Joins output and multcast route output on master and backup 
+        4. Disable an interface that causes unicast routing to re-converge
+        5. Check for PIM Joins output and multcast route output on master and backup 
+        6. Do a failover. 
+        7. Check for PIM Joins output and multcast route output on master and backup 
+        8. Do a failover. 
+        9. Enable that interface which was disabled in Step 4. 
+
+   Success Criteria:
+          1. In Step 3, 5 and 7, the output files of master and backup should be the same. 
+          2. In Step 4, the joins that were going on the 'disabled' interface should be redistributed over other links.
+          3. In Step 8, when interface comes up, the existing joins should not use the link. 
+             Only the new joins that come in should be balanced using that link. 
+          4. No rpd crashes.
+          5. During failover, there should not be no traffic loss for existing flows and minimal loss for new flows.
+   Result:
+
+4.3.c Goal: Deletion and Reconfiguration of Join-load-balance knob 
+   Test Steps: 
+        1. In section 3.1.3 setup, configure PIM Join-load-balance knob. 
+        2. Start sending Joins from downstream and traffic from upstream
+        3. Check for PIM Joins output and multcast route output on master and backup 
+        4. Delete the pim join-load-balance knob.
+        5. Check for PIM Joins output and multcast route output on master and backup 
+        6. Do a failover.
+        7. Reenable the pim join-load-balance knob.
+        8. Check for PIM Joins output and multcast route output on master and backup 
+        9. Do a failover.
+        
+   Success Criteria:
+          1. In Step 3, 5 and 8, the output files of master and backup should be the same. 
+          2. No rpd crashes.
+          3. During failover, there should not be no traffic loss for existing flows and minimal loss for new flows.
+   Result:
+
+4.3.d Goal: Per-packet loadbalancing configuration enabled. 
+   Test Steps: 
+        1. In section 3.1.3 setup, configure PIM Join-load-balance knob. 
+        2. Configure per-packet load-balance knob under policies and routing options
+        3. Perform section 4.3.a, section 4.3.b and section 4.3.c testcases 
+
+   Success Criteria:
+          1. The criteria listed in section 4.3.a, section 4.3.b and section 4.3.c test cases should be passed. 
+          2. No rpd crashes.
+          3. During failover, there should not be no traffic loss for existing flows and minimal loss for new flows.
+
+   Result:
+
+
+4.4 Assert State Synchronization
+
+4.4.a Goal: General Assert State Behavior (before failover)
+   Test Steps: 
+        1. In section 3.1.4 setup, in R4, unicast route for Src is R2 
+        2. In R5, unicast route for Src is R1 
+        3. Send Joins for the same group G1 from Rcv1 and Rcv2 
+        4. R4 sends the Joins to R2 and R5 sends to R3.
+        5. Start traffic from Src for the group G1.
+        6. Both R2 and R3 receive traffic from R1 and send it out the LAN.
+        7. This leads to Assert war between R2 and R3. (Monitor traffic on LAN using ethereal)
+
+   Success Criteria:
+          1. R3 wins the Assert war since, it has higher IP address configured on LAN. 
+          2. R3 sends an Assert message once every 60 seconds claiming winner status. 
+          3. R2 claims itself as Assert loser and stops forwarding traffic on the LAN. 
+          4. Both the downstream routers R4 and R5 send their joins to the upstream assert winner (R3).
+          5. Since, R4 has stopped its joins towards R2, R2 will timeout the Join (after 210 secs).
+          6. R2 will have a discard route (Pruned state). 
+          7. The assert winner R3 keeps forwarding the traffic to the LAN. 
+ 
+
+   Result: 
+
+
+4.4.b Goal: Assert State Replication 
+   Test Steps: 
+        1. In section 3.1.4 setup, Perform the tests in section 4.4.a
+        2. On Upstream routers (R2 and R3), the Assert state machines should be replicated. 
+        3. Check the show pim neighbors detail output and see that Assert state is replicated. 
+        4. On Downstream routers (R4 and R5), the Assert state machines should be replicated. 
+        5. Check the show pim neighbors detail output and see that Assert state is replicated. 
+
+   Success Criteria:
+          1. The Assert state should be replicated to the backup. 
+          2. show pim neighbors detail should show the Assert states for each SG in both master and backup. 
+
+   Result: 
+
+
+4.4.c Goal: Switchover on Upstream Assert Winner 
+   Test Steps: 
+        1. In section 3.1.4 setup, Perform the tests in section 4.4.a 
+        2. Perform switchover on R3. 
+        3. Monitor traffic on the LAN for any Assert wars. 
+        4. Check for pim statistics for Assert packets. 
+        5. Check the new master cli output of join. 
+        6. Check for join outputs of other routers in the LAN. R2-loser, R4 & R5-downstream routers. 
+
+   Success Criteria:
+          1. There should not be any assert war observed on the LAN. 
+          2. There should not be any increase in pim Assert packets in statistics. 
+          3. The cli output on new master should still claim to be Assert winner
+          4. The Assert state machine should kick off on new master. 
+          5. The other routers in LAN should remain unaffected. They should still have R3 as winner. 
+ 
+   Result: 
+
+
+4.4.d Goal: Switchover on Upstream Assert Loser 
+   Test Steps: 
+        1. In section 3.1.4 setup, Perform the tests in section 4.4.a 
+        2. Perform switchover on R2. 
+        3. Monitor traffic on the LAN for any Assert wars. 
+        4. Check for pim statistics for Assert packets. 
+        5. Check the new master cli output of join. 
+        6. Check for join outputs of other routers in the LAN. R3-winner, R4 & R5-downstream routers. 
+
+   Success Criteria:
+          1. There should not be any assert war observed on the LAN. 
+          2. There should not be any increase in pim Assert packets in statistics. 
+          3. The cli output on new master should still claim to be Assert loser
+          4. The Assert state machine should kick off on new master. 
+          5. The other routers in LAN should remain unaffected. They should still have R3 as winner. 
+ 
+   RESULT: 
+
+
+4.4.e Goal: Switchover on downstream routers
+   Test Steps: 
+        1. In section 3.1.4 setup, Perform the tests in section 4.4.a 
+        2. Perform switchover on R4 and R5
+        3. Monitor traffic on the LAN for any Assert wars. 
+        4. Check for pim statistics for Assert packets. 
+        5. Check the new master cli output of join. 
+        6. Check for join outputs of other routers in the LAN. R3-winner, R2-loser
+
+   Success Criteria:
+          1. There should not be any assert war observed on the LAN. 
+          2. There should not be any increase in pim Assert packets in statistics. 
+          3. The cli output of join should point to the correct upstream winner (R3) on both R4 and R5. 
+          4. The Assert state machine should kick off on new master. 
+          5. The other routers in LAN should remain unaffected. They should still have R3 as winner. 
+   RESULT: 
+
+
+4.5 Policies (BSR Import/Export: Neighbor: Scope : RPF-check)
+
+4.5.a Goal: Behavior of backup rpd should be same as master rpd for the BSR import/export policies. 
+   Test Steps: 
+        1. In section 3.1.5 setup, Configure DUT R3 with the config given in section 3.1.5. 
+        2. Configure BSR and C-RP routers according to section 3.1.5. 
+        3. Check on DUT R3, whether the backup rpd is in sync with master rpd. 
+        4. Perform switchover and check the above. 
+
+   Success Criteria:
+          1. The backup rpd should have the same BSR and C-RP info as master.   
+          2. R3 should have R0 as BSR and R1 as local-RP.
+          3. After switchover, the new master should also have the same info as above. 
+
+   RESULT: 
+
+4.5.b Goal: Behavior of backup rpd should be same as master rpd for neighbor policy
+   Test Steps: 
+        1. In section 3.1.6 setup, Configure DUT R0 with the config given in section 3.1.6. 
+        2. Configure neighbors as per section 3.1.6. 
+        3. Check on DUT R0, whether the backup rpd is in sync with master rpd. 
+        4. Perform switchover and check the above. 
+
+   Success Criteria:
+          1. The backup rpd should have only R3 as the neighbor
+          2. After switchover, the new master should also have R3 only as neighbor
+
+   RESULT: 
+
+
+4.5.c Goal: Behavior of backup rpd should be same as master rpd for scope policy
+   Test Steps: 
+        1. Configure a DUT with the below config to configure scope-policy. 
+                set routing-options multicast scope-policy allow-auto-rp
+                set policy-options policy-statement allow-auto-rp term allow-auto from interface fe-1/3/3.0
+                set policy-options policy-statement allow-auto-rp term allow-auto from route-filter 224.0.1.39/32 exact
+                set policy-options policy-statement allow-auto-rp term allow-auto from route-filter 224.0.1.40/32 exact
+                set policy-options policy-statement allow-auto-rp term allow-auto then accept
+                set policy-options policy-statement allow-auto-rp term reject-others from route-filter 224.0.1.0/24 orlonger
+                set policy-options policy-statement allow-auto-rp term reject-others then reject
+
+
+        2. For the above set of configs, pim should have the joins marked as (administratively scoped).
+        3. Check on DUT R0, whether the backup rpd is in sync with master rpd. 
+        4. Perform switchover and check the above. 
+
+   Success Criteria:
+          1. The backup rpd should have the same scope-policy applied. 
+          2. The backup rpd should have the pim joins marked as (administratively scoped).
+          3. After switchover, the new master should also have the pim joins marked as (administratively scoped). 
+          4. non-NSR PRs: 513700 and 518630. 
+
+   RESULT: 
+
+4.5.d Goal: Behavior of backup rpd should be same as master rpd for rpf-check policy
+   Test Steps: 
+        1. Configure a DUT with the below config to configure rpf-check policy. 
+                set routing-options multicast rpf-check-policy disable-rpf
+                set policy-options policy-statement disable-rpf term no-rpf from route-filter 224.0.0.0/8 orlonger
+                set policy-options policy-statement disable-rpf term no-rpf from source-address-filter 1.1.1.2/32 exact
+                set policy-options policy-statement disable-rpf term no-rpf then reject
+
+        2. With the above config, the RPF-check will be disabled for the given Source. 
+        3. Check on DUT R0, whether the backup rpd is in sync with master rpd. 
+        4. Perform switchover and check the above. 
+        5. Kindly note that disabling RPF-check could lead to hard-to-debug multicast routing loops.
+
+   Success Criteria:
+          1. The backup rpd should have the same rpf-check policy applied. 
+          2. The backup rpd should have the multicast routes marked as (rpf check disabled) 
+          3. After switchover, the new master should also have the multicast routes marked as (rpf check disabled) 
+
+   RESULT: 
+
+5.  BOUNDARY TEST CASES
+
+6.  GRES TEST CASES
+
+7.  ISSU TEST CASES
+
+7.1 Goal: Testing the ISSU module with PIM NSR on RP Router
+
+   Test Steps: 
+          1. Configure NSR and perform ISSU 
+          2. Check for cli>show task replication output.
+               It should appropriately move from Init->InProcess->Complete
+          3. Have a highly scaled setup. While the Initial State Replication is in process, perform an ISSU.
+
+   Success Criteria:
+          1. ISSU with PIM NSR should go through without being aborted. 
+          2. CLI output of "show task replication"  should appropriately move from Init->InProcess->Complete
+          3. During an ISSU at Initial State replication, the backup should bail out without abort or crashes. 
+ 
+   Result:
+               
+8.  TX TEST CASES
+9.  AGGREGATED ETHERNET/SONET TEST CASES
+10. REGRESSION TEST CASES
+11. INTEROPERABILITY TEST CASES
+12. MIGRATION & COMPATIBILITY TEST CASES
+
+13. TEST COVERAGE REMAINING
+None.
+
+14. DEFECTS REMAINING
+None.
+
+15. SCALING AND PERFORMANCE
+
+15.1 Goal: Testing and Quantifying the Scaling numbers for PIM NSR in RP Router 
+
+   Test Steps: 
+          1. Configure NSR 
+          2. Configure different RPs for a set of multicast groups 
+          3. Pump Joins for a large number of groups 
+          4. Pump Traffic at a very high rate for all these groups. 
+          5. Pump Prunes for a large number of groups 
+          6. Measure the performance and benchmark it with behavior of non-NSR on RP router
+          7. Measure the performance and benchmark it with behavior of NSR but PIM NSR disabled
+          8. Perform multiple failovers and validate 
+          9. Perform Unicast routing changes config changes and validate 
+
+   Success Criteria:
+          1. Scaling tests should pass without RPD crashes and traffic loss  
+          2. Section 4.1.a should be validated for different control plane info and data traffic loss
+    
+   Result:
+                
+        However, to be certified by the Scaling Team 
+
+16. STATIC ANALYSIS
+17. CODE COVERAGE
+
+
+18. AUTOMATION
+
+18.a JCML Enabled Automated Unit Cases    
+
+    The location of the scripts is given below:
+	    /src/functional-tests/apps/rpd/multicast/pim/pim-nsr
+  
+    The logic of the scripts that match the unit-tests is as below.
+ 
+    (i)   Configure as per given in the setup. 
+	(ii)  Configure static RP 
+	(iii) Check CLI output of follwing on master and backup and compare.
+	            (a) pim interfaces
+	            (b) pim rps
+	            (c) pim bootstrap
+	            (d) pim neighbors
+	            (e) pim source
+	            (f) pim join
+	            (g) multicast route
+	(iii) Pump one set of Joins and Traffic to create appropriate Join and Mroute states. 
+	(iv)  Check for CLI outputs listed in (iii)
+	(v)   Perform 'actions' picking one action per round of testing. 
+	            (a) delete static RPs, failover, add static RPs, failover
+	            (b) delete join-load-balance, faiover, add it back, failover 
+	            (c) delete local-RP, failover, add it back and failover  
+	            (d) delete static-RP and configure Bootstrap 
+	            (e) delete bootstrap and configure auto-RP for v4 and embedded RP for v6
+	            (f) delete IPv6 rp, failover, add it back and failover 
+	            (g) delete IPv4 rp, failover, add it back and failover 
+	            (h) More to be added as it evolves
+	(vi)   Do a failover of all the routers, B, E, G, I. 
+
+    Repeat from (i) to (vi) for new set of flows (joins and traffic) pumped from J and D.
+
+18.b JCML Related Files: 
+
+(i)  Base Config files stored in sw-lab of CVS
+          /volume/bng-nfsbuild16/vikramna/sw-lab/machine/pro-bng-mc2-d/config
+          /volume/bng-nfsbuild16/vikramna/sw-lab/machine/pro-bng-mc2-b/config
+          /volume/bng-nfsbuild16/vikramna/sw-lab/machine/pro-bng-mc2-g/config
+          /volume/bng-nfsbuild16/vikramna/sw-lab/machine/pro-bng-mc2-e/config
+          /volume/bng-nfsbuild16/vikramna/sw-lab/machine/pro-bng-mc2-i/config
+          /volume/bng-nfsbuild16/vikramna/sw-lab/machine/pro-bng-mc2-j/config
+
+      They are also stored in /homes/vikramna/jcml-base-config-files
+
+(ii) pim.lab File
+
+.R0: -xr x-dual-re "true" -n pro-bng-mc2-b
+.R1: -xr x-dual-re "true" -n pro-bng-mc2-g
+.R2: -xr x-dual-re "true" -n pro-bng-mc2-e
+.R3: -xr x-dual-re "true" -n pro-bng-mc2-i
+.R4: -n pro-bng-mc2-j
+.R5: -n pro-bng-mc2-d
+
+.R0,R1: -c 1
+.R0,R2: -c 1
+.R0,R5: -c 2
+.R2,R1: -c 4
+.R2,R3: -c 2
+.R3,R4: -c 2
+    
+
+19. UNIT TEST PLAN REVIEW FEEDBACK

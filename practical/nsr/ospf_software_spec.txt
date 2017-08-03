@@ -1,0 +1,202 @@
+                    Functional specification for
+                       OSPF non-stop routing
+
+Author: Kalyan Bade (kalyan@juniper.net)
+
+Copyright (C) 2005, Juniper Networks, Inc.
+
+NOTICE: This document contains proprietary and confidential
+information of Juniper Networks, Inc. and must not be distributed
+outside of the company without the permission of Juniper Networks
+engineering.
+
+
+1.  INTRODUCTION
+
+    The goal of Non-Stop Routing is to be able to fail-over between a 
+    primary and secondary Routing Engine without this being a visible
+    event to routing protocol peers. This must be achieved without 
+    requiring protocol modifications or expecting co-operation from 
+    remote peers (i.e. the mechanism must be self-contained).
+
+    This feature is targeted, in particular, for edge platforms where
+    customer circuits are terminated. These systems usually represent
+    single points of failure, as far as the customer network is
+    concerned.
+
+    Currently, graceful-restart, is the solution that Juniper proposes 
+    in order to maintain uninterrupted forwarding during an RE switch-
+    over event. Graceful-restart, has several drawbacks: it requires 
+    protocol extensions in routing peers, which are often not present 
+    at the edge; it leads to using stale routing and forwarding information 
+    during potentially long periods while the restarting router is 
+    re-converging; it is not guaranteed to complete successfully given
+    interdependencies between components.
+
+    This project is integrated in the larger In-Service Software Upgrade
+    (ISSU) project which aims to be able to upgrade the software load 
+    on a redundant platform without forwarding or routing interruptions.
+    Thus, while NSRs initial deliveries targets are for hot-standby between
+    REs running the same version of software, the long term goal is to 
+    be able to support hot-standby switch-over across distinct software
+    versions.
+
+    Additional to the above requirements, the performance impact of the 
+    solution is of critical concern. Routing Engines in deployed systems 
+    are typically running underpowered. The performance impact of NSR on
+    the primary RE has to be kept to the absolute minimum in order for the
+    solution to be feasible in an operational context.
+
+1.1 Tracking:
+
+    RLI: 2713
+    PR:  63857
+
+1.2 References
+
+
+2.  FUNCTIONALITY
+
+    Applying the top level requirements (as described in section 1) to 
+    OSPF means:
+      o Being able to maintain the neighbor state and LSA database after
+        a switchover.
+      o Running the primary and secondary RE as asynchronously as possible;
+        the assumption being that synchronous operations (in which the 
+        primary waites for an ACK for the secondary) negatively impact 
+        performance.
+    
+2.1 CLI 
+
+    This project add a new traceflag to OSPF
+     
+    protocols {
+        ospf {
+            traceoptions {
+                ...
+                flag synchronization detail; <=== new flag
+            }
+        }
+    }
+
+2.2 UI
+
+    With the NSR project, rpd will be running on the secondary RE, and all
+    OSPF UI commands are now enabled. These may display different values
+    than on the primary RE. The critial information that rpd is replicating
+    are the contents of the adjacency and LSA database.
+
+3.  CAVEATS
+
+
+4.  OTHER REQUIREMENTS
+
+
+5.  IMPLEMENTATION DETAILS
+
+    The two primary databases that need to be synchronized are the 
+    adjacency and LSA databases. And for synchronization purposes, we have
+    to deal with initial synchronization and onging synchronization.
+
+    The rest of the state other than above will be dynamically created
+    on the secondary (with some exceptions).
+
+5.1 Adjacency synchronization 
+   
+    The neighborship in OSPF is maintained through it's hellos. To 
+    maintain the neighborship on the secondary, it has to listen hellos 
+    from the network peer. But, this is not sufficient when the secondary
+    comes up later and there are demand circuits in operation (Demand 
+    circuit adjacencies seize the hellos once they reach FULL state).
+    For initial synchronization, the secondary will have to depend on
+    the primary OSPF. This mechanism is extended for ongoing synchronization
+    and the primary is the sole source of adjacency state to the secondary.
+
+    Necessary information is replicated from the primary to build the 
+    adjacency state on the secondary. The generic mirroring subsytem is
+    used to replicate the adjacency information.
+
+5.2 Database synchronization
+
+    Database replication is a bit tricky in OSPF. The primary has to
+    send the LSA to the secondary and wait for an ack before it can flood
+    the LSA to the network peers. This ensures that a switchover anytime
+    can keep us in sync with the network.
+
+    There are inbuilt mechanisms to synchronize LSA databases in the OSPF
+    protocol. For initial synchronization, we use the OSPF DBD process 
+    and for ongoing synchronization, the primary uses flooding mechanism
+    to sync with the secondary before it actually syncs with the network.
+    Extra information needs to be passed around for synching between primary
+    and secondary, since the dummy neighbor between primary and secondary is 
+    not tied to any interface/area/instance.
+
+6.  PERFORMANCE
+
+{As necessary, describe any performance issues or that there are
+none.}
+
+6.1.  Performance Related Resources
+
+{As necessary, Describe the resource bottlenecks (e.g. CPU, RAM,
+interface bandwidth, # of logical interfaces, etc.) of the function
+and the general assumptions underlying any given performance
+calculation.}
+
+6.2.  Target Performance
+
+{As necessary and appropriate, describe the target performance.  Where
+possible, justify this target based on the resource estimates.
+Specify if this target performance is based on believed maximum
+performance of the function or based on a comfortably achievable
+number.  Where relevant, specify where conditions will reduce the
+performance below the target performance (e.g. extended functionality,
+other load on the box, etc.).  It is also useful to return to this
+section and fill in the actual tested performance when the numbers are
+available.}
+
+
+7.  COMPATIBILITY ISSUES
+
+{As necessary, list any issues related to migration,
+backwards/forwards compatibility, etc.  This would include any places
+where config will break, config will be deprecated, network layouts
+must change, the feature will or will not work with new or old
+hardware, etc.}
+
+
+8.  SECURITY ISSUES
+
+{As necessary, list any security considerations or issues here.}
+
+
+9.  Graceful RE Switchover (GRES), Hobson Impact
+
+{Generally, when you are updating state in the kernel which is to be
+consumed by other peers -- PFEs, LCCs --, you need to consider adding
+support for GRES.  Some examples of these are:
+- New ifstates
+- Change in the routing socket message format for an existing message
+- New daemons
+- Updating kernel state in non-rtsock context
+- State updates on the RE owing to messages from the PFE
+- New IPCs to the PFE/FPCs
+- New TLVs
+- New rtsock messages
+- New PICs
+If you have questions, send email to replicant-coders.
+}
+
+10.  NOTES
+
+{As necessary, add any additional notes which do not fit in the above
+sections.}
+
+
+11.  GLOSSARY
+
+{As necessary, define any terms or acronyms used.}
+
+
+12.  REVIEW COMMENTS
+

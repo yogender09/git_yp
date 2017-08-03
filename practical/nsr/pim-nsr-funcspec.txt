@@ -1,0 +1,402 @@
+$Id: pim-nsr-funcspec.txt,v 1.9 2009/10/23 11:21:08 vikramna Exp $ tag:
+
+                  NSR: PIM stateful replication
+                  Functional Specification
+
+                  Ravi Singh <ravis@juniper.net>
+
+S3.02.P05.T01
+
+Copyright (C) 2007, Juniper Networks, Inc.
+
+NOTICE: This document contains proprietary and confidential
+information of Juniper Networks, Inc. and must not be distributed
+outside of the company without the permission of Juniper Networks
+engineering.
+
+1.  INTRODUCTION
+Non Stop Routing attempts to minimize churn in control state due a RE 
+fail-over. Different protocols achieve this by different means - some by 
+re-learning the control state after a RE fail-over and some by replicating 
+enough state from the master to the backup RE so that after a fail-over the 
+backup RE has almost the same control state as the former master did just
+prior to switchover.
+
+This document describes the functional details of Non Stop Routing (NSR) for
+PIM. It is targeted for release 9.0.
+
+NSR for PIM would be useful in 2 different classes of RE fail-overs:
+ - Planned RE switchovers: for reasons like upgrading one RE without taking the
+   entire router down (which would cause substantial control state churn).
+ - Master RE failure due to any reason: NSR can provides an HA mechanism
+   to minimize control state (and thus forwarding state) disruption due to the 
+   master RE going down.
+
+At present, when the master RE fails, the backup RE would take some time before
+it learns relevant PIM state. This would cause loss of multicast traffic for
+existing as well new multicast flows that appear on a multicast enabled 
+interface while the PIM state is being re-learnt.
+
+While graceful restart support for PIM is already implemented, it when 
+configured with GRES offers non-disruption only for the existing multicast 
+(s,g)s for which forwarding state already exists. Graceful-restart along with
+GRES does not provide non-disruption for new multicast flows that show up 
+during the graceful-restart-period and nor does it provide for the updation 
+of forwarding state for the existing multicast flows during the graceful 
+restart window.
+
+PIM NSR attempts to improve upon that by further minimizing the
+amount of time the new master RE takes to actively start populating the
+multicast forwarding state. Also PIM NSR would reduce PIM control traffic at
+fail-over in that only minimal PIM state will have to be re-learnt from the
+PIM neighbors.
+
+1.1 Goals:
+0.  PIM neighborships should not churn due to a switchover for those neighbors
+    that are in steady state.
+1.  Minimal traffic loss for existing multicast sessions: all (s,g) sesions 
+    for which traffic is already flowing through the router must experience a 
+    minimal traffic loss when the master RE fails-over.
+2.  Minimal traffic loss for new multicast sessions: any new (s,g) sessions 
+    that show up after the RE switchover must experience minimal traffic loss 
+    across due to the RE fail-over.
+3.  Minimize performance impact on the master RE in replicating the PIM
+    state to the backup. The master should replicate only that state that the
+    backup itself is not capable of generating.
+4.  Minimize the performance impact due to switch-ver for the backup RE: at the
+    time of RE fail-over, the old backup (now the new master) RE shall have to
+    do some processing before it can become a fully functional master RE. PIM
+    NSR shall aim to keep this processing to a minimum. 
+5.  Implementation goal: to minimize impact on PIM functionality on a
+    stand-alone RE.
+
+1.2 Non-goals:
+
+1.  No PIM protocol specification changes are planned, rather PIM
+    implementation shall be changed to support the NSR goals.
+
+
+1.3 Tracking info:
+
+PIM NSR is tracked under:
+  RLI 2728: PIM stateful replication, PR 94595.
+  
+A related RLI is tracked under:
+  RLI 2727: IGMP stateful replication, PR 94594.
+
+An application note is provided for customers of PIM NSR for a smooth upgradation at
+http://cvs.juniper.net/cgi-bin/viewcvs.cgi/sw-projects/os/nsr/NSR-PIM_in_9%203_7-Nov08.doc?rev=1.1&view=log
+
+2.  FUNCTIONALITY
+
+In order to meet the goals described in section 1, PIM control state needs to
+be in sync between the 2 REs. The PIM control state determines the data plane
+forwarding behavior for multicast data traffic. Thus, to meet the goals of
+PIM NSR, it is important to maintain the PIM control state in sync between
+the 2 REs.
+
+The functional requirements for PIM subject to configuration & unicast routing
+convergence:
+    - Maintaining the self-generation-id across RE switchovers.
+    - Maintaining the list of neighbors across switchovers.
+    - Maintaining consistency of the dynamic interface state created by PIM.
+          + pime/pe and pimd/pd interfaces.
+    - Maintaining multicast session (s,g) state across RE switchovers:
+          + OIF list.
+          + Per interface Join/Prune state.
+          + RPF nbr state.
+    - Maintaining the RPSet across RE switchovers.
+
+
+
+In configuration steady-state (config has not changed in a while), the PIM 
+control state between the 2 REs would be almost the same provided the 2 REs
+are running the same configuration. The state on the 2 REs shall not exactly 
+be the same at a given instant except in rare cases. This is due to the 
+inherent delays in the state getting populated in the backup RE - afterall the 
+backup shall rely on processing the expliclitly replicated state from the 
+master and also rely on generating other state based on the state that PIM on 
+the master RE populated into the kernel. This shall induce a certain time-lag
+(with respect to the master) in the backup in populating the control state.
+
+Additionally, the PIM control state and the various multicast 
+route/nexthop/dynamic-interface state may not be the same for both the REs
+due to configuration mismatches and transient non-convergence of unicast 
+routing. 
+
+Configs on the 2 REs at a given instant could be different for reasons:
+ - Inadvertent: There can be small time-windows in which
+   time lags in committing the configs on the 2 REs and the said configs
+   becoming active on the 2 REs cause transient config-mismatches.
+ - Intentional: If the use of "commit" on an RE was allowed with NSR
+   configured.
+
+On the backup RE, the various multicast state that is visible from various
+PIM and multicast operational commands shall also be predicated by the local
+config. Only that PIM/multicast control state shall become available from the
+operational commands that is supported by the local config at the time of the
+execution of the operational command.
+
+PIM relies on unicast routing - the RPF lookups - to determine its control 
+state. Thus across RE switch-overs, the unicast routing state shall also
+play a role in the active PIM control state. At any instant, the backup RE
+shall maintain its PIM control state based on its local unicast routing and
+its own local configuration. Any PIM control state learnt from the master
+RE that does not conform to the backup's view of the config and the unicast
+routing shall not be installed into the PIM control state. However, such
+state shall not be summarily rejected until the backup RE becomes a master 
+post-failover.
+
+2.1 Features to be supported:
+    - Dense mode.
+    - Sparse mode. (Refer Caveats - section 3).
+    - SSM
+
+    - StaticRP
+    - AutoRP
+    - Bootstrap router
+
+    - BFD support.
+
+2.2 Features to not be supported:
+    - IPv6 support.
+    - Ngen MVPN: NSR for this feature will supported in a later release
+    - IGMP snooping: this feature is still under development.
+    - PIM knobs that are excluded: TBL
+          pim-join-load-balance
+          mvpn 
+          vpn-group-address
+      The above is made incompatible with PIM NSR using CLI commit check error. 
+    - Rosen MVPN support (Refer Caveats - section 3).
+         Rosen is not currently supported. Rosen MVPN is made incompatible 
+      with PIM NSR usign CLI commit check error. 
+   - IGMP/MLD Exclude support
+   - Policy related features:
+        nbr-policy
+        join-policy
+        BSR policies
+        Scope policies
+        Flow-maps 
+        RPF check policies
+
+    - Any New PIM features that have been developed post 9.2. 
+    - Register state sync - Will be addressed as part of RLI 6259.
+
+2.2.1 Features that need enhancements:
+
+  Asserts: Please note that no explicit replication of Assert state is done.
+For downstream state, we just rely on the Assert happening again to
+re-instantiate proper Assert state on the downstream interfaces after
+switchover.
+
+  RPF=>RPF' : For RPF changed to RPF' caused by an upstream assert war no explicit
+replication is done. We just rely on the internal mechanics of the protocol to
+reinstantiate upstream assert state (that shall appropriately set the RPF
+neighbor) after a switchover.
+
+2.3 State maintenance
+PIM is implemented in rpd. 
+The backup RE shall not send any PIM control packets and nor shall it
+receive any PIM control packets from the neighbors. 
+
+NSR for PIM shall rely on states explicitly
+replicated by rpd, state replicated by the kernel and state generated by the
+rpd on the RE when it becomes master post-failover.
+
+2.3.1 Replicated (by rpd) state
+      - PIM neighbor, SG, & RPSet state. More details about this shall be
+        provided in the design specification.
+
+2.3.2 Learnt (Kernel replicated) state
+      - Ifls.
+      - Routes & nexthops created by the master RE.
+      All of the learnt state that is needed for PIM NSR is already
+      replicated by the kernel as part of the generic GRES functionality.
+      
+2.3.3 Post-failover generated state:
+      The PIM control state created on a master RE is reliant on the
+      configuration, PIM state machines and on unicast routing.
+      The configuration and unicast routing can be non-congruent on the 2
+      REs at any given instant. When RE fail-over takes place, the new master
+      RE shall generate additional state and/or delete existing state based on
+      its local config and also based on its unicast routing state.
+
+2.4 CLI
+All multicast related CLI commands will work on both the master RE and the
+backup RE except the below (please refer PR 290504).
+
+cli>clear pim join
+cli>clear pim register
+cli>clear pim statistics
+
+2.4.1 Configuring PIM NSR
+As with NSR for other routing protocols, to configure PIM NSR, BOTH GRES and
+NSR must be enabled. Enabling NSR takes care of enabling the control plane
+maintenance of state across RE fail-overs and enabling GRES enables maintenance
+of kernel (&PFE) state to enable minimally interrupted forwarding across
+RE fail-overs.
+
+Enabling GRES:
+  set chassis redundancy graceful-switchover
+
+Enabling NSR:
+  set routing-options nonstop-routing
+
+Graceful-restart and NSR are two different ways to address the same set of
+problems. Therefore, the configuration of the 2 shall not be allowed at the
+same time. This is a common configuration restriction for all protocols that
+are configured under "set protocols ...".
+
+2.4.2 Trace flags:
+
+All existing PIM trace flags shall work as usual.
+
+The multicast routing-options will use the nsr-sychronization flag that 
+already exists at the routing-options level.
+
+The following news flag(s) will be added to PIM.
+
+      protocols {
+        pim {
+           traceoption {
+      	     ...
+   	     flag nsr-synchronization detail;
+             ...
+           }
+        }
+      } 
+
+2.5 Error logging:
+Configuration for graceful restart and NSR shall not be supported at the 
+same time. Attempts to configure so shall result in commit errors just as for
+other protocols. This is already implemented.
+
+2.6 Assumptions
+The use of "commit" is disallowed for NSR configurations. Rather only
+"commit-sync" shall be allowed once NSR is enabled on an RE.
+
+3.  CAVEATS
+ - Initially, the following will not be supported:
+      + NSR on a RP router.
+      + Rosen MPVN support.
+
+   A CLI check will be added to make the above incompatible with PIM NSR.
+    PIM NSR can be explicitly disabled using the cli 
+    #set protocols pim nonstop-routing disable 
+ 
+
+ - Performance expectations: While PIM NSR aims to minimize traffic disruption
+   at RE switch-over, there shall be cases where traffic for some multicast
+   sessions shall be disrupted. These multicast sessions would the ones for
+   which the master (just prior to fail-over) tried to replicate some PIM
+   control state, however, the master died before said state could be 
+   communicated to the backup RE. This is predicated by the fact that at no 
+   given instant of time would the 2 REs be in complete sync with respect to 
+   PIM control state. It is *IMPORTANT* that PIM NSR not be treated as, even a 
+   theoretically, near-perfect solution to provide near-flawless multicast 
+   session forwarding across RE switch-overs. While PIM NSR shall provide for 
+   improved multicast session forwarding (please refer Section 1 for "Goals") 
+   with respect to graceful restart in most cases, it shall have limitations 
+   in terms of some traffic loss across RE switchovers. However, PIM NSR shall 
+   generally provide for a better switchover experience in selectively 
+   upgrading the software on the REs, as compared to graceful restart.
+
+ - Statistics: PIM statistics shall not be replicated across REs. As a result,
+   the PIM counters on the backup shall not keep track of the values for the
+   counters on the master. The backup shall start to keep track of the
+   statistics only after it becomes a master post-switch-over. After failover, 
+   we shall start the counters with value of 0.
+
+ - Logical router support: NSR as a generic offering does not support logical
+   routers. PIM NSR shall also not support logical routers.
+
+ - Ngen MVPN:  This feature uses PIM in the VRF customer instance. NSR for 
+   this feature shall not be supported at this time.
+
+ - MLD: Just as IGMP is a helper protocol for PIM for IPv4, MLD is a helper 
+   protocol for PIM for IPv6. There is no plan to enable MLD to work with NSR 
+   functionality of PIM at this stage. Therefore, IPv6 functionality for PIM 
+  (relies on MLD) shall not be supported at this stage.
+
+ - IGMP snooping: This feature is currently under development and currently has
+   no requirement for NSR support.
+
+ - MSDP: NSR for MSDP is not a requirement at this time.
+
+4.  OTHER REQUIREMENTS
+
+N/A
+
+5.  IMPLEMENTATION DETAILS
+
+Design and implementation details have been documented in [PIM-NSR-DS].
+
+6.  PERFORMANCE
+
+Since PIM NSR relies on explicitly replicating some PIM control state from
+the master RE to the backup, the master RE shall have some performance
+impact on account of having to do extra work in replicating the state.
+
+While there is no quantitative way to estimate the extra impact, the impact
+would be most apparent in cases where configuration is being changed at a time
+when lots of PIM control state has got updated/add/deleted on the master RE
+during a very short interval of time - this could be due to PIM control state
+churn on the network due to various PIM events (For more details, please
+refer the PIM RFCs).
+
+7.  COMPATIBILITY ISSUES
+
+For PIM NSR to work, both REs should support PIM NSR. If one of the REs does
+not support PIM NSR, then the feature shall be as good as disabled.
+
+Upgrade path for customer running PIM-related features pre-9.3 that are
+ unsupported with PIM-NSR in 9.3:
+http://cvs.juniper.net/cgi-bin/viewcvs.cgi/sw-projects/os/nsr/pim-nsr-unsupported-features-upgrade-path.txt?view=markup
+
+8.  SECURITY ISSUES
+
+N/A
+
+9.  Graceful RE Switchover (GRES), Hobson or ISSU Impact 
+
+PIM graceful restart support (which is a part of the GRES offering) is 
+documented in PIM-GR-RST.
+
+An application note is created which advises the customers in effecting
+a smooth transition of ISSU process with PIM NSR. 
+
+10.  SDK Impact
+
+N/A
+
+11.  NOTES
+
+N/A
+
+12.  GLOSSARY
+IGMP    Internet Group Management Protocol
+MSDP    Multicast Source Discovery Protocol
+NSR     Non Stop Routing
+PIM     Protocol Independent Multicast
+RE      Routing Engine
+
+
+13.  REFERENCES
+
+[NSR]         Non-Stop Routing (NSR) - Functional specification
+              sw-projects/os/nsr/software_spec_3083.txt
+[IGMP-NSR]    NSR: IGMP stateful replication - Functional Specification
+              sw-projects/os/nsr/igmp-nsr-funcspec.txt
+[PIM-GR-RST]  Functional Specification - Graceful Restart for PIM
+              sw-projects/routing/multicast/graceful-restart/func-spec
+[PIM-NSR]     NSR: PIM stateful replication - Functional Specification
+              sw-projects/os/nsr/pim-nsr-funcspec.txt
+[PIM-NSR-DS]  NSR: PIM stateful replication - Design Specification
+              sw-projects/os/nsr/pim-nsr-designspec.txt
+[PIM-DM]      Protocol Independent Multicast - Dense Mode (PIM-DM):
+              Protocol Specification (Revised). RFC3973
+[PIM-SM]      Protocol Independent Multicast - Sparse 
+              Mode (PIM-SM): Protocol Specification (Revised). RFC4601.
+
+
+14.  REVIEW COMMENTS

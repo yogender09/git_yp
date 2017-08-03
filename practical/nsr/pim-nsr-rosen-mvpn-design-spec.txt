@@ -1,0 +1,1016 @@
+$Header: /cvs/juniper/sw-projects/os/nsr/pim-nsr-rosen-mvpn-design-spec.txt,v 1.4 2011/05/31 20:01:23 yizhang Exp $
+
+
+Process Template J3.02.P05.T03S
+
+PIM NSR support for Draft Rosen MVPN Design Specification
+
+Author: Yi Zhang <yizhang@juniper.net>
+
+Copyright (C) 2011, Juniper Networks, Inc.
+
+NOTICE: This document contains proprietary and confidential
+information of Juniper Networks, Inc. and must not be distributed
+outside of the company without the permission of Juniper Networks
+engineering.
+
+
+TABLE OF CONTENTS
+
+1.	INTRODUCTION
+1.1	SCOPE
+1.2	REVISION HISTORY
+1.3	REFERENCED DOCUMENTS
+1.4	GLOSSARY
+2.	ARCHITECTURE OVERVIEW
+2.1	DESIGN REQUIREMENTS
+3.	DESIGN DETAILS
+3.1	ASSUMPTIONS AND DEPENDENCIES
+3.2	HIGH LEVEL DESIGN
+3.3	DESIGN RISK ITEMS
+3.4	IMPACTED SOFTWARE COMPONENTS
+3.4.1	SOFTWARE COMPONENTS IMPACTED BY DESIGN
+3.4.2	POTENTIALLY IMPACTED SOFTWARE COMPONENTS
+3.5	COMPONENT INTERACTIONS
+3.5.1	PIM NSR Module
+3.5.1.1 PIM NSR Definition
+3.5.1.2 PIM NSR Module Changes
+3.5.1.3 pim_rdb_mdt_t
+3.5.1.4 MDT mirroring APIs
+3.5.2   PIM MT Module
+3.5.2.1 PIM MT Module Definition
+3.5.2.2 PIM MT module changes
+3.5.3   PIM Module
+3.5.3.1 PIM Module Definition
+3.5.3.2 PIM Module Changes
+3.5.3.3 Rosen 7 Changes
+3.5.4   Mirroring Module
+3.5.4.1 Mirroring Module Definition
+3.5.4.2 Mirroring Module Changes
+3.6	INTER PROCESS COMMUNICATION
+3.7	CONCURRENCY STRATEGY
+3.8	STARTUP STRATEGY
+3.9	MEMORY MANAGEMENT
+3.10	FAULT AND EXCEPTION HANDLING
+3.11	DEBUG SUPPORT
+3.11.1  CLI Commands
+3.11.1.1 Show PIM interfaces and neighbors
+3.11.1.2 Show PIM joins
+3.11.1.3 Show multicast routes
+3.11.1.4 Show pim mdt
+3.11.1.5 Show pim mdt data-mdt-joins
+3.11.2  PIM NSR trace logs
+3.12	TESTABILITY, SERVICEABILITY AND DIAGNOSE-ABILITY
+3.13	CONSTRAINTS AND LIMITATIONS
+3.14	REJECTED DESIGN ALTERNATIVES
+4.	PATENT OPPORTUNITIES
+5.	PERFORMANCE
+5.1	PERFORMANCE RELATED RESOURCES
+5.2	TARGET PERFORMANCE
+5.3	64-BIT KERNEL SUPPORT
+6.	SCALING
+7.	MULTI-CORE ENVIRONMENT
+8.	COMPATIBILITY ISSUES
+9.	HIGH AVAILABILITY (HA)
+9.1	GRACEFUL RE SWITCHOVER (GRES), ISSU IMPACT
+9.2	NSR IMPACT
+10.	LOGICAL SYSTEM / ROUTING INSTANCE IMPACT
+11.	MULTI / VIRTUAL CHASSIS IMPACT (HOBSON OR CHAI)
+12.	PLATFORMS SUPPORTED
+13.	SDK IMPACT
+13.1	SDK CUSTOMER USAGE
+14.	JUNOS READY SOFTWARE CONSIDERATIONS
+15.	FREE SOFTWARE CONSIDERATIONS
+16.	3RD PARTY SOFTWARE CONSIDERATIONS
+16.1	FUNCTIONAL ROLE OF 3RD PARTY CODE WITHIN JUNOS
+16.2	INTEGRATION DETAILS OF 3RD PARTY CODE WITHIN JUNOS
+17.	POSIX NON-COMPLIANCE
+18.	FUTURE CONSIDERATIONS
+19.	REVIEW COMMENTS
+19.1	REVIEW STAKEHOLDER MATRIX
+
+
+INDEX OF FIGURES
+----------------
+FIGURE 1: Rosen NSR architecture 
+FIGURE 2: Mirroring diagram fro data MDT
+FIGURE 3: PIM MDT RDB structures on the master RE
+FIGURE 4: PIM MDT RDB structures on the backup RE
+FIGURE 5: Message format for MDT RDB mirroring
+
+
+
+1. INTRODUCTION
+
+This document describes the design details of Non Stop Routing (NSR) support 
+for Rosen MVPN.
+
+PIM NSR is already supported in the current release. Now we extend the NSR 
+support to Rosen MVPN. PIM will mirror the default MDT and data MDT info to the
+ backup RE. After RE switchover, The new master RE keeps all the mirrored MDT 
+and PIM states. There is no need to re-learn the PIM neighbor over the default 
+MDT or transit between default MDTs and data MDTs, so the existing or new 
+customer flows will not be disrupted.
+
+1.1 SCOPE
+
+When NSR is enabled in Rosen MVPN setup, kernel will sync the dynamic mt 
+interfaces, including default encap, default decap and data mdt interfaces, to 
+the backup RE. The MT module on the backup RE will be notified with the mt 
+interface events. MT module will then create the mt interfaces based on the 
+configuration and the sync'd data.
+
+PIM NSR is involved to form the PIM neighbors over the created default mt encap 
+interface. PIM NSR also sync's the PIM states in the provider space, which are 
+needed to support the MT tunnel.
+
+When a data MDT is created on the master RE, the data MDT related info, 
+including the customer source/group pair, provider source/group pair, and the 
+data mdt ifd index/ifl subunit, will be mirrored to the backup RE thru 
+mirroring APIs. This mirror happens on both ingress and egress PEs.
+
+Sometimes an egress PE doesn't have any local PE receiver when it receives a 
+data MDT Join TLV. The egress PE will cache the Join info but won't process 
+further with the Join TLV. The join cache info will also be mirrored to the 
+backup RE.
+
+If the NSR connection between the master RE and the backup RE is lost due to 
+any reason, the backup RE will clean up the mirrored MDT data as well as the 
+MT tunnels and stream info triggered by the mirrored data. The master RE will 
+keep the mirrored data but mark all of the data as unmirrored. When the NSR 
+connection is back up, the master RE will re-mirror all the MDT info and the 
+backup RE will re-build the MT tunnels from the scratch. 
+
+1.2 REVISION HISTORY
+
+  Revision: 1.1
+      Initial Draft. 04/29/2011.
+      Yi Zhang
+
+  Revision: 1.2
+      Updated with first review comments. 
+
+  Revision: 1.3
+      Updated with changes for Rosen7 default MT tunnels. 
+
+  Revision: 1.4
+      Updated with comments after review meeting. 
+
+1.3 REFERENCED DOCUMENTS
+
+[Rosen-NSR-FS]   PIM NSR support for Rosen MVPN Functional Spec.
+                 sw-projects/os/nsr/pim-nsr-rosen-mvpn-funcspec.txt
+
+[PIM-NSR]        PIM NSR Phase 2 and Phase 3 Functional Specification
+                 RLI 6259, RLI 11800
+                 sw-projects/os/nsr/pim-nsr-6259-11800-funcspec.txt
+
+1.4 GLOSSARY
+
+ MDT       Multicast Distribution Tree
+ MT        Multicast Tunnel
+ NSR       Non Stop Routing
+ RDB       Replication DataBase
+
+2. ARCHITECTURE OVERVIEW
+
+Rosen NSR relies on kernel (ksyncd) and the mirroring mechanism to sync the 
+MDT related data to the backup RE. Figure 1 depicts the architecture and the 
+synchronizing procedures. 
+
+
+              +--------------+              +---------------+
+              |              |  5 (mirror)  |               |
+              |     RPD     -+--------------+->   RPD       |
+              | 1         ^  |              |   |        ^  |
+              | |         |  |              |   V 4.5    |  |
+              +-+---------+--+              +------------+--+
+              | |         |  |              |            |  |
+              | v         2  |              |            4  |
+              |   Kernel    -+--------------+->  Kernel     |
+              |              |   3 (ksyncd) |               |
+              +--------------+              +---------------+
+
+                Master RE                      Backup RE
+
+                      Figure 1: Rosen NSR architecture
+
+Rosen NSR synchronizing procedures:
+
+  1) The master RE triggers the creation of the mdt ifl either due to 
+     configuration (default mt interfaces) or because the rate threshold is 
+     exceeded (data MDTs). RPD will send a mt ifl ADD request to kernel. 
+  2) The kernel on the master RE notifies the MT module in RPD once the mt ifl 
+     is added in the kernel. RPD will then create the mt ifl and build up PIM 
+     neighbors over the mt (default encap) interface.
+  3) The kernel on the master RE also syncs the created mt ifls to the backup 
+     RE thru ksyncd. 
+  4) The kernel on the backup RE notifies the backup RPD about the new mt ifls. 
+     The backup RE will then create the mt ifls accordingly.
+  4.5) Based on the Rosen configuration, the backup RE also tries to trigger 
+     the creation of the default mt ifls, but it won't send the mt ifl add 
+     message to kernel. The backup RPD won't allocate the ifd index or ifl 
+     subunit for the default mt ifls either. It'll only choose the same ifd 
+     index and ifl subunit notified from the backup kernel.
+  5) When data MDT is created on the master RE, related MDT info will be sync'd 
+     to the backup RE thru the existing mirroring APIs. The MDT info includes 
+     c-src/c-grp, p-src/p-grp, mt ifd index, mt ifl subunit, and MDT flags 
+     indicating whether the MDT is for tunnel stream info or join cache info 
+     only. Once the backup RE decodes the mirrored data, it will create the 
+     tunnel stream info or join cache info accordingly. 
+
+Similar procedures apply to the mt ifl change and delete events too.
+
+The above step 4) and step 5) can arrive at the backup RE in different orders. 
+The backup RE has to expect receiving mirrored data MDT info without having 
+data mdt ifl created, or vice versa. 
+
+2.1 DESIGN REQUIREMENTS
+
+Non stop routing for Rosen MVPN. There should be no traffic disruption for 
+customer streams after RE switch over.
+
+The backup RE should keep the same default MDT and data MDT info as the master 
+RE. The default MDT and data MDT should not be rebuilt after the RE switch 
+over.
+
+3. DESIGN DETAILS
+
+
+3.1 ASSUMPTIONS AND DEPENDENCIES
+
+Rosen NSR interacts closely with PIM NSR. After Rosen NSR syncs the default mt 
+interfaces to the backup RE, PIM NSR will take actions to process Hello packets 
+and bring up PIM neighbors over the mt encap interface on the backup RE. PIM 
+NSR is also responsible for synchronizing the PIM states and multicast routes 
+to the backup RE, in both provider space and customer (VPN) spaces. 
+
+3.2 HIGH LEVEL DESIGN
+ 
+This feature extends the existing PIM NSR support to Rosen MVPN scenarios. 
+
+A new mirroring type for data MDT is added in mirror component. A new redundant 
+database for data MDT (pim_rdb_mdt_t) is added in PIM NSR module. PIM MDT RDB 
+entries are created on the master RE based on the data MDT info. The RDB entries
+ are mirrored to the backup RE thru the mirroring APIs. Then PIM will create the
+ data MDT tunnel, stream info and/or join cache info on the backup RE. Figure 2 
+shows a brief diagram on how the mirroring is done. 
+
+                                          |
+ +--------------+                         |                     +--------------+
+ |              |      +---------+        |     +---------+     |              |
+ |   Data mdt   | add  |         | mirror_add   |         | add |   Data mdt   |
+ | stream/cache +----->| add RDB +--------+---->| add RDB +---->| stream/cache |
+ |     info     |      |         |        |     |         |     |    info      |
+ |              |      +---------+        |     +---------+     |              |
+ +--------------+                         |                     +--------------+
+     |     |           +---------+        |     +---------+        ^      ^
+     |     | update    |         |mirror_update |         | update |      |
+     |     +---------->| mod RDB +--------+---->| mod RDB +--------+      |
+     |                 |         |        |     |         |               |
+     |                 +---------+        |     +---------+               |
+     |                                    |                               |
+     | del  +-----------+ Y +--------+ mirror_del   +--------------+      |
+     +----->| mirrored ?+-->| mirror +----+-------->|    cleanup   | del  |
+            +-----------+   |  first |    |         | stream/cache +------+
+                 |N         +--------+    |         |     info     |
+                 |              |del      |         +--------------+
+                 |              V         |                 |
+                 |  del     +---------+   |                 | del +---------+
+                 +--------->| del RDB |   |                 +---->| del RDB |
+                            +---------+   |                       +---------+
+                                          |
+                               Master RE  |  Backup RE
+
+                      Figure 2: Mirroring diagram fro data MDT
+
+The MT ifls are not sync'd to the backup RE by mirroring. Instead, they're 
+sync'd thru kernel (ksyncd). The master RPD triggers the creation of the default
+ mt ifls based on the configuration. RPD picks the ifd index and finds a free 
+ifl subunit, and then sends the mt ifl ADD message to kernel. Kernel will sync 
+the MT ifls to the kernel on the backup RE thru ksyncd. The PIM MT module on 
+both master RE and backup RE will be notified about the MT ifl additions. The 
+MT module then creates the MT ifls on both the master RE and the backup RE, 
+using the same ifd index and ifl subunit. The backup RE will never choose a 
+free ifl subunit. 
+
+On the master RE, a customer multicast flow will be moved on to a data mdt when 
+the flow rate exceeds the configured threshold. The flow can trigger a new data 
+mdt or reuse an existing data mdt, depending on the Rosen configuration. Rosen 
+NSR creates a RDB entry for this customer flow and mirrors the RDB entry to the 
+backup RE, so the backup RPD can migrate the same flow on to the same data MDT. 
+The RDB entry contains the mt ifd index and ifl subunit this customer flow uses 
+on the master RE. The backup RE doesn't decide whether to reuse a data mdt or 
+not. It simply finds the data mdt ifl for this flow based on the mirrored ifd 
+index/ifl subunit. If the data mdt ifl is not sync'd by kernel yet, the RDB 
+remains unresolved until kernel notified RPD that this data mdt ifl is ready.
+
+When a data MDT Join TLV is received on an egress PE, a join cache info will be 
+created. If there is no down stream receiver on this PE, no data MDT stream or 
+tunnel info will be created. If local PE receivers exist, data MDT stream info 
+will be created and bound to the default mt decap interface. One RDB entry will 
+be created for the join cache info. The RDB mdt flags will indicate whether the 
+tunnel stream info is created or not. Rosen NSR mirrors this RDB entry to the 
+backup RE. As a result, the join cache info (and tunnel stream info if present) 
+will be created on the backup RE.
+
+Once data MDT is established on the master RE, the ingress PE will periodically 
+send out data MDT Join TLV on the default MT tunnel. The ingress PE also 
+periodically check the statistics on each customer flow. The customer flow will 
+be moved back to the default MT if the traffic rate is lower than the threshold.
+ The egress PE maintains a data MDT join cache timer. It will timeout the data 
+MDT and move the flow back to the default MT if no Join TLV is received before 
+the timer expires. However there is no real traffic flow on the backup RE, so 
+the backup RE won't check the threshold or trigger the data MDT transition. The 
+ingress PEs on the backup RE won't send out data MDT Join TLV or even start the 
+periodic timer. The egress PEs also won't timeout the Join cache info. The 
+backup RE only listen and respond to the mirrored MDT events from the master RE.
+
+3.3 DESIGN RISK ITEMS
+ 
+None.
+
+3.4 IMPACTED SOFTWARE COMPONENTS
+
+A new mirroring component is added for Rosen NSR. This will add a new mirroring 
+type in the current mirroring module.
+
+The new MDT mirroring component will also interact with PIM NSR component to 
+sync the PIM states and multicast routes needed for default and data MDTs. 
+
+The new component also communicates with PIM MT module on how to sync and create
+ the MT interfaces and tunnels on the backup RE.
+
+Since the backup RE doesn't send out PIM J/P messages or maintain data MDT 
+timers, related PIM functions will also be changed.
+
+3.4.1 SOFTWARE COMPONENTS IMPACTED BY DESIGN
+
+The following components will be impacted by this RLI.
+
+ 1) Common NSR mirroring component
+ 2) PIM NSR module
+ 3) PIM MT module
+ 4) Common PIM module
+
+3.4.2 POTENTIALLY IMPACTED SOFTWARE COMPONENTS
+
+The PIM NSR mirroring mechanism is currently being changed under RLI 14680. 
+This change could have potential impact with the current code changes.
+
+3 .5 COMPONENT INTERACTIONS
+
+3.5.1 PIM NSR Module
+
+3.5.1.1 PIM NSR Definition
+
+PIM NSR module mirrors the PIM neighbor, RP, and Join/Prune states from the 
+master RE to the backup RE. Now we extend this module to mirror data MDT info.
+
+3.5.1.2 PIM NSR Module Changes
+
+A new data structure pim_rdb_mdt_t is added in PIM NSR module. This data 
+structure contains MDT Replication DataBase (RDB) info which is needed to build 
+up data mdt stream or join cache info on the backup RE. New mirroring APIs are 
+created to mirror the addition/update/deletion of the RDB entry when 
+corresponding data mdt stream info or join cache info is changed. Two new files 
+pim_rdb_mdt.c and pim_mirror_mdt.c are created for the new data structure and 
+new APIs. 
+
+The following sections describe the changes in detail.
+
+3.5.1.3 pim_rdb_mdt_t
+
+This MDT RDB entry contains data MDT related info, including c-src/grp pair, 
+p-src/grp pair, mt ifd index/ifl subunit, and mdt flags. This entry is shared 
+by the tunnel stream info and the join cache info. Ingress PE can only have 
+tunnel stream info, while egress PE can have join cache info and tunnel stream 
+info (if local PE receiver exists). The mdt flags indicate whether the RDB 
+entry is for tunnel stream info only or join cache info only or both. 
+
+This entry roots on patricia tree psc_mdt_root in PIM rdb context. This entry 
+also roots on the unresolved tree psc_mdt_unrslv_root, as well as stays in the 
+MDT mirrored thread, in the same rdb context. The PIM rdb context exists on 
+both master RE and backup RE, however the pim_rdb_mdt_t entry is not identical 
+on both REs. This entry will never be in the unresolved tree on the master RE, 
+and it's always in the MDT mirrored thread on the backup RE.
+
+Figure 3 depicts how pim_rdb_mdt entries are stored on the master RE. The RDB 
+entry is always resolved, so we will never expect it to be in the unresolved 
+tree. The entry will be in the mirrored thread if mirroring API has mirrored it 
+to the backup RE. When the NSR connection is broken and re-setup, all MDT RDB 
+entries will be moved off the mirrored thread. The master RE will try to 
+re-mirror all the RDB entries again. 
+
+    pim_rdb_ctx
+      |  |  |
+      |  |  +---> psc_mdt_root
+      |  |             | key = (kernel_inst_id, c-grp, c-src)
+      |  |             +---->pim_rdb_mdt-->... 
+      |  |
+      |  +---> psc_mdt_unrslv_root (always empty on the master RE)
+      |
+      +----> psc_mdt_mirrored_thr_head
+                        |
+                        +---> pim_rdb_mdt-->...
+
+               Figure 3: PIM MDT RDB structures on the master RE
+
+Figure 4 depicts how pim_rdb_mdt entries are stored on the backup RE. The RDB 
+entry stays on the unresolved tree at first, if the data mdt ifl is not sync'd 
+yet. After the data mdt ifl is sync'd, all related MDT RDB entries will be 
+processed and resolved. After RE switch over, RDB entries will be simply 
+removed by the new master RE if they still remain unresolved. On the backup RE, 
+all MDT RDB entries are linked into the mirrored thread. 
+
+    pim_rdb_ctx
+      |  |  |
+      |  |  +---> psc_mdt_root
+      |  |             | key = (kernel_inst_id, c-grp, c-src)
+      |  |             +---->pim_rdb_mdt-->...
+      |  |
+      |  +---> psc_mdt_unrslv_root 
+      |                | key = (mt ifl subunit, c-grp, c-src)
+      |                +----> pim_rdb_mdt -->...
+      |
+      +----> psc_mdt_mirrored_thr_head
+                        |  (Always on the mirrored thread)
+                        +---> pim_rdb_mdt-->...
+
+               Figure 4: PIM MDT RDB structures on the backup RE
+
+3.5.1.4 MDT mirroring APIs
+
+When there is a data MDT related change, corresponding MDT RDB entry will be 
+added/updated/deleted to/from the RDB database. The addition/update/deletion 
+will then be mirrored to the backup RE. The backup RE decodes the mirrored 
+RDB entry and adjusts the related data MDT accordingly. Figure 2 depicts the 
+mirroring procedures for MDT RDB. 
+
+The following functions are used to maintain the MDT RDB entries.
+
+         Master RE                        Backup RE
+      pim_mdt_add_rdb_on_master       pim_mdt_add_rdb_on_backup
+      pim_mdt_update_rdb_on_master    pim_mdt_update_rdb_on_backup
+      pim_mdt_rdb_adj_stream_info
+      pim_mdt_del_rdb                 pim_mdt_del_rdb
+
+On the master RE, pim_mdt_add_rdb_on_master builds MDT RDB entry from the tunnel
+stream info on the ingress PE, and from the join cache info on the egress PE. 
+Besides the join cache info, the egress PE may or may not have the tunnel stream
+info depending on whether there is local PE receivers or not. 
+pim_mdt_rdb_adj_stream_info is used to handle the case on the egress PE when 
+the tunnel stream info is added or deleted. This function simply set/reset the 
+mdt flag PIM_RDB_MDT_STREAM_INFO in the corresponding RDB entry. Any change of 
+this RDB entry will be mirrored to the backup RE. 
+
+pim_mdt_add_rdb_on_backup and pim_mdt_update_rdb_on_backup on the backup RE 
+simply copy the received RDB entry into the local RDB entry. These new or 
+updated RDB entries will be resolved if the matching MDT tunnel is found.
+
+The following functions are used to mirror the change of the RDB entries.
+
+         Master RE                         Backup RE
+      pim_mdt_add_mirror
+      pim_mdt_update_mirror
+      pim_mdt_delete_mirror
+      pim_mirror_mdt_encode            pim_mirror_mdt_decode
+
+Before a RDB entry is deleted on the master RE, we need to check if this RDB 
+entry is mirrored to the backup RE. If it's already mirrored, the deletion 
+will be mirrored to the backup RE first. If the RDB entry is still in the 
+mirroring queue, the mirror will be cancelled. If the RDB entry is not 
+mirrored and not in the mirroring queue, we can simply delete the RDB entry. 
+
+Before the backup RE deletes a RDB entry, it needs to make sure the related 
+tunnel stream info and/or join cache info are deleted. 
+
+pim_mirror_mdt_encode and pim_mirror_mdt_decode are mirroring registry 
+functions used to encode and decode the RDB entry. Each field in the RDB entry 
+is TLV encoded on the master RE. The backup RE will decode the TLVized message 
+received from the master RE. Figure 5 shows the TLV streams for one MDT RDB 
+entry. 
+
+    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+    |                     Kernel Instance Index                     |
+    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+    | Address Family|    flags      |      Data MDT Ifd index       |
+    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+    |                      Data MDT Ifl subunit                     |
+    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+    |                      C-Src address                            |
+    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+    |                      C-Grp address                            |
+    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+    |                      P-Src address                            |
+    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+    |                      P-Grp address                            |
+    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+
+            Figure 5: TLV stream for MDT RDB entry
+
+3.5.2 PIM MT Module
+
+3.5.2.1 PIM MT Module Definition
+
+PIM MT module maintains both default MT and data MDT tunnels. PIM uses 
+pim_mt_tunnel_add and pim_mt_tunnel_del to interact with PIM MT module on 
+tunnel addition or deletion. PIM MT module is also responsible for sending mt 
+ifl messages to kernel and listening for kernel's response thru 
+pim_mt_ifachange. 
+
+3.5.2.2 PIM MT module changes
+
+PIM MT module is not changed on the master RE. When default or data MDTs are 
+being created, PIM MT will find a ifd index and a free ifl subunit for the new 
+tunnel. The ifl add message is then sent to kernel. After kernel creates the 
+mt ifl successfully, it will notify the PIM MT thru pim_mt_ifachange. It will 
+also sync the mt ifl to the kernel on the backup RE, thru ksyncd. The backup 
+kernel notifies the PIM MT on the backup RE thru pim_mt_ifachange.
+
+PIM MT on the backup RE can also trigger to create the default MTs, but it will 
+never try to send the mt ifl messages to kernel. It won't try to allocate the 
+mt ifd index or ifl subunit either. Once the pim_mt_ifachange notification 
+arrives from the backup kernel, PIM MT will allocate MT tunnels using the ifd 
+index and ifl subunit notified by kernel. 
+
+3.5.3 PIM Module
+
+3.5.3.1 PIM Module Definition
+
+PIM module decides when to create or delete default MTs and when to transit 
+from the default MT to the data MDT (or reverse transition). PIM module 
+interacts with PIM MT module on MT additions and deletions. It also communicates
+ with PIM NSR module to add/update/delete MDT RDB entries and mirror them. 
+
+3.5.3.2 PIM Module Changes
+
+The PIM module is not much changed on the master RE. If NSR is enabled, PIM 
+will build/update MDT RDB entries whenever there is MDT tunnel stream info 
+and/or join cache info changes. 
+
+The backup RE maintains the same default MTs, data MDTs, related PIM states, 
+and multicast routes as those on the master RE. However, there are several 
+timers and functions handled differently on the backup RE. 
+
+The backup RE does NOT,
+    1) Query the flow statistics from PFE, so it never decides whether a flow 
+       needs to be transited between default MT and data MDT.
+    2) Send data MDT Join TLV on the ingress PE, even though it will still
+       start the perodic timer.
+    3) Timeout a join cache info on the egress PE.
+    4) Redistribute data MDTs due to configuration change.
+
+Therefore, the following functions are simply returned on the backup RE.
+
+    pim_check_data_mdt_sg_threshold
+    pim_scale_up_data_tunnels
+    pim_scale_down_data_tunnels
+    pim_set_mdt_join_cache_timeout
+    pim_send_data_mdt_join_tlv
+
+After the RE switch over, the new master RE (old backup RE) will walk thru all 
+the pim instances and all data MDT streams. It will send out data MDT Join TLV 
+UDP packet and start periodic timer for each stream on the ingress PE. It will 
+also start join cache timeout timer for each stream on the egress PE. All 
+unresolved MDT RDB entries will be removed, and all remnant MT ifls will also 
+be removed.
+
+3.5.3.3 Rosen 7 Changes
+
+Both Rosen6 and Rosen 7 need to build MT tunnel for MT encap (or root tunnel)
+and MT decap (or leaf tunnel). Building of MT root (encap) tunnel is based on
+the configuration, which is same for Rosen6 and Rosen7. However, building of
+MT leaf (decap) tunnel is very different. Rosen6 builds static leaf tunnel 
+based on the configuration. Rosen7 doesn't build static leaf tunnel. In stead,
+it builds dynamic leaf tunnels after receiving AutoDiscovery routes from remote
+PEs.
+
+Autodiscovery routes from remote PEs are currently processed in NGen-MVPN code
+for Rosen7 case. Once inet-mdt signalling is enabled for Rosen7 instance, BGP 
+will import the active routes from bgp.mdt.0 table to <instance>.mdt.0 table.
+NGen-MVPN flashes the routes from <instance>.mdt.0 table and notifies PIM to 
+add or delete the dynamic leaf tunnels for the remote PEs. 
+
+Since NGen-MVPN NSR is not supported yet, the backup RE won't have MVPN 
+functionalities. PIM on the backup RE won't get notified about the AD route 
+changes from NGen-MVPN, even though BGP still imports the AD routes from 
+bgp.mdt.0 table into <instance>.mdt.0 table on the backup RE. To solve this 
+issue in the current code, PIM itself will start to flash the AD routes from 
+<instance>.mdt.0 table on the backup RE. The new function pim_mdt_flash flashes 
+the AD routes and trigger the addition/deletion of the dynamic leaf tunnels. 
+
+After the RE switchover, the new master RE will de-register the route flash on 
+<instance>.mdt.0 table for PIM. PIM will move back to the existing behavior, 
+listening to the notifications from NGen-MVPN again. 
+
+This Rosen7 specific changes will become redundent once NGen-MVPN NSR is 
+supported, since by then the backup RE will also have MVPN instance which can 
+trigger PIM to create Rosen7 default tunnels. This part of code should be 
+removed after Ngen-MVPN NSR support is added.
+
+3.5.4 Mirroring Module
+
+3.5.4.1 Mirroring Module Definition
+
+Mirroring module is responsible for sending the RDB entry received from a NSR 
+client on the master RE to the same client on the backup RE. NSR (including PIM 
+NSR) clients register encoding, decoding, and other mirroring functions to the 
+mirroring module. The encoded TLVized message will be transmitted to the decoding 
+function for the same client on the backup RE. 
+
+3.5.4.2 Mirroring Module Changes
+
+A new mirroring type MIRROR_DATA_PIM_MDT is added for MDT RDB. 
+pim_mdt_mirror_registry is added as a new mirroring client. 
+pim_mirror_mdt_encode and pim_mirror_mdt_decode are the encoding and decoding 
+functions for new MDT client. 
+    
+The newly added functions pim_mdt_add_mirror, pim_mdt_update_mirror, and 
+pim_mdt_delete_mirror will be mapped to the existing mirroring functions 
+mirror_add, mirror_update, and mirror_del/mirror_cancel, respectively. 
+
+
+3.6 INTER PROCESS COMMUNICATION
+
+The existing mirroring mechanism is used between PIM MDT NSR module and 
+mirroring module. 
+
+There is no new IPC mechanism added.
+
+3.7 CONCURRENCY STRATEGY
+
+N/A.
+
+3.8 STARTUP STRATEGY
+
+N/A
+
+3.9 MEMORY MANAGEMENT
+
+The existing RPD memory management mechanism is used.
+
+Both master RE and backup RE maintain MDT RDB entries for data MDT streams. One 
+MDT RDB entry maps to one tunnel stream info or one join cache info. So the 
+memory consumed by Rosen NSR increases when the number of customer multicast 
+streams are increased in VRF instances. 
+
+3.10 FAULT AND EXCEPTION HANDLING
+
+Existing fault and exception handling mechanism is used.
+
+3.11 DEBUG SUPPORT
+
+The CLI commands used to show PIM states, PIM MDT states, and multicast routes 
+for default or data MDTs can be used on the backup RE. Users should expect the 
+same output on the master RE and backup RE, except the statistics and timeout 
+values. 
+
+New PIM NSR trace logs are added for Rosen NSR. Once NSR trace is enabled, 
+pim_nsr_trace logs all the changes for MDT related events. 
+
+3.11.1 CLI Commands
+
+3.11.1.1 Show PIM interfaces and neighbors
+
+These commands show the mt interfaces and PIM neighbors over the mt- interfaces.
+The mt ifls including the subunits should match exactly between the master RE 
+and the backup RE. The neighbor count and join counts should also be same.
+
+{backup}
+root@wfpro2-a1> show pim interfaces instance VPN-A 
+Instance: PIM.VPN-A
+
+Name               Stat Mode       IP V State NbrCnt JoinCnt(sg) JoinCnt(*g) ...
+fe-0/0/0.11        Up   Sparse      4 2 DR         0           1           0 
+lo0.1              Up   Sparse      4 2 DR         0           0           0 
+lsi.1              Up   SparseDense 4 2 P2P        0           0           0
+mt-0/3/0.32768     Up   SparseDense 4 2 P2P        1           1           1
+mt-1/2/0.1081344   Up   SparseDense 4 2 P2P        0           0           0
+pe-1/3/0.32769     Up   Sparse      4 2 P2P        0           0           0
+lsi.1              Up   SparseDense 6 2 P2P        0           0           0
+
+{backup}
+root@wfpro2-a1> show pim neighbors instance VPN-A    
+Instance: PIM.VPN-A
+B = Bidirectional Capable, G = Generation Identifier,
+H = Hello Option Holdtime, L = Hello Option LAN Prune Delay,
+P = Hello Option DR Priority, T = Tracking Bit
+
+Interface           IP V Mode        Option      Uptime Neighbor addr
+mt-0/3/0.32768       4 2             HPLGT        1w1d0h 22.0.0.2   
+
+3.11.1.2 Show PIM joins
+
+This command can be used in the master instance to show the PIM states needed 
+for the default and data MDT tunnels. It can also be used in the VRF instance 
+to show the customer streams. In either case, the "keepalive timeout" value is 
+expected to be 0. 
+
+
+{backup}
+root@wfpro2-a1> show pim join extensive                   
+Instance: PIM.master Family: INET
+R = Rendezvous Point Tree, S = Sparse, W = Wildcard
+
+Group: 239.1.1.1
+    Source: *
+    RP: 22.0.0.1
+    Flags: sparse,rptree,wildcard
+    Upstream interface: Local                 
+    Upstream neighbor: Local
+    Upstream state: Local RP
+    Downstream neighbors:
+        Interface: fe-0/0/1.12            
+            22.2.12.2 State: Join Flags: SRW  Timeout: Infinity
+        Interface: mt-1/2/0.1081344       
+            22.0.0.1 State: Join Flags: SRW  Timeout: Infinity
+
+Group: 239.1.1.1
+    Source: 22.0.0.1
+    Flags: sparse,spt
+    Upstream interface: Local                 
+    Upstream neighbor: Local
+    Upstream state: None, Local Source, Local RP
+    Keepalive timeout: 0
+    Downstream neighbors:               
+        Interface: fe-0/0/1.12            
+            22.2.12.2 State: Join Flags: S   Timeout: Infinity
+        Interface: mt-1/2/0.1081344       
+            22.0.0.1 State: Join Flags: S   Timeout: Infinity
+
+Group: 239.1.1.1
+    Source: 22.0.0.2
+    Flags: sparse,spt
+    Upstream interface: fe-0/0/1.12           
+    Upstream neighbor: 22.2.12.2
+    Upstream state: None, Local RP, Join to Source
+    Keepalive timeout: 0
+    Downstream neighbors:
+        Interface: fe-0/0/1.12 (pruned)
+            22.2.12.2 State: Prune Flags: SR   Timeout: Infinity
+        Interface: mt-1/2/0.1081344       
+            22.0.0.1 State: Join Flags: S   Timeout: Infinity
+
+Group: 239.5.5.0                       <-- for Data MDT 
+    Source: 22.0.0.1
+    Flags: sparse,spt
+    Upstream interface: Local                 
+    Upstream neighbor: Local            
+    Upstream state: Local Source, Local RP
+    Keepalive timeout: 0
+    Downstream neighbors:
+        Interface: fe-0/0/1.12            
+            22.2.12.2 State: Join Flags: S   Timeout: Infinity
+
+{backup}
+root@wfpro2-a1> show pim join extensive instance VPN-A 
+Instance: PIM.VPN-A Family: INET
+R = Rendezvous Point Tree, S = Sparse, W = Wildcard
+
+Group: 228.5.5.5
+    Source: 22.1.11.9
+    Flags: sparse,spt
+    Upstream interface: fe-0/0/0.11           
+    Upstream neighbor: Direct
+    Upstream state: Local Source
+    Keepalive timeout: 0               <-- 0 timeout value
+    Downstream neighbors:
+        Interface: mt-0/3/0.32768         
+            22.0.0.2 State: Join Flags: S   Timeout: Infinity
+
+3.11.1.3 Show multicast routes
+
+This command can also be used in master instance or VRF instances. It's usually 
+one of the first commands to check when the MT tunnel or customer flow is not 
+up running. 
+
+On the backup RE, there is no statistics value in the output. The timeout value 
+will be 'forever'. The next-hop ID and OIF list should match the values on the 
+master RE.
+
+{backup}
+root@wfpro2-a1> show multicast route extensive instance VPN-A    
+Family: INET
+
+Group: 228.5.5.5
+    Source: 22.1.11.9/32 
+    Upstream interface: fe-0/0/0.11
+    Downstream interface list: 
+        mt-1/3/0.32769
+    Session description: Unknown
+    Statistics: Forwarding statistics are not available  <-- No statistics info
+    Next-hop ID: 1048579
+    Upstream protocol: PIM
+    Route state: Active
+    Forwarding state: Forwarding
+    Cache lifetime/timeout: forever       <-- No timeout value
+    Wrong incoming interface notifications: 0
+
+3.11.1.4 Show pim mdt 
+
+This command is used in VRF instances to show the current default MTs and data 
+MDTs. The output, especially the c-src/c-grp to data mdt interface mapping, 
+should be exactly same as the output on the master RE.
+
+{backup}
+root@wfpro2-a1> show pim mdt instance VPN-A    
+Instance: PIM.VPN-A
+Tunnel direction: Outgoing
+Tunnel mode: PIM-SM
+Default group address: 239.1.1.1      
+Default source address: 0.0.0.0        
+Default tunnel interface: mt-0/3/0.32768 
+Default tunnel source: 0.0.0.0        
+
+C-group address   C-source address   P-group address    Data tunnel interface
+228.5.5.5         22.1.11.9          239.5.5.0          mt-1/3/0.32769        
+
+Instance: PIM.VPN-A
+Tunnel direction: Incoming
+Tunnel mode: PIM-SM
+Default group address: 239.1.1.1      
+Default source address: 0.0.0.0        
+Default tunnel interface: mt-1/2/0.1081344 
+Default tunnel source: 0.0.0.0        
+
+C-group address   C-source address   P-group address    Data tunnel interface
+230.1.1.1         22.1.12.9          235.1.1.0          mt-1/2/0.1081344  
+
+3.11.1.5 Show pim mdt data-mdt-joins
+
+This command is used on the egress PE to show received data MDT Joins (or Join 
+caches). This command only applies for VRF instance. The timeout value will be 
+0 on the backup RE.
+
+{backup}
+root@wfpro2-a1> show pim mdt data-mdt-joins instance VPN-A 
+
+C-Source         C-Group          P-source         P-Group          Timeout
+22.1.12.9        230.1.1.1        22.0.0.2         235.1.1.0        0
+
+3.11.2 PIM NSR trace logs
+
+New NSR trace logs are added for Rosen NSR related events. This logs can be 
+collected for debugging. These logs exists on both master and backup REs. 
+
+Example:
+
+root@wfpro2-a# run show log pim.log |grep mdt 
+May  5 08:14:27.899943 pim_mdt_rdb_key_build called
+May  5 08:14:27.899982 pim_mdt_find_rdb called
+May  5 08:14:27.900006 pim_mdt_add_rdb called for inst PIM.VPN-A 
+    C-sg 228.5.5.5.22.1.11.9
+May  5 08:14:27.900027 pim_mdt_rdb_entry_alloc called
+May  5 08:14:27.900056 rdb mdt_ifd_idx 163, ifd_name mt-1/3/0
+May  5 08:14:27.900081 pim_mdt_add_mirror called for 92fc000
+May  5 08:14:27.900104 pim_mdt_add_mirror: Mirror ADDing rdb 92fc000
+May  5 08:14:27.900132 pim_mirror_mdt_lock:Locking mdt rdb 92fc000.
+May  5 08:14:27.900320 pim_mirror_mdt_encode: Called for mdt rdb: 92fc000
+May  5 08:14:27.900350 pim_mdt_encode_tlv called on op 1 for data mdt ifl 
+    subunit 32769
+May  5 08:14:27.900382 pim_mirror_mdt_unlock:Unlocking mdt rdb 92fc000
+May  6 07:52:51.472096 pim_mdt_rdb_key_build called
+May  6 07:52:51.472127 pim_mdt_find_rdb called
+May  6 07:52:51.472178 pim_mdt_add_rdb called for inst PIM.VPN-A 
+    C-sg 230.1.1.1.22.1.12.9
+May  6 07:52:51.472199 pim_mdt_rdb_entry_alloc called
+May  6 07:52:51.472229 rdb mdt_ifd_idx 156, ifd_name mt-1/2/0
+May  6 07:52:51.472254 pim_mdt_add_mirror called for 92fc0a8
+May  6 07:52:51.472276 pim_mdt_add_mirror: Mirror ADDing rdb 92fc0a8
+May  6 07:52:51.472300 pim_mirror_mdt_lock:Locking mdt rdb 92fc0a8.
+May  6 07:52:51.472701 pim_mirror_mdt_encode: Called for mdt rdb: 92fc0a8
+May  6 07:52:51.472725 pim_mdt_encode_tlv called on op 1 for data mdt ifl 
+    subunit 1081344
+May  6 07:52:51.472845 pim_mirror_mdt_unlock:Unlocking mdt rdb 92fc0a8
+
+3.12 TESTABILITY, SERVICEABILITY AND DIAGNOSE-ABILITY
+
+When user encounters a Rosen NSR issue, the CLI output and PIM NSR trace logs 
+mentioned in the previous section should be collected to help identify the 
+problem.
+
+3.13 CONSTRAINTS AND LIMITATIONS
+
+None.
+
+3.14 REJECTED DESIGN ALTERNATIVES
+
+None.
+
+4. PATENT OPPORTUNITIES
+
+N/A
+
+5. PERFORMANCE
+
+Once PIM NSR is enabled, PIM will build RDB entries for PIM states, including 
+MDT states. MDT RDB entries consume memory on both master and backup REs. The 
+memory usage scales up when the number of customer streams is increased. Other 
+than the memory usage and building the MDT RDB entries, there is no 
+performance impact.
+
+5.1 PERFORMANCE RELATED RESOURCES
+
+N/A
+
+5.2 TARGET PERFORMANCE
+
+N/A.
+
+5.3 64-BIT KERNEL SUPPORT
+
+N/A.
+
+
+6. SCALING
+
+The scaling number is not changed per existing PIM implementation.
+
+7. MULTI-CORE ENVIRONMENT
+
+N/A.
+
+
+8. COMPATIBILITY ISSUES
+
+None. This is a new feature.
+
+9. HIGH AVAILABILITY (HA)
+
+9.1 GRACEFUL RE SWITCHOVER (GRES), ISSU IMPACT
+
+None.
+
+9.2 NSR IMPACT
+
+This RLI adds NSR support for Rosen MVPN.
+
+
+10. LOGICAL SYSTEM / ROUTING INSTANCE IMPACT
+
+None. Rosen MVPN requires routing instances and already can be run on a logical 
+system.
+
+12. PLATFORMS SUPPORTED
+
+This change is platform independent.
+
+13. SDK IMPACT
+ 
+N/A.
+
+13.1 SDK CUSTOMER USAGE
+
+N/A.
+
+14. JUNOS READY SOFTWARE CONSIDERATIONS
+
+N/A.
+
+15. FREE SOFTWARE CONSIDERATIONS
+
+N/A.
+
+16. 3RD PARTY SOFTWARE CONSIDERATIONS
+
+N/A.
+
+16.1 FUNCTIONAL ROLE OF 3RD PARTY CODE WITHIN JUNOS
+
+N/A.
+
+16.2 INTEGRATION DETAILS OF 3RD PARTY CODE WITHIN JUNOS
+
+N/A.
+
+17. POSIX NON-COMPLIANCE
+
+N/A.
+
+18. FUTURE CONSIDERATIONS
+
+Currently Rosen MVPN only supports IPv4. This design already considered IPv6 
+when defining address families.
+
+19. REVIEW COMMENTS
+
+
+19.1 REVIEW STAKEHOLDER MATRIX
+
+Function			Name			Required?	Approval State
+---------------------------------------------------------------------------------------------------------------
+SW1 (kernel, RPD, PFE etc)				Yes/No/Optional Approved/Rejected/Approved with actions
+SW2 (kernel, RPD, PFE etc)				Yes/No/Optional Approved/Rejected/Approved with actions
+SW3 (kernel, RPD, PFE etc)				Yes/No/Optional Approved/Rejected/Approved with actions
+SW Manager						Yes/No/Optional Approved/Rejected/Approved with actions
+JAB							Yes/No/Optional Approved/Rejected/Approved with actions
+HW							Yes/No/Optional Approved/Rejected/Approved with actions
+---------------------------------------------------------------------------------------------------------------
+
+
+
+
+ Copyright 2010 Juniper Networks, Inc. -- Proprietary and Confidential
+Do not distribute outside of the company without the permission of Juniper Networks engineering
+Printed copies are for reference only!

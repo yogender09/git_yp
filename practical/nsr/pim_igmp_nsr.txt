@@ -1,0 +1,1239 @@
+                       NSR: PIM state replication
+                            IGMP 
+
+                               RLI 2728
+
+                       Functional and Design Specification
+                
+                    Ravi Singh (ravis@juniper.net)
+
+$Id
+
+Copyright (C) 2007, Juniper Networks, Inc.
+
+NOTICE: This document contains proprietary and confidential
+information of Juniper Networks, Inc. and must not be distributed
+outside of the company without the permission of Juniper Networks
+engineering.
+
+
+1. INTRODUCTION
+
+Tracks:
+  NPI Program: 326 JunOS Non-stop Routing (NSR)
+  RLI 2728: PIM stateful replication.
+  RLI 2727: IGMP stateful replication.
+  PRs:      94594, 94595
+
+1.1 Fundamental NSR truths:
+    1 Barring prolonged network control-traffic steady-states (which are rare)
+      and synchronized config steady states, the 2 rpds CAN NOT *REMAIN* in
+      complete sync (with today's hardware), no matter what the software 
+      design approach.
+    2 NSR is an effort to *REDUCE* the state-deltas between the 2 rpds to a
+      minimum.
+    3 Dealing with failovers: the impact can only be mitigated & not made
+      hitless. In most cases would be *atleast as good* as graceful restart.
+    4 Just because bugs have not been discovered, does not mean there are no
+      remaining bugs. The number of such unfound bugs will be potentially
+      large, even after systest OKs the RLI. Should not be a surprise, given
+      fundamental NSR truth #1.
+
+1.2 Scope:
+    This document talks about issues relevant only to IGMP & PIM NSR.
+    Issues relevant to NSR for other multicast protocols will be discussed in
+    separate document(s).
+
+1.3 Terminology:
+    m-RE:   Master RE.
+    b-RE:   Backup RE.
+    om-RE:  Old-master (now-dead) RE.
+    nm-RE:  New-master RE (a b-RE that has become the master & has not yet
+            gone through the motions of completing its state reconciliation
+            to become a full-fledged master) - this is purely from a point of
+            view of the PIM/IGMP state.
+
+    Please note that in the post-failover context nm-RE & b-RE are used 
+    alternately to refer to the new-master RE.
+
+    ISS:   Initial State Sync.
+    CSS:   Continuous State Sync.
+    PFSR:  Post Failure State Reconciliation.
+
+    RESO:    RE Switch-Over.
+    Def-MDT: Default MDTs - correspond to the default mt interfaces.
+    D-MDT:   Data MDT.
+
+2. FUNCTIONALITY:
+2.1 Functional goals:
+  *  Post-switchover, no persistent desynchronization of control state.
+  *  Post-switchover, minimal transient desynchronization of control state.
+  *  Keeping impact on non-NSR protocol functionality as low as possible:
+     unit-test/systest scope containment.
+2.2 Design philosophy:
+    * Willingness to live with some additional limitations: Quest for
+      perfection is the enemy. Do not even try for perfection - ends up
+      taking too much resources & payoff in optimizing for each little nuance
+      will likely not be worth the effort.
+    * Keep it simple - complexity is the mother of defeat in time-bound
+      projects. Keeping things as simple as possible will ensure that most
+      of the features will be relatively stable & relatively bug-free.
+    * Keep an eye on the future: Design in such a way so that the amount of
+      testing that will need to be done will be of controlled scope.
+    * Keeping overheads due to NSR to a minimum: rpd is already heavily
+      over-loaded & adding too much functionality that can easily be handled
+      outside without compromising end-goals is highly desirable.
+	+ Sync as little as possible without compromising protocol
+          correctness.
+	+ Try to regenerate state where possible - would help avoid
+          synchronization in not having to rely on the master RE.
+    * The less we touch the internals of the protocol, the better it is in 
+      terms of potential for breakage of the protocol including for the single
+      RE case.
+2.3 CLI:
+   All multicast related CLI commands will work on both the master RE and the
+   backup RE.
+   It is possible for the configs to be different between the 2 REs: this can
+   happen due to 2 different reasons:
+         a. Inadvertent: There can small time-windows in which synchronization 
+            time lags in committing the configs & the rpds applying the 
+            config on the 2 REs, even when "commit sync" is used can cause
+            config mismatches. This would eventually get taken care of by the
+            config generation/synchronization mechanism (the mechanics of this
+            are outside the scope of this document). However, any
+            protocol synchronization msgs received (over MAPI) in the interim
+            need to be handled safely in such time-windows.
+         b. Intentional: use of "commit" on any one of the REs will cause
+            a config mismatch.
+  Our implementation will be able to handle both of the above cases.
+
+  For multicast NSR to work, GRES must be enabled.
+
+  2.3.1: Changes:
+      The following news flag(s) will be added to PIM.
+      The multicast routing-options will use the nsr-sychronization flag that
+      already exists at the routing-options level.
+
+      protocols {
+        pim {
+           traceoption {
+      	     ...
+   	     flag nsr-synchronization detail;
+             ...
+           }
+        }
+      } 
+
+     Since IGMP will not have any state synchronization, no new flags are
+     planned for IGMP.
+
+2.4 Features
+    There exist for PIM quite a few different modes, sub-features & knobs.
+    Trying to support ALL of these in the first phase would be an extreme
+    challenge, to the extent of risking the whole deliverable on the counts
+    of schedule as well as on quality.
+    Listed below is a separation of features that would be supported in the
+    various phases.
+    
+2.4.1 Features to be supported in Phase 1 (9.0):
+
+      PIM-DM.
+      PIM-SM.
+
+      AutoRP.
+      Static RP.
+      BFD support.
+      Rosen MVPN support.
+
+      IGMPv1 & v2 (initially).
+
+2.4.2 Features to be supported later:
+
+      SSM.
+      BSR & Anycast RP.
+
+      IPv6 feature-set including Embedded-RP.
+      MSDP support (this is not a requirement until the need to support NSR for
+                    MSDP).
+      MLD & IGMPv3 will be supported in a later phase.
+
+2.4.3 Features still under development that would need scoping later:
+      NGen MVPN support.
+      IGMP snooping support.
+
+2.4.4 Knobs to be excluded initially:
+      TBS.
+
+2.5 Possible paradigms & chosen approach:
+    2.5.1 Do nothing special for NSR for PIM & IGMP: 
+          Since PIM & IGMP are periodic protocols, most of the control state
+          would eventually recover after failover, not doing NSR for PIM & 
+          IGMP would not have any lingering long-term adverse effects. In this 
+          approach, a graceful-restart could be used to maintain forwarding 
+          state for mcast flows that are alreading passing through the router. 
+          Any new mcast flows hitting the router would not be handled
+          until the graceful restart period is done - this is the major
+          drawback of this approach.
+    2.5.2 State synchronization by mirroring alone: master rpd syncs condensed
+          state info to the backup RE based on which the backup generates the
+          relevant state. The backup RE does not generate any control
+          pkts. In some instances, entire protocol packets might
+          have to be synced.
+          Whatever sync state is still in the mirror queues would be lost on
+          failover.
+    2.5.3 Purely tandem approach - socket replication approach: Backup rpd
+          relies solely on the incoming traffic from neighbors & sniffs
+          traffic from master rpd to construct its state.
+          This approach would work only if the only events that trigger
+          protocol state changes are ones that are internal to the protocol
+          itself.
+          Additionally, this approach at switchover can not guarantee that the
+          new-master rpd will take up exactly where the master left off unless
+          the new-master has been sniffing control pkts that the old-master 
+          sent out just before dying. This is not an easy possiblity to
+          implement for non-TCP-based protocols.
+    2.5.4 Mirroring & socket replication together:
+          There can be 2 different versions of this.
+          1. Use mirroring only for initial state synchronization & once it
+             is confirmed that the initial state sync is complete, the 2 rpds
+             can go to deriving state based purely on use of replicated 
+             sockets. This approach will not work for cases where the protocol
+             state is derived from events that are triggered from outside the
+             protocol and which are not visibe on the replicated socket.
+             eg: in PIM the kernel resolves & wrong-iif notifications would
+             be generated by the kernely asynchronously of the control pkts on 
+             the PIM receive sockets.
+          2. 1 above + continue to use mirroring API even after initial
+             state sync is completed to sync events that are triggered by
+             components external to the protocol (such that these events are
+             not discernible from the protocol sockets).
+             The major drawback of this approach is the non-determinism of 
+             the when the external-events (synved using mirroring) are
+             processed by backup rpd. This induces potential for lots of
+             race conditions.
+             
+          Both 1 & 2 above suffer from the common drawback that the new-master
+          have not deterministic way of knowing what (if any?) control state 
+          the old master had sent out in response to an immediately preceding
+          input control packet. This is an inherent limitation of non-TCP
+          based transport.
+
+    2.5.5 Chosen approaches:
+          1. PIM:
+             While 2.5.1 is an approach that will work, it is a lazy approach.
+             We can do better than that.
+             Any approach involving a tandem model will work fine,
+             post-failover, for PIM for those (S,G)s that were not undergoing 
+             change due to events external to PIM at the time of the failover. 
+             However,for those (s,g)s that were subject to change, at the
+             time of failover, would be adversely affected - due to timing
+             issues between the external events (which could be replicated to 
+             the backup rpd). Ofcourse, the backup could try to get around
+             this 
+
+          2. IGMP: IGMP (router functionality - within rpd) maintains its state
+             based purely on the received IGMP pkts. So, a tandem model would
+             work fine. However, that would require rawIP socket replication
+             support from the kernel. While this can be implemented, this would
+             tie up additiional kernel resources in replicating the rawIP
+             IGMP socket.
+             A way around this would be to just get the new master to trigger
+             a new querier election. This would get the new master to have
+             appropriate local join (& exclude for IGMPv3 - support for
+             IGMPv3 is not planned in first phase) state soon enough.
+             
+   Synchronization philosophy:
+       * Never in sync.
+       * Try to keep the deltas small & sync often to prevent going out of
+         sync.
+       * For non critical things, rely on the periodicity of the msgs to
+         bring the states in sync.
+       * Use mitigation techniques to contain the damage due to things going
+         out of sync - grateful restart like behavior.
+       * Use inter-rpd resync mechanisms when things are really bad.
+       * When things are really really bad....use inbuilt mechanisms of the
+         protocol is usable... eg. "GenID change" where supported by neighbors.
+
+2.6 Events that cause multicast protocol state changes:
+2.6.1 Events in general:
+     * Protocol (is connection-less) control pkts
+	+ Pkts received.
+        + Pkts sent.
+     * Timer(s) firing.
+     * Unicast route changes:
+     * Protocol config (including relevant per-interface protocol config)
+       changes:
+     * Interface related changes:
+	- ifd/ifl up/down events.
+	- iffamily/ifa add/delete events.
+     * Multicast data triggered events & events based on state derived
+       therefrom: Such events will happen only on the master RE.
+
+     Timer firing events are based on state internal to the protocol
+     implementation.
+     Unicast route changes are events external to the protocol implementation.
+     NSR for the relevant unicast route changes should have taken care of the
+     unicast routes being in sync (which would have ensured that this external
+     event would be in sync wrt to PIM/IGMP state.). Any differences in unicast
+     route state would be handeld post-failover.
+
+2.6.2 Event happening only on the master RE 
+	(needing synchronization):
+        Transitions across the state changes triggered by these events could
+        lead to the 2 rpds going out of sync.
+	+ State changes based on data triggered 
+	  events:
+	    - Resolve request receipts:
+	       # Create appropriate (s,g) on the
+	         backup.
+	       # 
+	    - WrongIif msg receipt.
+        + Firing of some timers:
+	    - Might required refresh of some
+	      state to the backup else it might
+	      end up deleting state.
+	         + (s,g) entry expiring in the
+	           MFC.
+	         + .
+        + Iffamily/Ifa add/delete/change events
+	  triggered by rpd:
+	    - mt interface add/delete/change
+	      events for BOTH the ifa & the iffs.
+
+2.6.3 Events happening only on the backup
+
+2.6.4 Race conditions:
+
+    * Order synchronization between protocol-pkts
+      receipt, routing socket events from the 
+      kernel, messages from the master rpd, config 
+      changes.
+
+2.7 Handling dependence on other protocols: 
+    IGMP has no direct dependence on other unicast routing protocols
+    for its state.
+
+    PIM depends both on IGMP & on unicast routing protocols to maintain its
+    state.
+    2.7.1 PIM's depedence on unicast routing:
+          PIM depends on unicast routing for routes to use in the RPF checks.
+          Due to different approaches taken by various protocols in NSR, timing
+          issues between the availability of the unicast routes & PIM's need to
+          lookup such routes are entirely possible.
+
+          Whatever PIM state that does a RPF lookup (maintains the RPF), the
+          corresponding RPF connection will also be synchronized. This will
+          allow the backup to know what the underlying RPFs were being used
+          by the master.
+          This is useful in 2 ways:
+           a. If unicast routing were later to get into sync, PIM would
+              alread have this info based on the synced state.
+           b. If after a fail-over, the unicast RPF that the new-master
+              discovers for itself is really different from the old RPF, the
+              new-master can appropriately get itself off the branch of the
+              delivery tree that the old master was on & send joins up the 
+              branch of the delivery tree that it needs to be on based on its
+              unicast routing.
+
+    2.7.2 PIM's dependence on IGMP:
+          PIM's local receiver state should remain in sync to what IGMP says.
+          Due to the approach that IGMP is taking for NSR, this state will
+          need reconciliation post-failover to ensure that the local-listener
+          state is in sync with what IGMP's state is.
+          
+2.8 How things work - init state sync, steady-state & post-failover:
+    2.8.1: RP: To be filled.
+    2.8.2: Src's DR: to be filled.
+    2.8.3: Recvr's DR: to be filled.
+    2.8.4 Intermediate router: to be filled.
+    2.8.5: Turnaround router: to be filled.
+
+2.9 Kernel requirements
+  2.9.1 IGMP kernel state synchronization:
+         Various applications local to a router can join different multicast
+         groups. This state is maintained inside the kernel. It is highly
+         likely that the kernel is already replicating this state. This needs
+         to be rechecked.
+         Additionally, on edge router deployments there might be a need to
+         synchronize the various events in the IGMP host state machine which
+         could possibly be lost due to switchover. These events could be to
+         send out an unsolicited report (on a local app joining a group) or
+         sending a delayed report in response to a query.
+
+2.10 Handling Config mismatches:
+
+    General principle: Master's config rules in terms of state maintenance on
+    the backup. A backup will maintain state corresponding to the state that is
+    present on the master. Although a backup will have no explicit way of
+    knowing what the config on the master is, it will need to generate the
+    same protocol state that corresponds to the state on the master. This is
+    to avoid the case where any time-lags in "commit-sync" application wrt 
+    to the 2 REs can cause the backup to miss out some state.Although, such
+    state can later be generated due to various refresh mechanisms built into
+    PIM/IGMP, it is best to be able to not have to cause dropped data pkts if
+    this can be avoided with reasonable effort.
+
+    The various kinds of config mismatches that need to be handled:
+       1  Interface global config mismatches: GRES would cause the list of ifls
+          on the backup to be the same as those on the master. Any protocol
+          state that the master generates for an ifl should also exist on the
+          backup's ifl.
+
+          Post switch-over, the new-master needs to reconcile all of its
+          PIM/IGMP state with respect to its config. The excess state (that
+          does not correspond to config) will be blown away.
+          Additional, configuration (that did not exist on the old master)
+          will cause new state to be generated.
+
+          Those ifls that do not exist as per the new master's config will get
+          deleted & these will get appropriately handled 
+       2  Protocol-specific interface config mismatches:
+          Even though 
+       3  Protocol config (non-interface-specific) mismatches:
+
+2.12 PIM state maintenance:
+          This section makes a case for initial state synchronization for
+          various PIM state. Additionally, it describes why the proposed
+          kernel modifications would be sufficient to have to sync only
+          minimal PIM state after initial state synchronization.
+
+          Post switch-over, ????
+
+  2.12.1: Interface state, neighborship & (s,g) state.
+          PIM's neighor state maintenance (Hellos) is periodic (refresh built
+          in). 
+          Join-Prune messages from downstream neighbors periodically
+          refresh the delivery tree state. 
+
+          Synchronizing neighbor state & (s,g) join-prune state to a backup 
+          RPD at startup reduces the delay in learning of the relevant nbrs & 
+          the relevant mcast distribution trees that this router is on. If the
+          master RE were to fail prior to backup rpd learning such state
+          from network neighbors, there could be breakage in mcast flows upto
+          one Hello interval (default: 30s). This is best avoided. So, it
+          makes sense to synchronize neighbor state & (s,g) join-prune state
+          at backup-rpd startup.
+
+          Initial state synchronization is required:
+           * to minimize time windows during which traffic is dropped.
+           * to deal with mismatched configs. (This is important, else we
+             would not be able to deal with those cases where "commit sync"
+             has a delay in application to one of the REs).
+           * Events that happen only on the master RE that required state
+             to be synchronized even after the initial state sync. This list
+             of events is: TBS.
+           
+           Initially synchonized state (per-instance):
+              * PIM-Interface state (including generation IDs).
+              * SG state: including iif, oif (with various timers & assert
+                state).
+              * RP state.
+
+2.13: IGMP:
+   IGMP state basically consists of state machines for the router
+   functionality and state machines for the host functionality. IGMP router
+   functionlity get enabled on an interface when a multicast routing protocol
+   (PIM here) is enabled on an interface. The IGMP host functionality is
+   activated based on interested multicast listeners on the local router.
+   In the NSR context it is not enough to ensure that the IGMP router & host
+   states are in sync between the 2 REs. It is also necessary to ensure that
+   that the state that PIM derives from IGMP is also in sync with the IGMP
+   state on a RE. This may not always be so on a backup RE due to the fact
+   the PIM state (including that derived from IGMP) is synced independently
+   of how the IGMP state is kept in sync between the 2 REs.
+
+   2.13.1: IGMP router funtionality
+          Initially only IGMPv1 & IGMPv2 state will be NSRed. MLD & IGMPv3
+          will initially be excluded.
+
+          A newly started backup RE (from protocol standpoint) is provided
+          an initial state download.
+          Thereafter, the socket replication takes care of ensuring that
+          both the REs have consistent IGMP state.
+
+          The initial state synchronization to the backup will mirror the
+          contents of the following structures:
+             * mgm_if : corresponding to an interface with IGMP configured.
+             * mgm_group_tree hanging off an mgm_if: each of the entries on
+               this tree, which correpond to a group would be synchronized.
+          There is a need to synchronize the various timers for the above 
+          types of structures between the 2 REs: It is an unconfirmed finding
+          that the 2 REs have synchronized time of the day clocks. These can
+          be used with offsett-values for the timers to keep the timers more or
+          less in sync.
+  2.13.2: IGMP host functionality:
+          This needs to be handled inside the kernel. Please see 2.9.
+
+2.15: MC:
+        An MFC entry really is a representation of an mroute installed in
+        the PFE. 
+        
+        Thus, to ensure that the mapping between the MFC entries & 
+        the corresponding routes in the PFE remain the same even after
+        fail-over, it is required to maintain consistency between the MFC
+        entries on the 2 REs.
+
+        It is important to note the distinction between MFC state & the actual
+        mroutes that are installed in the PFE. It may not be possible to
+        recreate all of the relevant MFC state solely from the routes
+        learnt from the kernel. The MFC entries have among other things state 
+        for timing out the mroutes. There isn't a way to recreate this (to be
+        in sync with that on the master, post-failover).
+        
+        While the entries themselves can be generated post-failover based on
+        internally (within rpd) triggering resolves, the timer related MFC
+        state may not be recreatable in this manner.
+
+        It might not be worthwhile to try to synchronize the MFC state that is
+        not recreatable by triggering internal resolvs post-switchover. This
+        approach would end up giving the entire lifetime to the mroutes
+        correspoding to the MFC entries created by the intenal resolve, even
+        thought the old master (if it were alive) would have timed out some of
+        these mroute much sooner.
+        
+        However, if were to go the route of wanting to maintain the lifetimes 
+        of the mroutes across failovers, there would be a need to explicitly 
+        synchronize the MFC state between the 2 REs.
+
+        The specifics of this synchonization are yet to be specified.
+
+        Also, while it might theoretically be a nice idea to try to recreate
+        PIM (s,g) state from MFC entries...as per present MFC structures it is
+        fanciful at best....the various PIM (s,g) entry flags will not be
+        reproducible from the mroutes themselve. PIM state will have to be
+        synced using mirroring API. Additionally, generation of proper 
+        (*,g), (s,g), (s,g,rpt) state would not be possible. Based on the
+         little info that we might be able to glean from the MFC 
+         entry...it might not even be
+         worthwhile to try to fill in the blanks into the various PIM (s,g)
+         entries ....much rather just blow away state & not do NSR.
+
+2.16: Switchover:
+      The 2 prevailing themes for all of the protocol state are:
+        * Handling config mismatches.
+        * Handling unicast routing mismatches.
+
+      Post-switchover, the above will require require reconciliation of the
+      PIM state on the new-master to ensure that it is in conformance to its
+      configuration.
+      Additionaly, for any RPF nbrs that are different on the new-master,
+      with respect to the old-master, the new-master will need to reform its
+      delivery trees & get itself off the trees that the old-master was on.
+
+2.17 Risks:
+     1.  Interop issues
+     2.  Risks due to chasing a moving target: the code being NSRed is also
+         under active development for other projects which are still in the
+         implementation phase. So, NSR support for these features has not been
+         scoped out yet. The specific features in question are:
+         a. NGen MVPN support.
+         b. IGMP snooping: Impact of potential plan to rip out IGMP from rpd
+             has not been considered yet, as that plan is still not solidified.
+     3. Back-to-back failovers will have lots of potential unhandled issues
+        many of which are not handleable due to lots of reasons:
+     4. Lack of perfection will be more severe for multicast than for
+        unicast: for unicast routing, lost state will really happen under a
+        mix of the following conditions:
+     5. mtrace: need to give more thought if it is worthwhile to make
+        mtraces through the failing-over RE to be supported. Is the effort
+        for this worth the end-result? Probably not.
+
+
+3. Break-up of the planned implementation:
+   1. IGMP: router functionality (implemented within rpd) does not require
+      explicit synchronization of state between the 2 rpds. Rather, when 
+      an RE becomes the master, it can just re-initiate querier election.
+      While this is an obviously non-puristic approach in that a query would
+      be sent out before the next query would have been sent had there been
+      no failover, this simplifies things. Without having to do any explicit
+      state synchronization, the gratuitous query on failver will cause the
+      new master rpd to have all of the group state on the attached links.
+   2. PIM interface & neighbor state maintenance: All of the PIM state is 
+      per-instance. Instance name will be used to qualify the state being
+      synchronized.
+   3. RPF state maintenance:
+         a. NBR RPFs:
+         b. RP RPFs
+         c. Assert RPFs:
+   4. (s,g) state creation & updation state synchronization:
+         a. Iif: interface & state flags.
+         b. Oifs: interface & state flags.
+         c. 
+   5. Syncing state due to Asserts:
+         
+   6. Sycning state due to Register/RegisterStops:
+   7: AutoRP:
+         * Maintaining the RP-sets in sync.
+         * Triggering the auto-rp task on failover.
+   8. Anycast RP:
+         To be completed.
+   9. BSR:
+         In a later phase.
+   10. MVPN - Rosen:
+       Since the kernel provides a mechanism for interface replication, the
+       mt interfaces created by the master RE would be available on the
+       backup. Based on the available interface state from the kernel on the
+       backup RE, it will create the per-instance pim_def_mt_tun_info_t
+       structures.
+
+   11.  Post-switchover reconciliation of PIM state:
+      a. Protocol state reconciliation with own config:        
+         Would have caused the old-backup (new master) to store state that is
+         really not what the new-master would have stored if it were to be the
+         master upfront. Such state would need to be reconciled with respect
+         to the current config on the new master.
+      b. Unicast routing mismatches: if the unicast RPFs as learnt from the
+         master are different from those figured out based on own routing, 
+         depending on the state machine in question....the code will
+         gracefully extinguish protocol state on the former-RPF (as learnt
+         from the old-master).
+      c. RP state mismatches
+      d. Handling for mismatches in state between the vaious components:
+         i.  PIM state reconciliation with IGMP: since PIM state
+             synchronization is happening independently of how IGMP state 
+             is kept (or rather brought) in sync, there is a high chance 
+             that some of the IGMP triggerd state (the various flags on the 
+             interfaces corresponding to local listeners) would be out of 
+             sync with respect to the current IGMP state on the
+             new master.
+         ii. (s,g) state mismatches between PIM & the replicated multicast 
+             routes in the kernel: This can happen due to state lost in mirror 
+             API queues at failover. At switchover some state will always 
+             be lost (in transit).
+             
+          to the current config, the unicast routing & RP-set info on the
+         new-master.
+      So, the following PIM state would need to be reconciled:
+          i.   (S,G) upstream neighbor: reconciled with respect to own
+               unicast routing.
+         ii. (S,G) upstream state:
+        iii. Assert state on oifs:
+             To handle possibility of mismatches between metric,
+             preference for underlying unicast routes between the 2 REs.
+        
+
+4. OTHER REQUIREMENTS
+   N/A
+
+5. IMPLEMENTATION DETAILS
+
+5.1 Introduction
+    Stages in the life of a NSR rpd (per-protoocl basis):
+     * Lone rpd starting (Only 1 RE configured or other RE is down): Pre-ISS.
+     * Second rpd coming up (Initial state download to the second rpd): ISS.
+     * Both rpds are up & running: Continuous State Synchronization to the
+       backup RE (CSS): relevant state on a per-case basis.
+     * One rpd gets promoted from backup to master (really, the RE & by
+       extension the rpd): Post-failover state reconciliation (PFSR).
+     * The rpd on the nm-RE has finished PFSR.
+
+5.1.1.1 Rpd PIM Tasks:
+        Each of the REs would create the following PIM tasks (just like on
+        a single-RE system) as per its own relevant config:
+        pim_task;                      -> Per AF per instance task.
+        pim_autorp_task;               -> Global task.
+        pim_recv_task[]                -> Per AF global I/O task.
+        pim_data_mdt_task;             -> Per-instance data-MDT task */
+
+5.1.1.2: Timers
+         We try not to sync timer offsets & time remaining. As syncing these
+         does not serve any useful purpose reliably due to inherent delays
+         involved in syncing state. Also, this can be circumvented by alternate
+         means described  below:
+         The timer state on the backup is of consequence only when the backup
+         has become the master. In other cases, since the backup is not
+         engaged in any sending of the pkts, it is ok for the timers to be
+         disabled.
+
+         At switchover, we do the safe thing wrt to the specific timer:
+            - Any timer whose firing causes state external to the router to be
+              refreshed, is fired immediately.
+            
+5.1.1.3 Initial state sync
+5.1.1.4 Steady state synchronization (to the backup RE):
+5.1.1.5 Post-failover state reconciliation:
+         * IGMP state re-learning:
+         * Config reconciliation: Start bottom-up:
+             - Instance
+             - Interfaces
+             - Static RP state:
+             - 
+         * Dependencies on other modules:
+             - Unicast RIB (inet.0 or inet.2) 
+         * Bring MC into sync with the PIM state.
+         * Rosen MVPN state reconciliation.
+         * .
+
+5.1.2 PIM mirroring state - overview
+      On a RE-b, a per-address-family global context structure will be used 
+      to hold state received from a RE-m.
+      On a RE-m, the existing PIM data structures will hold state.
+
+typedef struct pim_sync_ctx_ {
+    patroot  psc_nbr_root;
+    patroot  psc_rpg_root;
+    patroot  psc_rpg_root;
+    patroot  psc_rp_root;
+    patroot  psc_rpf_root;
+    patroot  psc_sg_root;
+    patroot  psc_mdt_root;
+} pim_sync_ctx;
+
+5.1.3 Possible config mismatches:
+5.1.3.1 Global (non-PIM) config
+        - Primary interface IP is different.
+        - Interface not belonging to the same instance on the 2 REs.
+        - Loopback config:
+            - Primary IP address is different.
+5.1.3.2 PIM config (on a per-instance basis)
+        - Per-interface PIM config:
+           + Interface not configured for PIM.
+           + Mode is different.
+           + Version is different.
+        - Per-instance config
+           + RIB-group is different.
+           + Dense-groups list is different.
+           + SPT-threshold is different.
+           + Policies:
+              - Sparse join import policy is different.
+           + VPN-group-address (per-VPN) is different.
+           + MDT config is different:
+               - Group-ranges.
+               - Thresholds.
+               - Tunnel-limit.
+           + Timer values are different:
+               - Assert timeout.
+           + RP config is different:
+               - DR-register-policy is different.
+               - RP-register-policy is different.
+               - Configured RP discovery mechanism can be different.
+                 eg. Auto-RP vs BSR.
+               - Parameters for the same RP-discovery mechanim can be different
+                   + Local RP setting is different:
+                      - Address to use for the RP can be different.
+                      - Local RP group-ranges are different.
+                      - Hold-time & priority can be different.
+                      - Anycast-RP config:
+                          + Anycast-RP-set constituents are different.
+                          + Local-address for the local-RP is different.
+                   + Static RP:
+                      - PIM version different.
+                      - Group-ranges different.
+                   + Auto-RP:
+                      - Mapping/Discovery/Mapping-agent-election params can be
+                        different.
+                      - Dense groups to announce/reject are different.
+                   + BSR:
+                      - BSR priority is different.
+                      - Import-policy is different.
+                      - Export-policy is different.
+                   + Embedded-RP:
+                      - Group-ranges are different.
+                      - Maximum # of embedded-RPs can be different.
+
+5.1.3.3 Multicast routing-options are different
+        - Policies:
+           + Flow-maps are different.
+           + RPF-check policies are different.
+           + Scope config is different.
+           + Scope-policy is different.
+           + SSM-group ranges are different.
+5.1.4 Reconciliation technique:
+       Mismatched-config-reconciliation (MCR):
+       A periodic job shall be spawned that shall try to reconcile all of the
+       non-resolved mirroring entries into the relevant PIM structures. The
+       unresolved mirroring entries of a certain type shall be on a thread.
+
+       It is expected that the number of unresolved entries during the course
+       of a normal operation would not be too many since, NSR now requries
+       synchronized commits. However, in order to test mismatched configs,
+       persistent config mismatches shall be generated.
+       
+
+5.2 PIM neighbor state:
+5.2.1 Pre-ISS:
+      The config is parsed & applied. Also those interfaces that are configured
+      for PIM that are able to run PIM (even though the ifl may be down), are
+      configured for PIM. The pifs & the self-nbr are created. An intf is able
+      to run PIM (in the context of the previous sentence), if it has atleast
+      one ifa with a local IP or-logically it is a p2p intf. However, if it
+      is an mt intf (def-MDT), it is able to run PIM if the relevant VRF has
+      a local ifa that is a primary.
+5.2.2 ISS:
+      The PIM nbr state will be mirrored to the RE-b. The nbr state will
+      reference the intf in question by using the ifl-index & the
+      instance-name. 
+      Mirror nbr entries that are indicative of a config mismatch shall not
+      be added to the per-intf nbr trees.
+5.2.3 CSS
+      Handle Config-mistmatches: Any received nbr state that is indicative
+      of config mismatches should just be kept in the Nbr mirror database &
+      will not be populated into the per-intf PIM-nbr trees.
+
+      The periodic MCR job shall try to resolve any
+      mirror nbr entries that now resolve correctly.
+5.2.4 Post-RESO
+      Config mismatch reconciliation:
+      Relevant timers are fired:
+       - nbr_timer is started to initiate sending the Hellos.
+       - Nbr_join_timer is started to trigger sending the joins.
+       - Join_rx_parent timer is started for processing the received joins.
+5.2.5 Data structures
+/*
+ * pim_rdb_nbr - PIM nbr replication entry.
+ */
+typedef struct pim_rdb_nbr_ {
+    patnode      pr_nbr_node;
+
+    pim_sub_tlv	 pr_nbr_inst_name;     /* instance name */
+    ifl_idx_t    pr_nbr_ifindex;       /* ifl-index for the PIF */
+
+    mc_af        pr_nbr_nbr_af;        /* Address family */
+    pim_sub_tlv  pr_nbr_addr_list;     /* TLV of nbr addr - first one is 
+                                          primary */
+    u_int32_t    pr_nbr_nbr_priority;  /* Nbr prioirty */
+    u_int32_t    pr_nbr_nbr_gen_id;    /* Nbr generation-ID */
+    byte         pr_nbr_nbr_version;   /* Nbr's PIM version */
+    byte         pr_nbr_nbr_mode;      
+    time_t       pr_nbr_nbr_holdtime;  /* nbr hold time */
+    time_t       pr_nbr_nbr_lan_prune_delay;   /* LAN Prune Delay */
+    time_t       pr_nbr_nbr_override_interval;
+    byte         pr_nbr_nbr_flags; 
+
+    boolean      pr_nbr_bfd_enabled; /* BFD running with this nbr */
+    boolean      pr_nbr_bfd_up;      /* BFD operational status */
+
+    itable_index_t pr_nbr_idx;
+
+    /* Back-ptrs */
+    pim_nbr      *pr_nbr_pim_nbr;
+
+    /* Mirror sub-system vars */
+    mirror_data_node pr_nbr_mirror_node;
+    thread           pr_nbr_mirror_thr;
+
+} pim_rdb_nbr;
+
+5.3 RP state maintenance:
+5.3.1 pimd/pime intf state maintenance
+      b-RE does not create any pimd/pime ifls. Nor is the state around the
+      state around the creation/deletion of these synced using mirroring.
+      The b-RE just hears about the created pimd/pime ifls from the kernel.
+      
+      A b-RE maintains rpifs for these ifls based on its config. If the
+      relevant RP config does not exist on this RE due to a config mismatch,
+      the pimd/pime ifl rp_if state is not maintined just yet.
+
+      However, later when (if) the relevant RP config becomes available, the
+      appropriate rpif state shall be constructed using the already
+      created pimd/pime ifl that would be available from the global ifl list.
+
+5.3.2 RP-set maintenance: RP, RP-group & RP-group-ranges:
+      The various types of RP-set maint mechanisms:
+          - Static RP: supported in phase 1.
+          - Auto-RP: supported in phase 1.
+          - BSR: Not supported initially.
+          - Anycast RP: Not supported initially.
+          - Embedded RP: Not supported initially.
+
+ISS:
+    Initial state that is synced to the b-RE includes appropriately
+    formatted TLVs for the following 
+              RPGroups, 
+              RPs.
+              RP-grp-ranges.
+    The received state shall be appropriately populated in the relevant
+    PIM structures if there isn't one of the relevant config mismatches as
+    listed above.
+    The relevant PIM structures would be:
+          - Static RP:
+                pim_rp_static_tree
+                pim_rpgroup_static_tree
+          - Auto-RP (v4 only):
+                pim_rp_auto_tree
+                pim_rp_mapping_tree
+                pim_rpgroup_auto_tree
+                pim_autorp_announce_timer: disabled on b-RE.
+                pim_autorp_mapping_timer; disabled on b-RE.
+
+          - BSR:
+                pim_rp_tree
+                pim_rpgroup_tree
+          - Embedded-RP (v6 only):
+                pim_rp_embd_tree
+                pim_rpgroup_embd_tree
+    Order of preference (decreasing): Embedded, BSR, AutoRP, Static.
+    rpif_job is inactive on the b-RE: b-RE does not add/delete pimd/pime intfs.
+
+CSS:
+    Adds
+        RPs, RPGs, grp-ranges: for each ADD for one of these, the ADD is
+        mirrored to the b-RE. The b-RE itself does not set any timers that
+        would cause the deletion of these ADDed entities.
+        The hold-times are sent to the b-RE which stores these in the newly
+        created RP/RP-group structs. These holdtimes are used to create the
+        timers to expire the RP/RP-group state on RESO.
+
+    Deletes
+        RPs, RPGs, grp-ranges.
+
+    Updates:
+        m-RE updates those RP & RP-groups (that are not getting deleted) on 
+        the b-RE by sending an update msg each time the relevant holdtimer
+        expires.
+
+    RE-b does not itself timeout RPs, RPGroups or rp-grp-ranges.
+    rpif_job is not running. Rather b-RE relies on info learnt from the
+    kernel create the appropriate rpif state. Setting the RP-group & the
+    RP timers to the complete holdtime is not bad 
+
+RESO:
+ Reconciliation:
+   - pimd/pime interfaces: evaluate if all of the existing pime/pimd intfs
+     need to be remain in existence. If any are not relevant (wrt config &
+     RP state), get rid of them.
+   - rpif_job: fire it on the nm-RE to create any new pimd/pime intfs that
+     need to exist based on config & RP state.
+   - Create a job to fire the per-RP-group timers and the per-RP timer based on
+     the received holdtimes from the om-RE.
+ 
+5.3.3 Data structures
+/*
+ * pim_rdb_rpg - PIM RP-group replication entry.
+ */
+typedef struct pim_rdb_rpg_ {
+    patnode      pr_rpg_node;
+
+    pim_sub_tlv  pr_rpg_inst_name;  /* instance name */
+    u_int        pr_rpg_prefix_len;
+    pim_in _addr pr_rpg_prefix;
+
+    /* Back-ptrs */
+    pim_rpg      *pr_rpg_ptr;        /* RP-grp range */
+    pim_rp	 *pr_rpg_rp;	     /* the RP */
+
+    /* Mirror sub-system vars */
+    mirror_data_node pr_rpg_mirror_node;
+    thread           pr_rpg_mirror_thr;
+} pim_rdb_rpg;
+
+typedef union {
+    in_addr  v4_addr;
+    in6_addr v6_addr;
+} pim_in_addr;
+
+/*
+ * pim_rdb_rp - PIM RP-entry replication entry.
+ */
+typedef struct pim_rdb_rp_ {
+    patnode       pr_rp_node;
+
+    pim_sub_tlv   pr_rp_inst_name;  /* instance name */
+    pim_in_addr   pr_rp_addr;       /* RP address */
+    mc_af         pr_rp_mcaf;       /* address family */
+    byte          pr_rp_priority;   /* priority */
+    byte          pr_rp_version;    /* version RP supports (1 or 2) */
+    flag_t        pr_rp_flags;	    /* flags */
+    ifl_idx_t     pr_sg_ifindex;    /* ifl-index for the rpf-pif (iif) */
+
+    pim_in_addr   pr_rp_from;
+
+    /* Back-ptrs */
+    pim_rp       *pr_rp_ptr;
+    pim_rpif     *pr_rp_if;
+
+    /* Mirror sub-system vars */
+    mirror_data_node pr_rp_mirror_node;
+    thread           pr_rp_mirror_thr;
+
+} pim_rdb_rp;
+
+5.3.3.1 Timers & jobs
+ rpif_job: Per rp-if job to add/delete pime/pimd ifls.
+
+ pim_rpcheck_job[MCAST_AF_MAX] -> Per-inst & per-AF job to check rp-checking on
+                                  the tree of (SG)s due to RPSet change.
+ reg_stop_job  -> per-inst job to 
+
+ pim_anycast_reg_job[MCAST_AF_MAX];
+
+
+5.4 SG state
+
+5.4.1  Common
+       (*,*,RP) entries are not supported.
+
+5.4.2  Dense mode
+5.4.2.1 Upstream state
+5.4.2.2 Downstream state
+5.4.2.3 Assert state
+
+5.4.3  Sparse mode
+5.4.3.1 Register/RegisterStop state maint
+5.4.3.2 Upstream state
+5.4.3.3 Downstream state
+5.4.3.4 Assert state
+
+5.4.4  SSM
+       Not supported initially.
+5.4.5  Data structures
+     
+5.5 RPF state maintenance & handling unicast routing mismatches
+      Each RE maintains its own RPF state based on its
+      unicast routing. There shall be no syncing of RPFs as this does not
+      serve any purpose. Have an RPF state reliant on a route that does not
+      exist on a b-RE does not help in any way. Rather maintaining the RPF
+      state based on unicast routing on the local RE maintains RPF state
+      more accurately which would not necessitate any reconciliation at 
+      failover except to send a Prune (*,G), or a (S,G) prune upstream for 
+      om-RE's RPF if this state was different. This information shall be 
+      synced on a per-SG entry basis.
+
+5.6 Multicast Core Routing Infrastructure:
+
+5.7 Rosen MVPN:
+      Actions that b-RE does not take:
+          - Sending create/delete/change msgs into the kernel to
+            create/delete/change def-MDTs & create/delete d-MDTs.
+          - Send MDT-join-TLVs.
+          - Do stats-collection - so there is no data-triggerd d-MDT creation
+            on a b-RE due to stats collected on the b-RE.
+          - Create the mdt_tun_delay_timer on the src-PE.
+          - Create the mdt_tun_timer on the src-PE or on the egress-PE.
+
+      Actions that the b-RE does take (more general description - not
+      necessarily inclusive of the specific actions during ISS, CSS & PFSR):
+          - Maintains relevant state for def-MDTs (populates pim_vpn_info
+            properly) by looking at the already created def-MDTs. The per
+            def-MDT flags are not meant to track the various stages in the
+            creation of te def-MDTs as this is irrelevant across REs.
+          - Maintains properly created d-MDTs & maintain their association
+            with c-SGs.
+          - Installs the relevant mroutes (relevant to the c-SGs & the p-SGs -
+            both def-MDT & d-MDT - into mc.
+5.7.0 Pre-ISS:
+        b-RE maps its config to create default mt ifl state (without actually
+        requesting the kernel) to create the default mt ifls, depending on the
+        presence of the mt ifls in the global ifl list.
+5.7.1 ISS:
+        m-RE: synchronizes info about ALL of the data MDTs that already
+        exist.
+
+        State that is synchronized, includes the info about the following:
+         - Data MDTs: these need to be synced because we need to be able to 
+                 assciate an ifl sub-index with the specific 
+                 P-group<->(C-src, C-grp) mapping in use for an MDT. 
+                 Also, on the egress-PE we need know the source of the MDT.
+                 We do not sync the timer values as these do not serve the
+                 purpose reliably.
+5.7.2 CSS
+        JunOS supports only SSM D-MDTs (not necessarily in the SSM group
+        range).
+
+        - Def-MDTs:
+            + Routes corresponding to the def-mts will be added by the b-RE
+              to MC. However, the krt code ensures that these routes are not
+              added to the kernel & below.
+              These routes need to be added so that after failover, the 
+              withdraw of the corresponding routes installed by the om-RE will
+              not cause any hiccups in traffic flows.
+        - D-MDTs
+            + Any D-MDTs get created are synchronized to the b-RE.
+            + Deletions of D-MDTs are not sychronized to b-RE as the same 
+             can be achieved alternately on b-RE by tying it to the P-(S,G)
+             route corresponding to the d-MDT going away on the b-RE.
+        - Routes corresponding to the def/D-MDT: these are explicitly
+          created on re-B by fake resolves. This would cause the MC module to
+          have 2 sets of routes for each P-(S,G). However, only the m-RE 
+          installs these routes into the FIB.
+
+        Config changes:
+            - VPN-group address changes:
+            - Loopback IP changes:
+                + lo0.Main:
+                + lo0.VRF changes:
+        Timers:
+            - mdt_tun_timer: 
+                Src-PE: this serves to send the per-minute join-TLV to the 
+                egress-PE in question.
+                Egress-PE: this serves to time-out sending the d-MDT & to 
+                delete it. The egress sends an SSM P-(S,G)Join only in 
+                response to receiving the d-MDT join-TLV from the src-PE.
+            - mdt_tun_delay_timer: Relevant only on a src-PE.
+              Is used to delay the switchover to the
+              D-MDT from the def-MDT during which time a (S,G) join is expected
+              from the egress-PE. There isn't a need to synchronize this: any
+              failovers while this timer is pending would get taken care of
+              on the b-RE post-switchover by a fresh stats-collection, albeit
+              in a slightly delayed manner during which time the def-MDTs
+              would continue to be used for transmitting data traffic through
+              the core.
+              
+           Neither of the above 2 timers is enabled on a b-RE as it is moot
+           to do so.
+5.7.3 Post-RESO
+        nm-RE: 
+        Resolve config-mistmatch state-diffs:
+          - Per-VRF-instance validation:
+              + Def-MDTs exist ? And should they be existing? Reconcile
+                this to the config.
+              + More than 2 def-MDTs exist? Or if the def-MTs that exist are
+                not consistent with the config (srcIP &/or vpn-group for the
+                existing def-MTs is not what it should be) then deal with the
+                deletion of the inconsistent def-MTs & recreate new ones.
+              + VPN group address same? If not, update the def-MDTs.
+
+        Timers:
+          - mdt_tun_timer: 
+              Src-PE: Send d-MDT join-TLV to the egress-PE on each of the
+              data-MDTs. This timer would be created to fire in another 
+              PIM_MT_MDT_UDP_PERIODIC seconds. In the worst case, doing this
+              would end up sending d-MDT-join-TLVs too close together, which is
+              acceptable.
+              
+              Egress-PE: set the timer to go off after PIM_MT_MDT_DATA_TIMEOUT
+              seconds. In the worst case, this would d-MDT state to linger
+              around for PIM_MT_MDT_DATA_TIMEOUT seconds longer than it should
+              have (if the failover happened before the kernel route
+              replication mechanim could delete the correspondng p-SG route
+              installed by the om-RE. This should however,not affect the
+              forwarding as the src-PE would already have switched back to the
+              def-MDT. 
+              If the data-MDT deletion was triggered due to the
+              oif-list becoming NULL for the corresponding C-SG, can be handled
+              by having the b-RE do a validation to ensure that the oif-list is
+              non-NULL for each c-SG corresponding to a extant d-MDT. This can
+              be done using a job. In the worst case that the om-RE died before
+              syncing the prune state or the c-SG, the b-RE 
+
+          - mdt_tun_delay_timer: Relevant only on a src-PE.
+              Just the failover itself would not affect this timer in any
+              regard. However, if the stats-collection were to independently
+              triger creation of a d-MDT then this timer would created just
+              as in a 1-RE system.
+            
+        Route handling:
+          - Post-switchover, the kernel replication code would cause the
+            deletion of the p-SG routes installed by the old-now-dead m-RE.
+            At this time the b-RE's p-SG mroutes installed into the mc
+            get installed in the kernel. However, the PFE should continue to
+            forward without interruptions as the new routes would be identical
+            to those installed by the om-RE.
+5.7.4 Data structures:
+
+        typedef struct pim_rdb_mdt_ {
+            patnode      pr_mdt_node;
+
+            pim_sub_tlv	 pr_mdt_inst_name; /* instance name */
+            pim_sub_tlv  pr_mdt_vrf_sg_id; /* VRF (s,g) for this entry */
+
+            in_addr      pr_mdt_src_pe;    /* src of MDT join TLVs */
+
+            /* Back-ptrs */
+            pim_data_mdt_tun_info_t *pr_mdt_tun_info_ptr;
+
+            /* Mirror sub-system vars */
+            mirror_data_node pr_mdt_mirror_node;
+            thread           pr_mdt_mirror_thr;
+       } pim_rdb_mdt;
+
+5.7.5 Kernel state replication:
+        This is not necessarily new functionality that will be added now. The
+        aim rather is to capture replicated state that will be available on
+        the b-RE (either due to existing kernel functionality or due to new
+        functionality).
+          - Ifls are replicated.
+          - Mroutes added by the m-RE are replicated to b-RE.
+          - 
+5.7.6 Unresolved issues:
+      - How do we want to handle the tunnel-PIC going offline on a b-RE?
+
+5.8: Ngen MVPN:
+       NOT supported.
+
+5.9  IGMP:
+
+5.10 BFD support:
+     
+     The per-nbe BFD sessions for PIM nbrs remain consistent across an RESO, 
+     as the primary address for a given neighbor are synhronized across the 
+     2 REs.
+     Barring the circumstance that a PIM nbr's primary address changed &
+     before this could be synchronized to the b-RE, a RESO happens, PIM nbrship
+     DOWN events will be effectively detected by BFD across RESOs.
+     
+5.11 ISSU preparation:
+     TBD.
+
+5.12 Handling Config Mismatches
+     These are too numerous to list a pre-though-out strategy for handling
+     EACH config mismatch.
+
+     However, the general principle on the b-RE would be to not create the
+     relevant PIM protocol structure for any state received through mirroring 
+     or from the kernel (pimd/pime/mt intfs) unless the config on the local
+     RE would allow it.
+
+     For state that is mirrored from the m-RE, the unresolved state (state
+     that does not map to a certain applied config) shall remain only in the
+     mirror database on an appropriate unresolved thread.
+
+     The pime/pimd/mt ifls would be available from the global list of ifls.
+     When a new RP config/state becomes available on the b-RE, it would look
+     for a relevant pime/pimd ifl on the global list if one exists. If one
+     does not exist, it is not handled just yet. Rather as a part of PFSR after
+     RESO.
+
+5.13 Cleanups needed
+      - pending_rp_grp_tree.
+      -  pim_rp_pending_job; -> per-inst job to maps grps without RPs to a RP.
+                       These hang off per-inst pending_rp_grp_tree.
+      - .
+
+5.14 In Closing
+      - Statistics are not synchronized across REs. Each RE maintains its own
+        stats. As a result, the nm-RE, shall start counting its stats only
+        after it has become a master.
+      - .
+
+6. PERFORMANCE
+   The issues that might impact performance:
+     * Prior to fail-over:
+         + Amount of data to be synchronized.
+     * After fail-over: 
+         + Dealing with the protocol state that does not correspond to the
+           current config, after a switchover.
+         * Efficiency in reconciling state learnt from old-master with unicast 
+           routing on new-master.
+         * Efficiency in reconciliing state between PIM & IGMP.
+
+7. COMPATIBILITY ISSUES
+   TBC.
+
+
+8. SECURITY ISSUES
+   N/A
+
+
+9. Graceful RE Switchover (GRES), Hobson Impact
+   N/A.
+
+
+10. NOTES
+    N/A
+
+
+11. GLOSSARY
+    N/A
+
+
+12. REVIEW COMMENTS
+
+13. REFERENCES
+
+[NSR]           Non-Stop Routing (NSR) - Functional specification
+                sw-projects/os/nsr/software_spec.txt
+[NSR-BGP]       BGP non-stop routing (RLI 2711)
+                sw-projects/os/nsr/bgp_software_spec.txt
+[LDP-IMP]       Design and Implementation specification for LDP support of NSR
+                sw-projects/os/nsr/ldp-nsr-implementation.txt

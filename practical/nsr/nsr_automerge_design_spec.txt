@@ -1,0 +1,603 @@
+$Id: nsr_automerge_design_spec.txt,v 1.5 2012/11/29 11:30:05 sseth Exp $
+
+		Kernel NSR automerge Module Design
+		
+		Copyright (C) 2012, Juniper Networks, Inc.
+
+                Author: Sameer Seth   
+
+NOTICE: This document contains proprietary and confidential
+information of Juniper Networks, Inc. and must not be distributed
+outside of the company without the permission of Juniper Networks
+engineering.
+
+
+Table of Contents
+-----------------
+
+1.	Introduction
+2.	Definitions
+3.	Goals
+4.	Assumptions/Dependencies
+	4.1.	Assumptions
+	4.2.	Dependencies
+5.	Context Dhart
+6.	High-Level Design
+	6.1.	Description
+	6.2.	Initialization and failover
+7.	Detailed Design
+	7.1.	automerge module 
+	7.2.	Kernel NSR automerge socket options(exposed to the application)
+	7.3.	kernel NSR aotumerge tunable sysctls:
+	7.4.	kernel NSR automerge thread:
+	7.5.	interfaces to regster with automerge:
+	7.6.	kernel NSR automerge tunable values to be considered :
+	    7.6.1 BGP hold-time scenarios to be tested 
+	7.7	Definitions
+
+8.	Alternative Approaches Considered
+9.	Outstanding Issues
+10.	Future Optimizations
+A.	References
+
+1.	Introduction
+--------------------
+
+This document will cover the design of the JSR automerge  Module for socket
+replication/Non-Stop Routing (NSR).  High-level and detailed design will be
+discussed.  Other approaches that we considered will also be listed, with
+their advantages and the reason(s).
+
+Currently, NSR switchover from backup to master happens when RPD issues
+a MERGE call for each secondary socket pair to merge them to single socket
+over which TCP communication would happen. Once socket is merged only then
+new primary rpd can start sending out BGP keep-Alive to the peer. The
+performance hit was the RPD loop that would cleanup many secondary related
+BGP states before actually merging TCP secondary socket and only then it
+would send out the BGP keep-alives. In the scaled scenario where we have many
+BGP connections, the loop would be costly and would cost us BGP session flaps.
+This primary step to tackle this issue was to have separate high-priority RPD
+thread(pthread) that would execute only BGP keep-alive functionality(RLI 13131).
+So, Keep-alives could be sent out parallelly with main RPD thread execution.
+But keep-alive could happen only when secondary socket-pair could be merged.
+This merge as already explained was happening in a loop with lot of cleanup
+work happening introducing lot of delays in BGP keep-alive generation. Also,
+RPD scheduling itself is not in anyones control as it runs at a normal priority.
+Any delays in RPD scheduling would again aggravate the situation. To minimise
+the delays to merge the secondary sockets causing BGP session flap in scaled
+environment, we have introduced automerge module in the kernel that will
+decouple the secondary socket merge from RPD and would atomically merge socondary
+sockets on switchover so that RPD high priority thread could take advantage of
+this and generate faster keep-alive to sustain TCP connections on switchover.
+
+NSR automerge is one of the kernel component of the socket replication.
+It's main job is to merge the socket pairs atomically on the backup RE
+kernel on switchover without RPD intervention. This way, we will be able to
+achieve faster merge of the socket pair that would setup TCP communication
+stream to communicate with the peer much faster.
+ 
+
+2.	Definitions
+-------------------
+
+    * Kernel NSR Automerge Module - The subsystem described in this document.
+    	It is responsible for atomically merging system-wide socket-pairs on
+	the secondary RPD on switchover from secondary to primary.
+
+    * hold-time Queues - Hold-time is BGP concept which means that if there
+	is no activity seen over the socket in this(hold-time) duration, the
+	BGP connection will be terminated. BGP sends out three keep-alives
+	at eqaul distances each hold-time seconds. Kernel automerge needs
+	to prioritize merging of the sockets based on the hold-time value.
+	Lower the value, earlier it needs to be merged. So, kerel needs to
+	keep separate hold-time queues for each hold-time value.
+
+    * Protocol Master - The RE/chassis that is not aware of auto-merge process.
+
+    * Protocol Backup - The RE/chassis that keeps secondary socket information
+	for automerge and does the automerge on switchover.
+
+3.	Goals
+-------------
+
+The primary goals of the NSR automerge sub-system:
+
+    * To merge secondary socket pair atomically when we switchover from secondary
+	to primary. The automerge should kick in as soon as mastership switchover
+	happens.
+
+    * To merge sockets in the order of their hold-time values. Lower hold-time
+	entries should be merged first.
+
+    * To maintain each hold-time queue in the order of oldest to latest socket
+	activity.
+
+    * To kick start NSR automerge module along with KKCM module.
+
+Secondary goals include:
+
+    * Scalability
+	Since BSD kernel is non-preemptive in it's current state and our auto-merge
+	kernel thread is processing secondary sockets in a loop, we need to take
+	care of the long processing time taken by the automerge thread in case
+	of huge entries to be processed. Long processing by automerge module would
+	cause delays for other processes and sub-systems on the new master.
+
+    * Fair scheduling
+	We need to take care of automerge processing in the kernel and the KA thread
+	scheduling for timely KA generation.
+
+    * Reliability
+	Need to take care of the timely generation of the KA thread without impacting
+	normal router activity.
+
+    * Error Handling
+	RPD or any other application making use of automerge framework needs to take
+	care of the error handling as file descriptors used to access secondary
+	socket pair may have gone before even MERGE call is issued by the application.
+
+    * Modularity
+      The kernel NSR automerge module should be a internally-cohesive module in the kernel,
+      that is as independent as possible from other areas of code while still providing the
+      required functionality.
+
+
+4.	Assumptions/Dependencies
+--------------------------------
+
+4.1.	Assumptions
+-------------------
+
+The following assumptions are made for the design of kernel NSR automerge module:
+
+    a.  A failover (either synchronous due to the application, or asynchronous
+        due to RE or other system failure) could occur at any time.
+
+    b.  Either the protocol master or the protocol backup could failover (as 
+        described above) at any time.
+
+    c.  RPD or anyother application making use of automerge framework should
+	be able to handle errors in case any of it's socket operations fail
+	as a result of automerge.
+
+    d.  RPD or anyother application using automerge framework should be able
+	to merge sockets using normal MERGE calls in case the merge has
+	not yet happened. In case socket merge has already happened, MERGE
+	call should return the same values that it would return on merge.
+
+    e.  The protocol master and backup do not need to be running the same 
+        version of software.  However, both must be running releases that 
+	support Non-Stop Routing, and specifically socket replication.
+	However, it is OK to have automerge enabled/implemented on any one
+	RE as the automerge module doesn't communicate between the two RE's.
+
+4.2.	Dependencies
+--------------------
+
+The kernel NSR automerge layer is dependent on the following:
+  
+    a.  After the user configures NSR on a router, MGD will send a notification
+        to the kernel via a sysctl.  On receipt of such a notification, the
+        kernel will initialize and activate the kernel NSR automerge module.
+	Likewise, when NSR is deconfigured by the user, the kernel will receive
+	a notification and kernel automerge module will be deactivated.
+
+    b. BGP OR any other protocols on the secondary RPD should issue a socket
+	option to create hold-time queue for the hold-time protocol is going
+	to use.
+
+    c. SPLIT call on the secondary should issue a socket option to create an
+	entry for the socket pair in the specific hold-time queue in the kernel.
+
+    d.  GRES maintains mechanisms which allow the primary RE and backup RE to
+        detect the situation when the other RE has gone offline, or when a
+        manual mastership switch has taken place.  The same mechanisms will
+        also be employeed by kernel NSR automerge module  for detecting the
+	disappearance/death of the other RE or a controlled mastership
+	switchover.
+
+5.	Context Chart 
+---------------------
+
+Automerge module wakes up whenever we switch from back-to-master on the backup.
+It starts processing socket-pair in the hold-time bucket in the same order
+as they are arranged. Socket-pair are always maintained in the order of oldest
+to latest socket activity so that at the time of merge, we merge the oldest
+entry prior to the latest one. RPD can also merge sockets along with the kernel
+auto-merge. In case, application crashes OR shuts down, socket-pair information
+is freed in the socket close path.
+
+
+					    |----------------|		    |----------------|
+		|--------------------|	    | Application    |		    | RPD's KA       |
+		| application can    |	    |                |		    |  thread        |
+	        | also issue socket  |	    | 	(rpd)        |		    |                |
+	        | merge	             |	    |----------------|		    |----------------|
+		|--------------------|          |       |			    | 
+			       user space       |       |			    |
+	-------------------------------------------------------------------------------------------
+	     	              kernel space      |       |			    |
+	        			        |       |			    |
+						|       |			    |	
+						|       |			    |	    |-------------------|
+	|----------------|			|       |			    |	    | send out KA once  |
+	|switchover from |			|       |			    |	    | socket is active  |
+	|backup to master|			|       |			    |	    | (merged)          |
+	|wakes up        |			|       |			    |	    |-------------------|
+	|auto-merge      |			|       |			    |
+	|kernel thread.  |			|       |			    |
+	|----------------|			|       |			    |
+		|				|       |			    |
+		|				|       |			    |
+        |----------------|	    |------------------------------------|	    |
+        |automerge       |	    | socket pair                        |	    |
+	|thread merges   |	    ||--------------|  |--------------|  |	|----------------|
+	|socket-pair     |	    || send snoop   |  | receive snoop|  |	| merged to      |
+	|registered with |=========>|| socket       |  | socket       |  |=====>| active socket  |
+        |                |	    ||--------------|  |--------------|  |	|----------------|
+	|--------------- |	    |------------------------------------|
+
+				|-------------------------------------|
+				| automerge socket-pair information   |
+				| get's freed once socket is merged.  |
+				| It also get's freed in socket close |
+				| path in case applicion crashes.     |
+				|-------------------------------------|
+
+	|-------------------------------------------|
+	| automerge module processes buckets in     |
+	| the same order  as it appears in the      |
+	| list(from lower HT to higher HT bucket).  |
+	| Within each bucket, socket-pair are       |
+	| processed in the order they are arranged  |
+	| (always oldest to latest)                 |
+	|-------------------------------------------|
+
+	|-----------------------|
+	| hold-time buckets     |
+	| arranged in ascending |
+	| order w.r.t hold-time |
+	|-----------------------|
+	    |
+	    |
+	|------|                     |---|    |---|    
+	| HT=3 |-------------------->|SP |--->|SP |--->NULL
+	|      |		     |---|    |---|    
+	|      |
+	|------|                     |---|    |---|    |---|     |---|
+	| HT=10|-------------------->|SP |--->|SP |--->|SP |---->|SP |---> NULL
+	|      |		     |---|    |---|    |---|     |---|
+	|      |
+	|------|                     |---|   
+	| HT=30|-------------------->|SP |--->NULL
+	|      |		     |---|   
+	|      |
+	|------|                     |---|    |---|    |---|
+	| HT=60|-------------------->|SP |--->|SP |--->|SP |----> NULL
+	|      |		     |---|    |---|    |---|
+	|      |
+	|------|                     |---|    |---|    |---|     |---|    |---|
+	| HT=90|-------------------->|SP |--->|SP |--->|SP |---->|SP |--->|SP |--->NULL
+	|      |		     |---|    |---|    |---|     |---|    |---|
+	|      |
+	|------|
+
+
+		    |-----------------------|
+		    | socket pair arranged  |			 |-----------| 
+		    | in oldest to latest   |------------------->| LATEST    |
+		    | updated order on each |			 |-----------|
+		    | bucket at any time    |
+		    |-----------------------|
+
+	Diagram 1: Context Chart for auto-merge module
+
+The kernel NSR automerge receives input from the following areas:
+                
+    * SPLIT call where a socket option will add  socket pair information
+	to the appropriate hold-time queue.
+
+    * hold-time bucket is added to the kernel automerge module whenever
+	it processes hold time related configuration.
+
+    * Whenever we send out any data over the socket, socket pair is moved
+	to the end of the queue in it's hold-time bucket.
+
+    * Merge Call will remove a socket-pair entry from the hold-time bucket.
+
+    * Socket option that checks if the socket-pair entry exists in the
+	hold-time bucket, it removes the entry from the bucket.
+
+    * Normal socket close path will remove the socket-pair entry from
+	the hold-time bucket.
+
+
+
+The kernel NSR automerge processing and outputs to the following areas:
+        
+    * socket merge kicks in when we switchover by waking up kernel automerge
+	thread. Thread starts processing socket-pair entries from each hold-time
+	bucket. Each socket pair is merged which will cause closing of send
+	snoop socket and removing of send snoop socket entry from the process
+	file table. Also, the receive socket is activated further communication.
+	
+    * After the socket pair is merged, notification is sent to the registered
+	process waiting for JSR events that the socket peir is closed.
+
+
+6.	High-Level Design
+-------------------------
+
+6.1.	Description
+-------------------
+
+The major tasks of the kernel NSR automerge module include: <=== start from here...
+
+    a. This module provides interfaces to the applications using NSR framework
+	to build kernel NSR automerge information base.
+
+    b. The kernel NSR automerge functionality is very much tied to the sockets.
+	Currently socket options are used to build automerge information base.
+
+    c. Two main requests are serviced by automerge module via above explained
+	interfaces. Hold-time bucket creation and socket-pair creation for
+	a given hold-time bucket.
+
+    d. On any socket activity(send side), socket-pair needs to be moved to
+	the end of the queue in it's respective bucket. Since this functionality
+	is applicable only on the backup and backup does not actively invlove
+	in communicaiton with the peer, this get triggered when we receive
+	an update from the master that we are sending out data to the peer.
+
+    e. Switcover from master to backup should kick in automerge process to
+	to start merging socket-pair from each bucket. Buckets are arranged
+	in the order of lowest to highest hold-time order. Buckets are
+	processed in the same order so re-ordering can be avoided. Similarly,
+	the socket-pair in each bucket are already arranged in the oldest to
+	latest updated order. automerge will happen in the same order as per
+	the requirements and no further re-ordering is required.
+	
+    f. If rpd crashes on the backup, automerge related objects should be
+	cleaned in the socket close path automatically as the they are
+	tightly coupled with the socket.
+
+    g. There is a race between the application and the automerge module in
+	the kernel to perform socket-pair merge. This race comes from the
+	fact that kernel module and rpd scheduling are in nobody's control
+	as of now. If rpd gets scheduled first, it can perform socket-pair
+	merge and would also remove the socket-pair entry from the bucket.
+	Also, there is a time between two runs of kernel automerge module
+	when rpd can get sceduled and perform few socket-pair merge.
+
+    h. Kernel automerge module can be programmed live to adjust number of
+	automerge operations in one run before it can relinquish the CPU.
+	This is required feature as the RPD keep-alive thread should get
+	time to send out Keep-alives timely.
+
+    i. Kernel automerge module can be programmed live to adjust the number
+    	of ticks for which it can sleep before it can process another socket-pair
+	merge. This feature is used to fine tune automerge process in different
+	load conditions.
+
+    j. automerge has also provided an interface to the user to check if the
+	socket has already been merged to avoid any unusuall consequences in
+	error handling at the time of switchover. This interface will also
+	make sure that we don't enter into any kind of race with the kernel
+	module by removing the socket-pair entry from the bucket making sure
+	that only application will be responsible for this socket-pair merge.
+
+
+
+6.2.	Initialization and Shutdown
+---------------------------------------
+
+Kernel NSR automerge is initialised for the first time when KKCM module is
+initialised. Thereafter it remains forever unless NSR is disabled.
+
+
+7.	Detailed Design
+-----------------------
+
+7.1.	kernel NSR automerge module 
+------------------------------------
+
+
+socket pair: Following structure keeps enough information about the
+*******************
+socket-pair so that auto-merge module can act on it without any process
+context.
+
+typedef struct jsr_jsm_sock_pair_ {
+       int jsr_jsm_rsnoop_fd;
+       int jsr_jsm_ssnoop_fd;
+       struct jsr_sock *so_jsr;
+       u_int   jsr_jsm_last_activity;
+       struct  thread  *jsr_jsm_thread;
+       struct jsr_jsm_sock_pair_ *jsr_jsm_prev;
+       struct jsr_jsm_sock_pair_ *jsr_jsm_next;
+} jsr_jsm_sock_pair_t;
+
+hold-time bucket: this structure links the socket-pairs that belong to
+***************
+same hold-time bucket.
+
+typedef struct jsr_jsm_bucket_ {
+       int jsr_jsm_hold_timeout;
+       jsr_jsm_sock_pair_t *jsr_jsm_sp_q_first;
+       jsr_jsm_sock_pair_t *jsr_jsm_sp_q_last;
+       int jsr_jsm_sp_q_len;
+       struct jsr_jsm_bucket_    *jsr_jsm_bucket_next;
+} jsr_jsm_bucket_t;
+
+hold-time bucket queue: this structure maintains the hold-time queue
+*********************
+for the auto-merge module.
+
+typedef struct jsr_jsm_queue_ {
+    jsr_jsm_bucket_t   *jsr_jsm_bucket_first;
+    jsr_jsm_bucket_t   *jsr_jsm_bucket_last;
+    int                        jsr_jsm_q_len;
+} jsr_jsm_queue_t;
+
+7.2 Kernel NSR automerge socket options(exposed to the application):
+-------------------------------------------------------------------
+
+TCP_USERSPACE_HOLD_TIMEO: to register hold-time bucket with the auto-merge
+module and associate the hold-time bucket with the secondary socket.
+
+TCP_USERSPACE_MERGE_DONE: to check if the socket-pair merge has already
+happened via auto-merge path. If not already happened, the action
+would be to remove the socket pair from the bucket.
+
+
+7.3 kernel NSR aotumerge tunable sysctls:
+----------------------------------------
+
+net.jsr.automerge_active: automerge module is activated.
+
+net.jsr.auto_merge_all: merge all socket-pairs on all the buckets in
+a single run.
+
+NOTE: net.jsr.auto_merge_all flag is used only for diagnostics as of now.
+This will not be used in production. We will be using this in the
+next phase of development when we are able to send out first keep-alive
+from the kernel as an automerge process. Moreover, automerge activity is
+not very time consuming even if we run it with merge all option. So, there
+are very little or practically no chance of CPU hog even with merge all.
+
+net.jsr.auto_merge_batch_count: if merge all option is not set, we are
+performing auto-merge of the socket-pairs in batches. This parameter
+tells us how may socket-pairs will be merged before we go to sleep.
+
+net.jsr.auto_merge_exp_slow: In batch processing, we can tune the
+auto-merge module to increase the batch count in each iteration. With
+this value set, we will be increasing the batch count slowly(by half
+of the current value)
+
+net.jsr.auto_merge_exp: With this parameter, we can specify the batch
+count to increase exponentially in each iteration(twice).
+
+net.jsr.auto_merge_timeo: While performing auto-merge in batch, this
+will indicate the time "in ticks" between the two batch processings.
+
+net.jsr.auto_merge_sleep_exp: We can tune the auto-merge processing
+to increase the timeout value in each iteration. This tunable parameter
+along with batch count parameter will ensure fair CPU sharing between
+auto-merge module and RPD keep-alive thread.
+
+net.jsr.auto_merge_processed: this is read only parameter for
+diaganostics to tell us what % of socket-merge was done by kernel
+auto-merge module. The reason being some socket-merge can be done
+by rpd if it gets scheduled with batch processing.
+
+7.4 kernel NSR automerge thread:
+-------------------------------
+
+jsr_jsm_thread: This is main auto-merge module thread that is woken
+up once we switchover from backup-to-master. This will start merge of
+socket-pairs in each bucket in the order in which they appear on the
+queue. Since the queue is already ordered in the oldest to latest order,
+we need not sort the queue. The buckets are also arranged in the sorted
+order lowest hold-time to the highest hold-time. So,we process the
+buckets in the same order as they appear.
+
+7.5 interfaces to regster with automerge:
+----------------------------------------
+
+
+7.6 kernel NSR automerge tunable values to be considered :
+--------------------------------------------------------
+
+7.6.1  BGP hold-time scenarios to be tested
+============================================
+
+We will be testing following combination of bgp-sessions and BGP hold-time . The range of number of sessions 
+supported with 10/30/90 sec HT is given below
+
+	|BGP sessions |   Hold-Time (sec)
+case1:	|             |
+        | 1000 - 1300 |   10
+	
+case2:  | 3000 - 3500 |   30
+
+case3:  | 500         |   10
+        | 2000        |   30
+
+
+cli commands to tune automrege tunables should not be tested
+as they will be fixed for each case.
+
+7.7 Definitions
+----------------
+
+KKCM: kernel to kernel communication module. 
+KA: protocol(BGP) keepalive.
+HT: protocol(BGP) Hold Time.
+SP: backup JSR socket-pair.
+JSR: Juniper socket replication.
+JSM: Juniper socket merge(automerge).
+
+
+8.	Alternative Approaches Considered
+-----------------------------------------
+
+    None as of now.
+
+
+9.	Outstanding Issues
+--------------------------
+
+Some currently outstanding issues:
+
+    * Since our approach is to bring out fair scheduling between the
+	kernel auto-merge module and RPD's exclusive high priority
+	keep-alive thread that sends out keepalive, we still rely
+	on the kernel scheduler for achieving this. Today, we don't
+	have any other high priority thread like RPD's keep-alive
+	thread, so we are sure to get the time-slot. But that may not
+	be the case if some other process implements similar high
+	priority thread for it's requirements. For this, we need to
+	do some minor optimizations which is discussed in the next
+	section.
+
+
+10.	Future Optimizations
+----------------------------
+
+    * The further enhancement to auto-merge would be to eliminate
+	any scheduler dependency during auto-merge. The reason is
+	discussed in "Outstanding issues" section. To achieve this,
+	we should be able to merge the socket-pair in the kernel
+	and also send out first keep-alive from the kernel itself.
+	With this feature, we can atomically perform auto-merge
+	for all the socket-pairs without yielding the CPU and this
+	would get us more reliable results with further improved
+	performance.
+
+A.	References
+------------------
+
+[1]	TCP/Socket Replication for Non Stop Routing (NSR)
+	sw-projects/os/nsr/kernel/kernel_replication_spec.txt
+
+[2]	Non-Stop Routing (NSR) Functional Specification
+	sw-projects/os/nsr/software_spec.txt
+
+[3]     Juniper Socket Replication Initialization, Handle Management and
+        Async Notification Module (IHA)
+        sw-projects/os/nsr/kernel/iha_design.txt
+
+[4]     Packet Replication Layer Design
+        sw-projects/os/nsr/kernel/prl_design.txt
+
+[5]     Socket Data Replication Layer Design
+        sw-projects/os/nsr/kernel/sdrl_design.txt
+
+[6]     Protocol State Replication Module Design
+        sw-projects/os/nsr/kernel/psrm_design.txt
+
+[7]     Juniper Socket Replication IPC Message Formats
+        sw-projects/os/nsr/kernel/jsr_ipc_msg.txt
+
+=========================================
+

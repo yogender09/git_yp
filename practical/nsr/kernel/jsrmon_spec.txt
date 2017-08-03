@@ -1,0 +1,350 @@
+                        Juniper Socket Replication
+                              jsrmon utility
+                        
+                    Author: Manoj Guglani, January 2006
+
+Copyright Notice
+
+Copyright (C) 2006, Juniper Networks, Inc.
+
+NOTICE: This document contains proprietary and confidential
+information of Juniper Networks, Inc. and must not be distributed
+outside of the company without the permission of Juniper Networks
+engineering.
+
+1.  INTRODUCTION
+
+    This document discusses the jsrmon utility that can be used for monitoring
+    the juniper socket replication. Jsrmon will use async rtsock
+    notifications to monitor the socket replication state. For details on async
+    notifications for JSR refer [3].
+
+    RLI: 3762
+    PR:  66474 
+
+    References:
+    ---------- 
+
+    [1]	TCP/Socket Replication for Non Stop Routing (NSR)
+	sw-projects/os/nsr/kernel/kernel_replication_spec.txt
+
+    [2]	Non-Stop Routing (NSR) Functional Specification
+	sw-projects/os/nsr/software_spec.txt
+
+    [3] Juniper Socket Replication API
+        sw-projects/os/socket_replication_api.txt
+
+    [4] Juniper Socket Replication Initialization, Handle Management and
+        Async Notification Module (IHA)
+        sw-projects/os/nsr/kernel/iha_design.txt
+
+    Jsrmon is intended for debugging kernel level socket replication issues. It
+    can be used by test, development and field. 
+
+    The user can run jsrmon to monitor socket replication states on
+    either primary or secondary RE. This utility can be used to monitor all 
+    replicated sockets or one socket.
+
+2.  FUNCTIONALITY
+
+    Jsrmon is a utility on the lines of rtsockmon. This utility will be used to
+    monitor kernel level socket replication. Jsrmon can be invoked from router's
+    shell. The utility can be used both on primary and secondary RE.
+
+    Usage: jsrmon
+         -A [-H <handle-id>|-p <pid>]
+                             monitor sock replication async events
+                             optionally input a handle-id or process id
+         -V                  print in verbose mode
+         -T [-H <handle-id -I <ipc-type> ]
+                             trace mode: list and print all socket 
+                             replication ipc messages exchanged between two REs
+                             optionally give a handle-id and/or ipc-type 
+                             (sdrl, prl, psrm, iha)
+         -h                  print this help menu
+         -v                  print version info
+    Note: Use "netstat -JS -V" command to derive handle-id. 
+          If no arguments are given, the command is equivalent to "jsrmon -A".
+
+    There are two main modes for running jsrmon - async mode and trace mode.
+    Async mode displays all the aysnc rtsock event notifications. The trace
+    mode displays async rtsock events as well as all the JSR IPC messages
+    exchanged between the two REs.
+
+    The jsrmon utility will report following async rtsock events:
+
+    /* Primary/Secondary */
+    JSR_EVENT_SYS_HANDLE_ALLOC,
+    JSR_EVENT_SYS_HANDLE_FREE,
+    JSR_EVENT_SYS_HANDLE_DFREE,
+    /* Primary Only */
+    JSR_EVENT_PRI_HANDLE_ALLOC,      
+    JSR_EVENT_PRI_HANDLE_FREE,
+    JSR_EVENT_PRI_REPLICATE,
+    JSR_EVENT_PRI_REPLICATE_DONE,
+    JSR_EVENT_PRI_UNREPLICATE,
+    /* Secondary Only */
+    JSR_EVENT_SEC_SPLIT,
+    JSR_EVENT_SEC_SPLIT_DONE,
+    JSR_EVENT_SEC_SPLIT_FAIL,
+    JSR_EVENT_SEC_MERGE_DONE,
+    JSR_EVENT_SEC_UNREPLICATE,
+    /* Primary/Secondary */
+    JSR_EVENT_REPLICATION_ACTIVE,
+    JSR_EVENT_REPLICATION_INACTIVE
+
+    /* Primary/Secondary */
+    JSR_EVENT_IPC_SEND,
+    JSR_EVENT_IPC_RECEIVE
+
+    If needed, more notifications can be added in the future. Refer [3] for
+    detailed explanation of each event.
+
+2.1 JSR Events    
+    
+    This section describes the information displayed for each of the events
+    and also the events traced in different jsrmon modes. Jsrmon monitors JSR 
+    socket events for all processes. The events maybe filtered based on the 
+    options that are set. For async mode user may specify handle id to filter
+    all async rtsock notifications for a given local handle id or user may
+    specify a process id to filter all async rtsock notifications for a
+    process. For trace mode user may specify local handle id and/or JSR ipc 
+    type. If ipc type is specified, all ipc messages for the given type are
+    displayed. User may chose to further filter the messages based on local RE 
+    handle id for a given ipc type. 
+
+    Below is the information displayed for each event type. Events displaying
+    common information are grouped together. The sample output for each event
+    was collected using the "jsrmon -T -V" command.
+
+2.1.1 System Events
+    This section covers following events: JSR_EVENT_SYS_HANDLE_ALLOC, 
+    JSR_EVENT_SYS_HANDLE_FREE, and JSR_EVENT_SYS_HANDLE_DFREE. Jsrmon displays  
+    kernel timestamp when the event happened,  event name, handle id, 
+    and number of handles currently in use for these events.  If process id flag
+    is set, these events will be filtered out. These events are reported both
+    in async and trace mode.
+    
+    Sample output:
+
+    [Apr 18 00:10:46.595 ] event     : SYS_HANDLE_ALLOC
+    handleid  : 0x100000300000002 inusecnt  :          3
+
+2.1.2 Primary/Secondary Events
+    This section covers following replication events:
+    JSR_EVENT_PRI_HANDLE_ALLOC, JSR_EVENT_PRI_HANDLE_FREE,
+    JSR_EVENT_PRI_REPLICATE, JSR_EVENT_PRI_REPLICATE_DONE,
+    JSR_EVENT_PRI_UNREPLICATE, JSR_EVENT_SEC_SPLIT,
+    JSR_EVENT_SEC_SPLIT_DONE, JSR_EVENT_SEC_MERGE_DONE, and
+    JSR_EVENT_SEC_UNREPLICATE.  The utility displays timestamp when the event
+    happened, event name, local RE handle id, other RE handle id, socket address
+    domain, socket address family and process id of the process intiating the 
+    connection. These events are reported both in async and trace mode. They may
+    be filtered based on the process id flag or local RE handle. 
+    
+    Sample output:
+
+    [Apr 18 00:10:46.595 ] event     :PRI_HANDLE_ALLOC
+    lochandle : 0x100000300000002 orehandle : 0xffffffffffffffff
+    addrdom   :   Dgram(2) addrfam   :     inet(2) procid    :       6170
+
+    [Apr 18 00:10:46.605 ] event     :PRI_REPLICATE
+    lochandle : 0x100000200000001 orehandle : 0x100000200000001
+    addrdom   :   Dgram(2) addrfam   :     inet(2) procid    :       6170
+
+    [Apr 18 00:12:23.622 ] event     : SEC_SPLIT
+    lochandle : 0x100003400000001 orehandle : 0x100000100000000
+    addrdom   :  Stream(1) addrfam   :     inet(2) procid    :       6187
+    
+2.1.3 Global Replication Events      
+    This section covers following replication events:
+    JSR_EVENT_REPLICATION_ACTIVE, and JSR_EVENT_REPLICATION_INACTIVE.  The 
+    utility displays the timestamp when the event happened and event id for 
+    these events. These global events are reported in all modes irrespective of 
+    the flags set. Sample output:
+
+    [Apr 18 00:12:33.623 ] event     : REPLICATION_INACTIVE
+    reason    : KKCM socket error(3)
+
+    [Apr 18 00:07:37.590 ] event     : REPLICATION_INACTIVE
+    reason    : JSR Deconfiged(2)
+
+    [Apr 18 00:08:07.052 ] event     : REPLICATION_ACTIVE
+
+2.1.4 IPC Events    
+    This section covers following replication events: JSR_EVENT_IPC_SEND,
+    and JSR_EVENT_IPC_RECEIVE.  The utility displays the time at which the event
+    was queued to KKCM for IPC send events and the time at which KKCM read the
+    message back for IPC receive events. Other fields are event name, local RE
+    handle id, other RE handle id, ipc type name, ipc subtype name for these 
+    events. In verbose mode version length, ipc length is also displayed. These
+    events are reported only in trace mode. User may also choose to filter
+    events based on specific ipc type messages i.e. iha, sdrl, psrm or
+    prl. Based on the ipc subtype of the message, the utility parses and
+    displays relevant information.
+    
+    Sample Output:
+
+    [Apr 18 00:07:25.839 ] event     : IPC_RECEIVE
+    ipctype   :       PSRM ipcsubtype:  TS_CURVAL
+    ipcver    :          1 ipctotlen :         16
+    curtickval:    2397000 
+    
+    [Apr 18 00:07:27.779 ] event     :  IPC_SEND
+    lochandle : 0xffffffffffffffff orehandle : 0x100000100000000
+    ipctype   :       PSRM ipcsubtype: FLOWCONTROL
+    ipcver    :          1 ipclen    :         24
+    rcvbufspc :      49152
+
+    [Apr 18 00:08:30.054 ] event     :IPC_RECEIVE
+    lochandle : 0x100000100000000 orehandle : 0xffffffffffffffff
+    ipctype   :       SDRL ipcsubtype: RCVDATA_REPLICATE
+    ipcver    :          1 ipclen    :         40
+    protsndflg:          0 sockrepflg:        0x2 seqno     :          0
+    addrlen   :          0 ctrllen   :          0 datalen   :          0
+    
+    [Apr 18 00:08:30.054 ] event     :  IPC_SEND
+    lochandle : 0xffffffffffffffff orehandle : 0x100000100000000
+    ipctype   :       SDRL ipcsubtype:        ACK
+    ipcver    :          1 ipclen    :         36
+    acktype   :          2 rejectcode:          0 seqno     :          0
+    datalen   :          0 
+    
+    [Apr 18 00:08:30.054 ] event     :IPC_RECEIVE
+    lochandle : 0x100000100000000 orehandle : 0xffffffffffffffff
+    ipctype   :       SDRL ipcsubtype: SNDDATA_REPLICATE
+    ipcver    :          1 ipclen    :         40
+    protsndflg:          0 sockrepflg:        0x2 seqno     :          0
+    addrlen   :          0 ctrllen   :          0 datalen   :          0
+
+Assumptions
+
+TBD
+
+3.  CAVEATS
+
+TBD
+
+4.  OTHER REQUIREMENTS
+
+N/A
+
+5.  IMPLEMENTATION DETAILS
+
+TBD
+
+6.  PERFORMANCE
+
+N/A
+
+7.  COMPATIBILITY ISSUES
+
+N/A
+
+8.  SECURITY ISSUES
+
+
+N/A
+
+9.  Graceful RE Switchover (GRES), Hobson Impact
+
+No impact.
+
+11.  GLOSSARY
+
+TBD
+
+12.  REVIEW COMMENTS
+
+     Navneet's comments:
+
+     a) This document will be the README for anyone who wants to use jsrmon. May
+     be good to add a section on usage.
+     - Done.
+
+     b) -H <handle-id> appears better than -S <handle-id> 
+     - Done.
+     
+     c) In the usage section specify that in order to monitor a specific handle
+     one can derive the handle information using netstat -JS -V 
+     - Done.
+     
+     d) Provide a help menu in the utility with -h option 
+     - Done.
+     
+     e) Will -S also work on primary unreplicate sockets for which handle was 
+     allocated 
+     - Yes it will work.
+     
+     f) The following should be part of the common description for both -S and
+     -A arguments.
+
+     The information displayed for a socket will include kernel timestamp for
+     this notification, event type, primary handle id, secondary handle id,
+     process id, error, message len. For jsr ipc message notifications, the ipc
+     type and subtype will also be displayed.  
+     -Done
+     
+     g) Besides pid can you also print process name.  
+     - TBD in 8.1.
+     
+     h) Besides IPC Type/Subtype will you also not display some information on
+     the control messages (e.g. NACK reason, buffer available for buffer 
+     exchange messages etc).
+     - ipc subtype specific information is displayed for each ipc subtype
+       message.  
+     
+     i) In case of replication failure it would be useful if jsrmon is able to
+     tell as intelligently as possible why the failure happened ---> Use the var
+     info section to send the jsr_unreplicate error string to upper layer.
+     - Done.
+     
+     j) Would be useful to store jsrmon output to a file using an argument and 
+     then have jsrmon interpret it back from file. Similar to tcpdump -r/-w 
+     options.
+     - TBD in 8.1.
+     
+     k) User should be allowed to give a list of ipc types
+     - TBD in 8.1.
+
+     Saurabh's comments: 
+     
+     a) given a handle-id, display netstat -JS -V like output.
+     Saurabh to check if we can add an api to get handle id based on the ip 
+     address. 
+     - it is implemented as part of netstat as per Navneet's input. The 
+     following options are added: 
+     "netstat -JS -V -H <handle-id>" and "netstat -JS -H <handle-id>"
+     
+     b) Always display the global events (Replication Active and Replication 
+     Inactive).
+     - done.
+     
+     c) option to monitor async rtsock messages for a given handle id. 
+     - Done. 
+     
+     d) option to trace ipc messages. 
+     - Done.
+     
+     e) User can specify primary and(or) secondary handle id. If both handles 
+     are specified, ipc messages will be matched against either of the handle. 
+     The reason for providing both handles is some ipc messages sent from 
+     secondary (primary) only put other RE's of the handle. E.g. psrm ack 
+     message (secondary->primary) has only the primary RE handle. 
+     - Navneet's input was that use should always specify local handle.
+       The utility should internally derive other RE's handle id. Jsrmon only
+       accepts local RE handle. TBD - deriving other RE's handle given local
+       handle.
+       
+     f) User can specify which IPC messages to trace e.g. SDRL, PRL, etc.
+     - Done.
+
+     g) Option for verbose mode.
+     - Done.
+
+     Kapil's Inputs:
+     a) In monitor mode why not allow filtering based on event type?
+     - TBD in 8.1
+     b) In trace verbose mode maybe useful to have the option of displaying
+        a hexdump of the data also.
+     - TBD in 8.1.   

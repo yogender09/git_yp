@@ -1,0 +1,2211 @@
+$Id: socket_replication_api.txt,v 1.16 2006/04/19 05:34:47 mguglani Exp $
+
+
+                       Juniper Socket Replication API
+                              (Non Stop Routing)
+
+                      Author: Navneet Yadav, May 2005
+
+Copyright Notice
+
+   Copyright (C) 2005, Juniper Networks, Inc.
+
+   NOTICE: This document contains proprietary and confidential
+   information of Juniper Networks, Inc. and must not be distributed
+   outside of the company without the permission of Juniper Networks
+   engineering.
+
+TABLE OF CONTENTS
+
+   1. Introduction
+      1.1 Legend
+      1.2 Glossary
+   2. Juniper Socket Replication API
+      2.1 Libraries and Data Types
+      2.2 API Functions
+         2.2.1 Functions for the primary JSR application
+         2.2.2 Functions for the secondary JSR application
+         2.2.3 Functions for either application
+         2.2.4 Asynchronous Notification API
+      2.3 RTSOCK Implementation
+         2.3.1 JSR RTSOCK Library and kernel code
+         2.3.2 RTSOCK Message Formats and Typedefs
+         2.3.3 JSR Library API implementation using RTSOCK
+         2.3.4 Asynchronous Notifications in JSR
+      2.4 Examples
+         2.4.1 Typical usage scenario
+         2.4.2 Replication failover scenario
+         2.4.3 Async notification API example
+   3. GRES and Mastership Change Notification for RPD
+      3.1 Requirements
+      3.2 Changes in INIT Daemon
+   4. CLI Knob for NSR
+   5. Notes for Applications using JSR
+
+1. Introduction
+
+   This document will covers the application visible interfaces for the 
+   socket replication portion of Non-Stop Routing. This includes a 
+   programming API which will enable Primary and Secondary JSR applications 
+   to utilize socket replication in JUNOS. We also detail the internal 
+   implementation of this API.
+
+   We also cover all non-kernel work that is needed for NSR. This
+   includes changes to init, sample application for unit testing,
+   and special notes for applications that will use the JSR 
+
+   RLIs - 2755 "NSR: Kernel miscellaneous NSR changes"
+   Related RLIs - 2709, 2710, 2754
+   PR - 59525 - Single Tracking PR for RLIs 2709, 2710, 2754 and 2755.
+
+1.1 Legend
+
+   Some lines are marked with special symbols in the first three columns:
+
+   ==>   Special point to note
+   TBD   Point needs further discussion
+   XXX   Ignore lines with this prefix
+
+1.2 Glossary
+
+    - JSR
+      Juniper Socket Replication
+
+    - JSR Socket
+      One of JSR_P or JSR_S Sockets
+
+    - Primary JSR Socket | JSR Primary Socket | Primary Socket | JSR_P Socket
+      A read-write socket fd whose send and receive data is being replicated 
+      to another RE.
+
+    - Secondary JSR Socket| JSR Secondary Socket| Secondary Socket|JSR_S Socket
+      One of Secondary JSR Receive Socket or Secondary JSR Send Socket
+
+    - Secondary JSR Receive Socket | JSR_S_Recv Socket
+      A read-only socket fd which is getting receive side data from
+      another RE's Primary JSR Socket.
+
+    - Secondary JSR Send Socket | JSR_S_Send Socket
+      A read-only socket fd which is getting send side data from
+      another RE's Primary JSR Socket.
+
+    - Primary JSR Application | Primary Application | JSR_P App
+      An application that has JSR_P Sockets. Applications may at times
+      have both JSR_P and JSR_S Sockets.
+
+    - Secondary JSR Application | Secondary Application | JSR_S App
+      An application that has JSR_S Sockets. Applications may at times
+      have both JSR_P and JSR_S Sockets.
+
+    - Primary JSR Socket's Kernel | Primary Kernel
+      The kernel that has a primary JSR Socket. Note that the RE kernel can 
+      have both primary and secondary JSR sockets at the same time.
+      Primary kernel does not necessarily imply master RE kernel, albeit
+      that will be the case most of the time.
+
+    - Secondary JSR Socket Kernel | Secondary Kernel
+      The kernel that has a secondary JSR Socket. Note that the RE kernel can 
+      have both primary and secondary JSR sockets at the same time.
+      Secondary kernel does not necessarily imply backup RE kernel, albeit
+      that will be the case most of the time.
+
+2. Juniper Socket Replication API
+
+   This section details the Socket Replication API that will be made
+   available for applications
+
+2.1 Libraries, data types and header files
+
+   A new library named libjsr will need to be linked in any application that 
+   wants to use this API.  The location of the source will be at:
+
+   src/juniper/lib/libjsr
+
+   and the associated header file containing the below declarations will be at:
+
+   src/juniper/lib/libjsr/h/jnx/jsr.h
+
+   A new data type will be defined in <jnx/jsr.h>:
+
+   jsr_handle_t - Opaque type representing JSR socket.  This can 
+                  and should be used on both the primary and secondary JSR
+                  applications, and is used to refer to the JSR socket.
+
+                  Note that the internal representation of this data type is
+                  guaranteed to be memcpy()-able over the wire, meaning the
+                  application need not worry about alignment issues, 
+                  etc.
+
+   Encoding and decoding functions for converting jsr_handle_t to/from
+   fds will be provided.
+
+   It is assumed that the applications will share handles through an
+   out-of-band channel, unrelated to kernel socket replication.
+
+
+2.2 API Functions
+
+2.2.1 Functions for the primary JSR application
+
+2.2.1.1 jsr_handle_alloc()
+
+   Get a JSR replication handle for a socket fd.
+
+   int jsr_handle_alloc(rtslib_cookie_t *cookie,   /* input */
+                        int s,                     /* input */
+                        jsr_handle_t *pri_handle); /* output */
+
+      rtslib_cookie_t *cookie - Synchronous RTSOCK message cookie
+      int s                   - Socket to replicate.
+      jsr_handle_t *pri_handle   -
+         Pointer to a buffer of size sizeof(jsr_handle_t) variable. The
+         handle will be returned back in this.
+
+   Behaviour:
+      This call allocates a JSR handle for a given socket fd. The
+      handle is associated with this fd till a jsr_handle_free()
+      is called at which point the handle is released.
+
+      This call does not cause replication itself to start. It is
+      expected that once an application acquires a JSR handle it
+      will keep it for the life of the socket.
+
+      The handle returned by this call can be passed by the primary
+      JSR application to the secondary JSR application on the other RE.
+      The secondary application an then do a jsr_split() using this handle.
+
+      jsr_handle_alloc() will not result in record based writes being
+      turned on on the socket. Only jsr_replicate() can cause this.
+
+   Return Values:
+      This call returns 0 on success and -1 on error. In case of success
+      the handle to the JSR socket is returned in the argument
+      pri_handle. In case of error errno is set as follows:
+         * EINVAL - One or more of the arguments supplied to the 
+                    call was invalid in some fashion.
+         * EEXIST - This socket already has a JSR handle
+         * ESOCKTNOSUPPORT - Call was made on a socket type that is not 
+                             supported for replication
+
+2.2.1.2 jsr_handle_free()
+
+   int jsr_handle_free(rtslib_cookie_t *cookie,    /* input */
+                       jsr_handle_t *pri_handle);  /* input */
+
+      rtslib_cookie_t *cookie - Synchronous RTSOCK message cookie
+      jsr_handle_t *pri_handle   -
+         Pointer to a buffer of size sizeof(jsr_handle_t) variable. 
+
+   Behavior:
+
+      This call will release a handle previous allocated with
+      the jsr_handle_alloc() call. The socket must be in an
+      unreplicated state for this call to succeed. The socket
+      can be unreplicated state either by an explicit call to
+      jsr_unreplicate() or because replication failed at some
+      point after it was requested using jsr_replicate().
+
+      It is typically not expected that applications will use
+      this call. In general if a JSR handle had been requested
+      for a socket for replication, the handle will be used for
+      the life of the socket.
+
+      If an application has a JSR handle on an fd and it
+      closes the fd without invokign jsr_handle_free() then
+      the kernel will implicitly free up the handle.
+
+   Return Values:
+      This call returns 0 on success and -1 on error. On error
+      errno is set as follows:
+         * EINVAL - The cookie is invalid
+         * EBUSY  - The socket to which the handle belongs is
+                    being actively replicated. To free the handle
+                    the application should issue a jsr_unreplicate()
+                    call first.
+         * ENOENT - The handle provided is not allocated
+         * EBADF  - A stale handle was specified. It does not match
+                    the handle in the corresponding socket structure.
+
+2.2.1.3 jsr_replicate()
+
+   Indicate that replication should be initiated on a socket
+
+   int jsr_replicate(rtslib_cookie_t *cookie,   /* input */
+                     int s,                     /* input */
+                     jsr_handle_t *sec_handle,  /* input */
+                     struct timeval *timeout);  /* input */
+
+   Arguments:
+      rtslib_cookie_t *cookie - Synchronous RTSOCK message cookie
+      int s                   - Socket to replicate.
+      jsr_handle_t *sec_handle-
+         Handle received from secondary application. This handle was
+         a result of the secondary application doing a jsr_split() call.
+      struct timeval *timeout -
+         Pointer to a struct timeval.  If timeout is non-NULL, it specifies
+         the maximum interval that the application wishes to allow the
+         replication setup to complete. If timeout is NULL, then the
+         application is allows replication setup to take infinite time.
+
+   Behavior:
+      This call allows activation of replication on the socket.  Replication 
+      will be active once this call completes successfully.
+
+      This call is passed down a sec_handle which is a handle received from
+      the secondary RE. This is not the handle associated with the primary
+      fd on the primary RE. It is handle that the secondary RE returned
+      to the secondary application through the jsr_split() call.
+      
+==>   This call immediately results in record based writes being turned on
+      the socket. See section 4.
+
+      What is replicated:
+         * Socket state at the time of the jsr_replicate() call
+           (including buffer sizes).
+         * bind()s and connect()s.
+         * Ancillary data.
+         * Destination address of the packet for datagram and raw 
+           sockets.
+
+      What is not replicated:
+         * setsockopt()s after this call returns
+         * credentials
+
+      What is supported:
+         * For TCP connections, only replication of sockets that are 
+           fully-connected is supported.  This includes sockets returned
+           from an accept() call, or sockets that have had connect() called
+           on them successfully (i.e. the socket is write-ready).  All other
+           TCP sockets are not supported for replication.
+         * We will support UDP/IP and TCP/IP sockets for replication
+
+      Note that this call merely starts the process of replication on the
+      primary socket's kernel.  This process can be in progress even after
+      the call returns.  If the application tries to send or receive data on
+      a non-blocking socket while replication is in progress, the call will
+      return EAGAIN.  If the socket is blocking, then the call will just
+      block, only returning when replication has either fully setup or
+      failed.
+
+      EAGAIN/blocking behavior may be undesirable to the application.  
+      Therefore, after the jsr_replicate() call is completed, it is 
+      recommended to wait for the JSR socket to be read-/write-ready 
+      before continuing to use it.  This read-/write- readiness is an 
+      indicator to the primary JSR application that the replication setup is
+      done.  The application can check for read-/write- readiness using
+      select() or kevent.
+
+      If a timeout is specified by the application, and if replication setup 
+      does not succeed by the time it expires, then the jsr_replicate() call 
+      is considered to have failed.  Effectively, this means that the 
+      application does not (and should not) call jsr_unreplicate() on the 
+      socket, since there is no replication state to undo.
+
+      The kernel has a minimum time requirement for completion of NSR
+      replication. The timeout value specified by the application should
+      be more than this minimum.
+
+      The replication process is only fully setup once the secondary 
+      application calls jsr_split() on the replication handle
+      successfully.  Specifically, a call to jsr_replicate() by the primary
+      JSR application is not sufficient to fully set up replication on the
+      socket
+
+      Whether the replication ultimately succeeds or fails is transparent 
+      to the primary JSR application.  After the replication 
+      attempt is complete, subsequent sends will be successful.
+
+      Conceptually, the JSR socket has two additional bits of 
+      state associated with it:
+         * A bit indicating that replication has been activated by 
+           the user.  This is the bit that jsr_[un]replicate() turns on/off.
+         * A bit indicating that replication is currently being 
+           done for this socket.  This bit is controlled by the primary's
+           kernel.  It is switched on when replication is fully established,
+           and switched off if replication fails between the primary and
+           secondary kernels for this socket.
+
+      If following a successful jsr_replication() call, replication fails,
+      then the application will get an aysnchronous notification. The
+      application is free again to call jsr_replicate() on the socket.
+      It need not free or allocate the JSR handle again.
+
+   Return value:
+      This call returns 0 on success and -1 on error. In case of error 
+      errno is set as follows:
+         * EINVAL - One or more of the arguments supplied to the 
+                    call was invalid in some fashion.
+         * ENOENT - Call was made on a socket for which there is no
+                    replication handle. Application needs to call
+                    jsr_handle_alloc() first on the socket.
+         * EEXIST - Call was made on a socket that already has 
+                    replication active on it.
+         * ESOCKTNOSUPPORT - Call was made on a socket type which is
+                             currently not in state to support replication.
+                             E.g. calling jsr_replicate() on a TCP socket
+                             that is not fully connected.
+         * EOPNOTSUPP - Replication could not proceed because the JNX platform
+                        does not support it or other RE is not present or other
+                        RE does not have the right OS version
+
+2.2.1.3 jsr_unreplicate()
+
+   Stop replication on a primary JSR socket
+
+      int jsr_unreplicate(rtslib_cookie_t *cookie,    /* input */
+                          int s);                     /* input */
+
+   Arguments:
+      rtslib_cookie_t *cookie - Synchronous RTSOCK message cookie
+      int s                   - Socket to unreplicate.
+
+   Behavior:
+      This call allows deactivation of replication on the socket.
+      Deactivation of replication will be effective once this call 
+      completes successfully. This call ensures that that the secondary
+      kernel is notified that the socket is no longer being replicated.
+
+==>   Note that if the primary application closes the socket before
+      jsr_unreplicate() is called, then the secondary kernel is not notified
+      that the socket has been closed and is no longer being replicated.
+      It is left to the application to derive this.
+
+==>   This call immediately results in record based writes being turned
+      off on the socket. See Section 
+ 
+      This call will not result in the JSR handle being becoming free.
+      Application needs to explicitly all jsr_handle_free() for this.
+
+   Return value:
+      0 if successful.  -1 upon error and errno set to one of the following:
+         * EINVAL - The socket argument is invalid.
+         * ENOENT - Call was made on a socket for which there is no
+                    replication handle (there was no jsr_handle_alloc()
+                    executed for the fd).
+         * EOPNOTSUPP - Call was made on a socket that is not being 
+                        acively replicated (there was no jsr_replicate()
+                        call executed for the fd).
+
+2.2.2 Functions for the secondary application
+
+2.2.2.1 jsr_split()
+
+   Obtain file descriptors corresponding to replication handle:
+
+      int jsr_split(rtslib_cookie_t *cookie,    /* input */
+                    int sock_domain,            /* input */
+                    int sock_type,              /* input */
+                    jsr_handle_t *pri_handle,   /* input */
+                    jsr_handle_t *sec_handle,   /* output */
+                    int *rcv_snoop_fd,          /* output */
+                    int *snd_snoop_fd);         /* output */
+
+   Arguments:
+      rtslib_cookie_t *cookie - Synchronous RTSOCK message cookie
+      int sock_domain - Socket Protocol Domain (AF_INET etc)
+      int sock_type   - Socket Type (Stream, Datagram, Raw etc)
+      jsr_handle_t *pri_handle  -
+         Pointer to buffer of size sizeof(jsr_handle_t).  Should contain
+         replication handle corresponding to primary socket on the primary RE.
+      jsr_handle_t *sec_handle -
+         Pointer to a buffer of size sizeof(jsr_handle_t). The secondary
+         RE's kernel will return a handle that is associated with the
+         two fds returned in this call.
+      int *rcv_snoop_fd - Replicated Receive Data Snoop fd
+      int *snd_snoop_fd - Replicated Send Data Snoop fd
+  
+
+   Behavior:
+      Given a pri_handle associated with a JSR primary socket, this call will
+      return a sec_handle and two file descriptors: one corresponding to 
+      the primary socket's receive buffer, and one corresponding to the 
+      primary socket's send buffer.  Both of these file descriptors will be
+      blocking, and can be changed to non-blocking via the usual fcntl(fd,
+      F_SETFL, O_NONBLOCK) method.
+
+      The sec_handle returned corresponds to these two fds. This handle
+      should be passed back to the primary application and the primary
+      application needs to pass it down to the primary RE's kernel.
+
+      Note that this call merely starts the process of replication on the 
+      secondary kernel.  This process can be in progress even after the call 
+      returns.  If the application tries to receive data on a non-blocking 
+      socket while replication is in progress, the call will return EAGAIN.  
+      If the socket is blocking, then the call will just block, only returning
+      when replication has either fully setup or failed.  
+
+      EAGAIN/blocking behavior may be undesirable to the application.  
+      Therefore, after the jsr_split() call is completed, it is 
+      recommended to wait for the file descriptors to be read-ready    
+      before continuing to use it.  This read-readiness is an 
+      indicator to the secondary application that the replication setup is done.
+      The application can check for read-readiness using select()
+      or kevent.
+
+      After the file descriptors are read-ready, the initial contents of the 
+      receive buffer fd will be whatever is in the primary JSR socket's receive 
+      buffer.  The initial contents of the send buffer fd will be empty, but 
+      any send on the primary JSR socket after this call completes will result 
+      in data being added to the send buffer fd.  A read on the receive file 
+      descriptor will return data that has been received by the primary's
+      kernel.  A read on the send side descriptor will return data that has 
+      been sent by the primary's kernel.  Attempts to write on either file 
+      descriptor at any time will fail with EPERM as the error code.
+
+==>   Note that a call to close() on either descriptor will effectively 
+      result in jsr_close() being called.  Both descriptors will be 
+      closed after the close() call completes.
+
+      There are three situations where replication terminates after 
+      being successfully setup.  The application should take different 
+      actions depending on the situation. Note that the following are
+      only recommendations, the application can chose to behave differently
+      if needed.
+
+      Case 1 -
+         CAUSE:
+            The primary JSR application calls jsr_unreplicate() on the
+            Primary socket. 
+
+         INDICATION:
+            The secondary's kernel will indicate this to the application by
+            returning 0 on a read() call from either of the file
+            descriptors, after all the remaining data has been read.
+
+         RECOMMENDED ACTION:
+            The secondary application should then close the file descriptors
+            using jsr_close(), as replication is no longer happening. A
+            jsr_merge() should not be done.
+
+      Case 2 -
+         CAUSE:
+            The socket replication system detects an internal error, such as
+            an implementation bug or some inconsistency.  The data currently
+            in the system cannot be trusted to be valid anymore.
+
+         INDICATION:
+            The secondary's kernel will indicate this to the application by
+            returning -1 on the next read() call, even if there is still
+            data to be read in the buffer.  errno will be set to EIO.  The
+            kernel will not return the data to the application because the
+            data may be corrupted.
+
+         RECOMMENDED ACTION:
+            The secondary application should then close the file descriptors
+            using jsr_close(), as they are of no use now that replication is
+            in an errorneous state for the socket. A jsr_merge() should not
+            be done.
+
+      Case 3 -
+         CAUSE:
+            During socket replication initialization the secondary failed to
+            receive an expected message after timeout had expired or there 
+            was an error in the message exchange between the two REs for 
+            replicating this socket.
+
+         INDICATION:
+            The next read call will return -1 and errno will be set to EPIPE.
+   
+         RECOMMENDED ACTION:
+            The secondary application should then close the file descriptors
+            using jsr_close(). A jsr_merge() should not be done.
+  
+   Return value:
+      This function returns 0 on success and -1 on error. On success the
+      two file descriptors and a associated handle are returned in fds 
+      and sec_handle arguments.
+
+      If the call is successful, each of the rcv_snoop_fd and snd_snoop_fd
+      integers will be 0 or greater, and will correspond to a file
+      descriptor that the secondary application can read on.  The first
+      integer contains the file descriptor corresponding to the primary JSR
+      socket's receive buffer, and the second integer contains the file
+      descriptor corresponding to the primary socket's send buffer.
+
+      If the call is not successful, the function will return -1 and set 
+      errno to one of the following:
+         * EINVAL - One or more of the arguments supplied to the
+                    call were NULL or invalid.
+         * ENOMEM - The system was unable to allocate the file 
+                    descriptors or sec_handle.
+         * EIO    - The system detected an internal error.
+
+2.2.2.2 jsr_merge()
+
+   Merge file descriptors corresponding to JSR socket into single,
+   non-replicated socket:
+
+      int jsr_merge(rtslib_cookie_t *cookie,    /* input */
+                    int rcv_snoop_fd,           /* input */
+                    int snd_snoop_fd);          /* input */
+
+   Arguments:
+      rtslib_cookie_t *cookie - Synchronous RTSOCK message cookie
+      int rcv_snoop_fd - Replicated Receive Data Snoop fd
+      int snd_snoop_fd - Replicated Send Data Snoop fd
+         The two fds which were generated using the jsr_split()
+         call need to passed down to this call.
+
+   Behavior:
+      Given a a pair of secondary socket fds, close the two file descriptors 
+      and merge the file descriptors into one non-replicated socket. The
+      new merged file descriptor is returned back.
+
+      All data from the receive buffer fd will be copied into the 
+      receive buffer of the resulting socket, and be immediately available 
+      for reading from the socket.  Only data that has been 
+      sent but not acked by the protocol layer on the primary's kernel on
+      the send buffer fd will be copied into the send buffer of the
+      resulting socket.  Note that value is effectively zero in non-TCP
+      sockets, as all sent data is considered "acked" immediately for this
+      purpose.
+
+      State from either of the previous file descriptors is not propagated 
+      into the merged socket.
+
+      Note that the two file descriptors will be implicitly closed; i.e. 
+      they will return -1 upon read() once this call completes.  Also note 
+      that the application will have no method of reading the send buffer 
+      after the merge, so it should definitely make sure that at least the 
+      send buffer file descriptor is fully read before the merge.
+
+      The handle associated in the secondary RE's kernel with the two
+      secondary fds is no longer available after this call.
+
+      If the primary socket's kernel sends any JSR IPC messages using this
+      handle to the secondary kernel then the secondary kernel will discard
+      those messages (and as they case may be also send a NACK to the
+      primary's kernel).
+
+   Return value:
+      This call will return the merged file descriptor if successful.
+      Otherwise, it will return -1 upon error, and set errno to one of the 
+      following:
+         * EINVAL - The cookie or socket fds pointer is NULL
+         * ENOENT - One or both socket fds do not exist
+         * EBADF  - The socket fds do not correspond in tandem to a replicated 
+                    socket. I.e. they are not counterparts.
+
+2.2.2.3 jsr_close()
+
+   Close file descriptors corresponding to JSR socket:
+
+      int jsr_close(rtslib_cookie_t *cookie,    /* input */
+                    int rcv_snoop_fd,           /* input */
+                    int snd_snoop_fd);          /* input */
+
+   Arguments:
+      rtslib_cookie_t *cookie - Synchronous RTSOCK message cookie
+      int rcv_snoop_fd - Replicated Receive Data Snoop fd
+      int snd_snoop_fd - Replicated Send Data Snoop fd
+         The two file replication file descriptors that need to
+         be closed.
+
+   Behavior:
+      Close the two file descriptors corresponding to the handle.  No
+      merging into a socket will take place with this call.
+
+      It is the application's responsibility to read all the data off of the
+      file descriptors before making this call.
+
+      The JSR handle associated with the fds is no longer available at the
+      secondary's kernel. If the primary's kernel sends any JSR IPC messages
+      using this handle to the secondary then the secondary will discard
+      those messages (and as they case may be also send a NACK to the
+      primary's kernel).
+
+   Return value:
+      This call will return 0 if successful.  Otherwise, it will return -1 
+      upon error, and set errno to one of the following:
+         * EINVAL - The cookie or replication handle is NULL or invalid.
+         * ENOENT - One or both socket fds do not exist
+         * EBADF  - The socket fds do not correspond in tandem to a replicated 
+                    socket. I.e. they are not counterparts.
+
+2.2.3 Functions for either application
+
+2.2.3.1 jsr_get_handle_by_fd()
+
+   Get replication handle corresponding to a replicated file descriptor:
+
+      int  jsr_get_handle_by_fd(rtslib_cookie_t cookie,
+                                int fd,
+                                jsr_handle_t *handle);
+
+   Arguments:
+      rtslib_cookie_t *cookie - Synchronous RTSOCK message cookie
+      int fd                  -
+         Integer containing the file descriptor/socket to return the handle
+         for.  On the secondary application, this can be either one of the
+         file descriptors returned from a jsr_split() call.
+      jsr_handle_t *handle   -
+         Pointer to a buffer of size sizeof(jsr_handle_t) variable. The
+         handle will be returned back in this. The handle returned
+         is always the handle for this RE (whether primary or secondary)
+         and not that of the other RE.
+
+   Behavior:
+      Given a JSR socket on the primary or secondary and one of the file 
+      descriptors from a previous jsr_split() call or used in a previous
+      jsr_handle_get() call, return the corresponding replication handle.
+
+   Return value:
+      Returns 0 on success and -1 on error. On success the the corresponding
+      replication handle for the given file descriptor is returned in
+      argument shandle.  On error errno is set as follows
+         * EINVAL - The cookie or file descriptor or handle ptr is invalid.
+         * EBADF  - The fd is valid but does not correspond to a JSR 
+                    replicated socket
+
+2.2.3.2 jsr_get_fds_by_handle()  [NOT IMPLEMENTED]
+
+                        ******************************
+                               NOT IMPLEMENTED 
+                        ******************************
+
+   Get (pair of) file descriptor(s) corresponding to a replication handle:
+
+      int jsr_get_fds_by_handle(rtslib_cookie_t *cookie,
+                                jsr_handle_t *handle);
+                                int *fds);
+
+   Arguments:
+      rtslib_cookie_t *cookie - Synchronous RTSOCK message cookie
+      jsr_handle_t *handle -
+         Pointer to buffer of size sizeof(jsr_handle_t).  Should contain
+         replication handle to obtain the file  descriptor(s) for. The
+         handle given should be always the one for this RE and not
+         for other RE.
+      int *fds                -
+         The one/two file descriptors are returned in fds[0] and fds[1]. fds
+         should be a two integer array that is passed to the call
+
+   Behavior:
+      Given a replication handle, return its corresponding file
+      descriptor(s).  
+
+    Return value:
+      Returns 0 on success and -1 on error.
+
+      If this call is successful on the primary application, the
+      corresponding JSR socket is returned in fds[0].  If this call
+      is successful on the secondary application, the corresponding file
+      descriptor for the read side of the JSR socket will be in fds[0] and
+      the file descriptor for the write side of the JSR socket will be 
+      returned in fds[1]
+
+      If this call is not successful, errno will be set one of the following:
+         * EINVAL - One or more arguments are invalid
+         * ENOENT - There is no socket fd corresponding to supplied handle
+         * EBADF  - The supplied handle is stale
+
+2.2.3.3 jsr_get_jsock_by_handle ()
+  Get socket extension structure address given a handle id.
+     
+      int jsr_get_jsock_by_handle(rtslib_cookie_ptr cookie,
+                                  jsr_handle_t      *jhandle,    
+                                  uintptr_t         *jsock_addr)
+
+  Arguments:
+      rtslib_cookie_ptr cookie - Synchronous RTSOCK message cookie
+      jsr_handle_t jhandle   -
+      handle id whose jsr socket extension header pointer needs to be returned.
+ 
+      uintptr_t *jsock          -
+      Pointer to buffer of size uintptr_t. On success jsock contains the 
+      address of socket extension structure for the jhandle.
+ 
+  Return value:
+      Returns 0 on success and -1 on error. On success JSR extension structure
+      address is returned. On error errno is set as follows
+        EINVAL -    The cookie or handle or jsock ptr is invalid.
+        EOPNOTSUPP -JSR is currently not configured
+        ENOENT      The index in the handle was not allocated
+        EBADF       The handle is stale
+        EIDRM       The handle is in delayed free state
+ 
+2.2.4 Asynchronous Notification API
+
+   We use existing asynchronous rtsock mechanims to notify processes
+   of JSR events. However we provide an additional layer on top of
+   existing async rtsock infrastructure to allow application to
+   register callbacks on a per event basis.
+
+2.2.4.1 JSR Events and Listen Modes
+
+   a) JSR Events  - The following events are defined:
+
+      typedef enum {
+          JSR_EVENT_SYS_HANDLE_ALLOC,
+          JSR_EVENT_SYS_HANDLE_FREE,
+          JSR_EVENT_SYS_HANDLE_DFREE,
+
+          JSR_EVENT_PRI_HANDLE_ALLOC,
+          JSR_EVENT_PRI_HANDLE_FREE,
+          JSR_EVENT_PRI_REPLICATE,
+          JSR_EVENT_PRI_REPLICATE_DONE,
+          JSR_EVENT_PRI_UNREPLICATE,
+
+          JSR_EVENT_SEC_SPLIT,
+          JSR_EVENT_SEC_SPLIT_DONE,
+          JSR_EVENT_SEC_MERGE_DONE,
+          JSR_EVENT_SEC_UNREPLICATE,
+
+          JSR_EVENT_REPLICATION_ACTIVE,
+          JSR_EVENT_REPLICATION_INACTIVE,
+
+          JSR_EVENT_IPC_SEND,
+          JSR_EVENT_IPC_RECEIVE,
+      } jsr_event_t;
+
+       JSR_EVENT_SYS_HANDLE_ALLOC
+           - Notify when kernel allocates a JSR handle (Primary/Secondary).
+
+             Needs listen mode JSR_LISTEN_ALL.
+
+       JSR_EVENT_SYS_HANDLE_FREE
+           - Notify when kernel frees a JSR handle. (Primary/Secondary).
+
+             Needs listen mode JSR_LISTEN_ALL.
+
+       JSR_EVENT_SYS_HANDLE_DFREE
+           - Notify when kernel marks a JSR handle for delayed free but
+             does not actually free it. (Primary/Secondary).
+
+             Needs listen mode JSR_LISTEN_ALL.
+
+       JSR_EVENT_PRI_HANDLE_ALLOC
+           - Notify when application makes a jsr_handle_alloc() call and
+             a handle and a socket extension structure are successfully 
+             allocated.
+
+             Needs listen mode JSR_LISTEN_ALL or JSR_LISTEN_PROC.
+
+       JSR_EVENT_PRI_HANDLE_FREE,
+           - Notify when application makes a jsr_handle_free() call and
+             socket extenion structure is freed. The handle may be 
+             immediately freed or marked for delayed free in which case
+             the itable entry it uses may be available only after a certain 
+             delay).
+
+             Needs listen mode JSR_LISTEN_ALL or JSR_LISTEN_PROC.
+
+       JSR_EVENT_PRI_REPLICATE,
+           - Notify whenever a jsr_replicate() call has been successfully
+             executed on a primary socket. This kicks off replication
+             initialization on the socket.
+
+             Needs listen mode JSR_LISTEN_ALL or JSR_LISTEN_PROC.
+
+       JSR_EVENT_PRI_REPLICATE_DONE,
+           - Notify when the replication initialization has *successfully*
+             completed for a primary socket (following a jsr_replicate()
+             call). This means that the socket is now replication ready
+             and any future data on it will be actively replicated.
+
+             Needs listen mode JSR_LISTEN_ALL or JSR_LISTEN_PROC.
+
+       JSR_EVENT_PRI_UNREPLICATE,
+           - Notify whenever unreplication happens on a primary socket
+             due to any reason other than global replication
+             failure. In case of global replication failure there is no
+             per socket JSR_EVENT_UNREPLICATE message sent.
+
+             Needs listen mode JSR_LISTEN_ALL or JSR_LISTEN_PROC.
+
+       JSR_EVENT_SEC_SPLIT,
+           - Notify when jsr_split() has been sucessfully executed on a
+             secondary socket. This primes the secondary socket for
+             starting replication initialization whenever primary requests 
+             for it. This notification does not mean that socket is
+             replication ready and is actively replicating.
+
+             Needs listen mode JSR_LISTEN_ALL or JSR_LISTEN_PROC.
+
+       JSR_EVENT_SEC_SPLIT_DONE,
+           - Notify when secondary socket has *successfully* finished
+             replication initialization. Socket is now replication ready.
+
+             Needs listen mode JSR_LISTEN_ALL or JSR_LISTEN_PROC.
+
+       JSR_EVENT_SEC_MERGE_DONE,
+           - Notify whenever a jsr_merge() call completes *successfully* on
+             a secondary receive/send snoop fd pair.
+
+             Needs listen mode JSR_LISTEN_ALL or JSR_LISTEN_PROC.
+
+       JSR_EVENT_SEC_UNREPLICATE,
+           - Notify whenever unreplication happens on a primary socket
+             due to any reason other than global replication
+             failure. In case of global replication failure there is no
+             per socket JSR_EVENT_UNREPLICATE message sent.
+
+             Needs listen mode JSR_LISTEN_ALL or JSR_LISTEN_PROC.
+
+       JSR_EVENT_REPLICATION_ACTIVE,
+           - Notify whenever replication turns on globally. 
+
+             Needs listen mode JSR_LISTEN_ALL or JSR_LISTEN_PROC.
+
+       JSR_EVENT_REPLICATION_INACTIVE,
+           - Notify whenever replication turns off globally. For e.g if
+             GRES is turned off or other RE crashes etc.
+
+             Needs listen mode JSR_LISTEN_ALL or JSR_LISTEN_PROC.
+
+       JSR_EVENT_IPC_SEND
+           - Notify whenever a JSR IPC message is sent to the other RE. 
+
+             Needs listen mode JSR_LISTEN_ALL or JSR_LISTEN_PROC.
+
+       JSR_EVENT_IPC_RECEIVE      
+           - Notify whenever a JSR IPC message is received from the other RE. 
+
+             Needs listen mode JSR_LISTEN_ALL or JSR_LISTEN_PROC.
+
+   b) JSR Event Listen Modes - The following listen modes are defined
+
+      typedef enum {
+          JSR_LISTEN_NONE, /* Do not listen */
+          JSR_LISTEN_PROC, /* Listen for JSR socket events of this process */
+          JSR_LISTEN_ALL,  /* Listen for JSR socket events of all processes */
+          JSR_LISTEN_N
+      } jsr_event_listen_mode_t;
+
+      JSR_LISTEN_ALL will mainly be used by the jsrmon utility to monitor
+      JSR events for all processes.
+
+      The following events can only be listened in mode JSR_LISTEN_ALL:
+
+      JSR_EVENT_SYS_HANDLE_ALLOC,
+      JSR_EVENT_SYS_HANDLE_FREE,
+      JSR_EVENT_SYS_HANDLE_DFREE
+
+   c) JSR Event Set -
+
+      typedef u_int32_t jsr_evset_t
+
+      The event set is used to define a set of events. Some of the API
+      calls use it.
+
+   Next we describe the API
+
+2.2.4.2 jsr_evset_empty()
+
+   Initialize a JSR event set to be an empty set
+
+        int jsr_evset_empty(jsr_evset_t *jsr_evset);
+
+   Arguments:
+      jsr_evset_t *jsr_evset - Pointer to event set
+    
+   Return Values:
+      Returns 0 on success. 
+
+2.2.4.3 jsr_evset_fill()
+
+   Initialize an event set to contain all events
+
+        int jsr_evset_fill(jsr_evset_t *jsr_evset);
+
+   Arguments:
+      jsr_evset_t *jsr_evset - Pointer to event set
+    
+   Return Values:
+      Returns 0 on success. 
+
+2.2.4.4 jsr_evset_add()
+
+   Add an event to a JSR event set
+
+        int jsr_evset_add(jsr_evset_t *jsr_evset, jsr_event_t jsr_event)
+
+   Arguments:
+      jsr_evset_t *jsr_evset - Pointer to event set
+      jsr_event_t  jsr_event - Event to add to the event set
+    
+   Return Values:
+    Returns 0 on success and -1 on error. On error errno is set as follows
+        * EINVAL - The event specified was invalid
+
+2.2.4.5 jsr_evset_delete()
+
+   Delete an event from a JSR event set
+
+        int jsr_evset_delete(jsr_evset_t *jsr_evset, jsr_event_t jsr_event)
+
+   Arguments:
+      jsr_evset_t *jsr_evset - Pointer to event set
+      jsr_event_t  jsr_event - Event to delete from the event set
+    
+   Return Values:
+    Returns 0 on success and -1 on error. On error errno is set as follows
+        * EINVAL - The event specified was invalid
+
+2.2.4.6 jsr_evset_is_member()
+
+   Checks if the specified event is a member of the specified event setSR
+   event set
+
+        int jsr_evset_is_memberdelete(jsr_evset_t *jsr_evset,
+                                      jsr_event_t jsr_event)
+
+   Arguments:
+      jsr_evset_t *jsr_evset - Pointer to event set
+      jsr_event_t  jsr_event - Event to check in event set
+    
+   Return Values:
+    Returns 1 if event is a member of the set
+    Returns 0 if event is not a member of the set
+    Returns -1 on error, errno is set as follows:
+        * EINVAL - The event specified was invalid
+       
+        
+2.2.4.7 rtslib_set_async_info_nocontext()
+
+    Allocates the async portion of the cookie.
+    
+        int rtslib_set_async_info_nocontext(rtslib_cookie_t *cookie,
+				                                int *async_rtsock_fd)
+   Arguments:
+      rtslib_cookie_t *cookie - rtsock cookie
+      int *async_rtsock_fd    - Routing socket fd is returned this pointer
+    
+   Return Values:
+      Returns 0 on success, other errno is returned on error as follows:
+      EINVAL - cookie is invalid
+      ENOMEM - could not allocate memory for async portion of context
+    
+   Behavior:
+
+      This call is similar to the existing rtslib_set_async_context()
+      call in rstlib. However it does not associate an evlib context with
+      the async portion of the cookie. Instead the routing socket fd is 
+      returned and the caller is expected to use select()/kevent() explicitly
+      on the fd.
+
+      This call can be thus used in lieu of rtslib_set_async_context().
+
+2.2.4.8 jsr_async_alloc() - Primary or Secondary
+
+    Register an internal handler for RTM_JSR async messages
+
+       int jsr_async_alloc(rtslib_cookie_ptr cookie)   /* input */
+
+    Arguments:
+       rtslib_cookie_ptr cookie - Async cookie
+
+    Behavior:
+       This call assumes that the caller has already allocated the async
+       portion of the cookie by using either rtslib_set_async_context() or
+       rtslib_set_async_info_nocontext().
+
+       This call allocates dynamic memory. If the application does a
+       rtslib_close() or a rtslib_destroy_async_context() then it needs to
+       call a jsr_async_free() first to release the dynamic memory allocated
+       by jsr_async_alloc().
+
+    Return Values:
+       Returns 0 on success
+       Returns -1 on error, errno is set as follows:
+         * EINVAL - The cookie is invalid OR its async portion has not yet
+                    been allocated.
+         * ENOMEM - Could not allocate memory
+         * EXXXXX - errors returned by setsockopt()
+
+2.2.4.9 jsr_async_free() - Primary or Secondary
+
+        int jsr_async_free(rtslib_cookie_ptr cookie)   /* input */
+
+   Arguments:
+      rtslib_cookie_ptr cookie - Async cookie
+
+   Behavior:
+     Free up JSR related async info portion of the async cookie and
+     unregister the callback for JSR async messages. This call must be
+     executed before rtslib_close() otherwise memory used for async JSR
+     events will not be freed.
+
+   Return Values;
+      Returns 0 on success
+      Returns -1 on error, errno is set as follows:
+          * EINVAL - The cookie is invalid OR JSR async registraton was not
+                     done via jsr_async_alloc() but directly using standard 
+                     rtslib calls.
+          * ENOENT - Could not find JSR specific async info pointer to free
+                     (Should never happen)
+    
+2.2.4.10 jsr_async_event_cb_register() - Primary or Secondary
+
+       int
+       jsr_async_event_cb_register(rtslib_cookie_ptr cookie,       /* input */
+                                   jsr_event_t jsr_event,          /* input */
+                                   jsr_event_cb_func_t jsr_ev_func,/* input */
+                                   void * jsr_ev_ptr)              /* input */
+
+   Arguments:
+      rtslib_cookie_ptr cookie - Async cookie
+      jsr_evset_t *jsr_evset - event set
+      jsr_event_cb_func_t jsr_ev_func - user specific call back function for
+              all the events in jsr_evset
+      void * jsr_ev_ptr - user specific pointer. will be supplied back whenever
+              jsr_ev_func is invoked for an event
+  
+   Behavior
+      Register a user given callback for a specific JSR event. Allocation
+      of the JSR specific async info should have been done prior to this
+      call using jsr_async_alloc().
+ 
+   Return Values;
+      Returns 0 on success
+      Returns -1 on error, errno is set as follows:
+          * EINVAL - The cookie is invalid OR the event is invalid OR the
+                     call back function is NULL OR there is no async portion in
+                     the cookie OR async JSR registration was not done using
+                     jsr_async_alloc() but directly using standard rtslib calls.
+          * ENOENT - Could not find JSR specific async info pointer
+                     (Should never happen)
+
+2.2.4.11 jsr_async_evset_cb_register() - Primary or Secondary
+ 
+       int
+       jsr_async_evset_cb_register(rtslib_cookie_ptr cookie,       /* input */
+                                   jsr_evset_t *jsr_evset,         /* input */
+                                   jsr_event_cb_func_t jsr_ev_func,/* input */
+                                   void * jsr_ev_ptr)              /* input */
+   Arguments:
+      rtslib_cookie_ptr cookie - Async cookie
+      jsr_evset_t *jsr_evset - Event set
+      jsr_event_cb_func_t jsr_ev_func - User specific call back function for
+              all the events in jsr_evset
+      void * jsr_ev_ptr - User specific pointer. Will be supplied back whenever
+              jsr_ev_func is invoked for an event
+ 
+   Behavior:
+      Register a user given callback for all JSR events in the specified
+      event set. Registration of the JSR specific async info should have
+      been done prior to this call using jsr_async_alloc().
+ 
+   Return Values;
+      Returns 0 on success
+      Returns -1 on error, errno is set as follows:
+          * EINVAL - The cookie is invalid OR the evset is invalid OR the
+                     call back function is NULL OR there is no async portion in
+                     the cookie OR async JSR registration was not done via
+                     jsr_async_alloc() but directly using standard rtslib calls.
+          * ENOENT - Could not find JSR specific async info pointer
+                     (Should never happen)
+
+2.2.4.12 jsr_async_event_select() - Primary or Secondary
+
+       int
+       jsr_async_event_select(rtslib_cookie_ptr cookie,    /* input */
+                              jsr_evset_t *jsr_evset,      /* input */
+                              jsr_event_listen_mode_t listen_mode)  /* input */
+
+   Arguments:
+      rtslib_cookie_ptr cookie - Async cookie
+      jsr_evset_t *jsr_evset - Set of events for which we want notification
+      int listen_mode - Tells whether the process is interested in notifications
+          for just its own handles or all handles in the system.
+
+   Behaviour:
+      This function is used to tell the kernel which events we are really
+      interested in getting notified about. The events are specified in the
+      jsr_evset arguments. A call back should have been registered earlier
+      for each of the events set in jsr_evset.
+
+      The function also takes a listen_mode argument which tells whether we
+      are interested only in JSR sockets belong to this process
+      (JSR_LISTEN_PROC) or for all JSR sockets across all processes
+      (JSR_LISTEN_ALL). If listen mode is JSR_LISTEN_NONE then it turns off
+      JSR async notifications.
+
+      This routine requires the user to have registered call backs for
+      JSR_EVENT_REPLICATION_ACTIVE and JSR_EVENT_REPLICATION_INACTIVE before
+      hand.
+
+      The events JSR_EVENT_REPLICATION_ACTIVE and
+      JSR_EVENT_REPLICATION_INACTIVE are always added to the event set by
+      this function and thus will be always reported. The only way to turn
+      them off is to set the listen mode to JSR_LISTEN_NONE.
+
+   Return Values:
+      Returns 0 on success
+      Returns -1 on error, errno is set as follows:
+          * EINVAL - The cookie is invalid OR the evset is invalid OR the
+                     the listen mode is invalid OR there is no async portion in
+                     the cookie OR async JSR registration was not done via
+                     jsr_async_alloc() but directly using standard rtslib calls.
+          * EPROCUNAVAIL - A call back was not registered for one of the events
+                     in jsr_evset
+          * ENOENT - Could not find JSR specific async info pointer
+                     (Should never happen)
+
+2.2.4.13 jsr_async_msg_read() - Primary or Secondary
+ 
+         int
+         jsr_async_msg_read(rtslib_cookie_ptr cookie)    /* input */
+
+   Arguments:
+      rtslib_cookie_ptr cookie - Async cookie
+ 
+   Behavior:
+      Given the async cookie this function will read a pending async message
+      and will execute relevant call back for the message. This function
+      is useful for applications that don't use evLib but do their
+      own select/kevent management. It is mandatory for the application
+      to have used jsr_async_alloc() before using this call.
+      
+      Note that the message read may not necessarily be a JSR specific
+      message. It could be any message for which a registration was done
+      using the specified cookie.
+      
+      If the cookie has been used for listening for other events besides
+      JSR (e.g. ifl/ifd events etc) then its preferable to use the
+      rtslib_async_event_process() function. If the cookie is being
+      used only for JSR events and application had done registration
+      using jsr_async_alloc() then this call should be used.
+ 
+   Return Values;
+      Returns 0 on success
+      Returns -1 on error, errno is set as follows:
+          * EINVAL - The cookie is invalid OR the evset is invalid OR the
+                     the listen mode is invalid OR there is no async portion in
+                     the cookie OR async JSR registration was not done via
+                     jsr_async_alloc() but directly using standard rtslib calls.
+          * ENOENT - Could not find JSR specific async info pointer
+          * EXXXXX - Errors returned by rtslib_async_event_process()
+
+
+2.2.4.14 rtslib_async_event_process() - Primary or Secondary
+
+
+      int
+      rtslib_async_event_process(rtslib_cookie_t *cookie)
+
+   Arguments:
+      rtslib_cookie_ptr cookie - Async cookie
+ 
+   Behavior:
+
+      This function does the real work of reading the message from the rtsock
+      fd. It finds and calls the correct user registered handler for the 
+      message type it reads.
+
+      This function may be called internally by the librtsock async code or
+      externally by user level code that do their own select/kevent on the
+      rtsock fd and then want to use librtsock to actually read the message
+      and take appropriate action.
+
+   Return Values;
+      Returns 0 on success
+      Returns -1 on error, errno is set as follows:
+
+          * EINVAL - Cookie was invalid or has no async info
+          * EINTR  - Read call on routing socket fd was interrupted
+          * ENOMEM - Could not allocate memory
+          * EIO    - Internal error
+          * ENOENT - There was no registered handler for the message type
+                     read on the routing socket
+          * EOPNOTSUP - The message type is a beyond the range of valid
+                        message types
+
+2.3 RTSOCK Implementation
+
+   The NSR Socket Replication API will be implemented using the traditional
+   JUNOS RTSOCK mechanism. Each of the API functions above will be
+   internally implemented in this manner. The API functions will change
+   slightly to allow for another argument which will be the rtslib
+   sync or async cookie.
+
+2.3.1 JSR RTSOCK Library and kernel code
+
+    JSR RTSOCK library code will be added to the juniper/lib/rtsock
+    directory.
+
+    The kernel side of the implementation will be added to sys/netrtsock
+
+2.3.2 RTSOCK Message Formats and Typedefs
+
+    The messages and typedefs will be made available in
+
+    sys/netrtsock/rtsock_jsr_msg.h
+
+2.3.2.1 Synchronous Message Format
+
+      RTSOCK Message Type: RTM_JSR
+
+#define RTS_JSR_MSG_VERSION         (RTM_IF_VERSION) /* value of jsrm_version */
+
+typedef struct rts_jsr_msg_ {
+    u_int16_t jsrm_msglen;      /* full length of message */
+    u_int8_t  jsrm_version;     /* version, for binary compatibility */
+    u_int8_t  jsrm_type;        /* message type */
+    u_int32_t jsrm_seq;         /* message sequence number */
+    u_int32_t jsrm_id;          /* id of guy who caused this */
+    u_int16_t jsrm_info_off;    /* offset of variable lenth section */
+    u_int8_t  jsrm_op;          /* message operation */
+    u_int8_t  jsrm_unused;
+    u_int8_t  jsrm_cflags;      /* common flags */
+    /* The above fields are part of common header */
+
+    jsr_action_t    jsrm_action;     /* Action to perform */
+    jsr_event_t     jsrm_event;      /* Event async msg is being sent for*/
+    pid_t           jsrm_pid;        /* Pid is in some async messages */
+
+    union {
+        int32_t jsrmu_pri_fd;
+        int32_t jsrmu_sec_rfd;
+        int32_t jsrmu_sock_domain;
+    } ud0;
+
+    union {
+        int32_t jsrmu_sec_sfd;
+        int32_t jsrmu_sock_type;
+    } ud1;
+
+#define jsrm_pri_fd     ud0.jsrmu_pri_fd /* Primary JSR Socket */
+
+#define jsrm_sec_rfd    ud0.jsrmu_sec_rfd /* Secondary JSR Socket -Receive fd */
+#define jsrm_sec_sfd    ud1.jsrmu_sec_sfd /* Secondary JSR Socket -Send fd */
+
+#define jsrm_sock_domain ud0.jsrmu_sock_domain 
+#define jsrm_sock_type   ud1.jsrmu_sock_type
+
+    struct timeval jsrm_timeout;   /* Replication timeout */
+
+    union {
+        jsr_handle_t jsrmu_handle;
+        jsr_handle_t jsrmu_pri_handle;
+    } ud3;
+
+#define jsrm_handle ud3.jsrmu_handle    
+#define jsrm_pri_handle ud3.jsrmu_pri_handle    /* JSR Primary Handle */
+
+    jsr_handle_t jsrm_sec_handle;         /* JSR Secondary Handle */
+    uintptr_t    jsrm_jsock_addr;         /* address for jsr socket 
+                                             extension structure */               
+    int          jsrm_error;              /* JSR Error */
+    u_int8_t     jsrm_ipc_type;           /* JSR IPC message type */
+    u_int8_t     jsrm_ipc_subtype;        /* JSR IPC message subtype */    
+} rts_jsr_msg_t;
+
+2.3.2.2. Asynchronous Message - TBD
+
+   Same as the synchronous message
+
+2.3.2.3 Replication Actions
+
+      typedef enum {
+         JSR_ACTION_NONE = 0,
+         JSR_ACTION_HANDLE_ALLOC,   /* Primary Only */
+         JSR_ACTION_HANDLE_FREE,    /* Primary Only */
+         JSR_ACTION_REPLICATE,      /* Primary Only */
+         JSR_ACTION_UNREPLICATE,    /* Primary Only */
+         JSR_ACTION_SPLIT,          /* Secondary Only */
+         JSR_ACTION_MERGE,          /* Secondary Only */
+         JSR_ACTION_CLOSE,          /* Secondary Only */
+         JSR_ACTION_FD_TO_HANDLE    /* Primary/Secondary */
+         JSR_ACTION_MAX
+      } jsr_action_t;
+
+2.3.3 JSR Library API implementation using RTSOCK
+
+    Each of the jsr_*() API functions are implemented using rtsock
+    library. The following sections detail this.
+
+2.3.3.1 RTSOCK - jsr_handle_alloc()
+
+   int jsr_handle_alloc(rtslib_cookie_t *cookie,
+                        int s,
+                        jsr_handle_t *pri_handle);
+
+   jsr_handle_alloc() is implemented using a RTM_ADD_AND_GET call. We first
+   write to the routing socket to enable replication on a socket and
+   to create the handle and then read from it to get the handle.
+
+   . Write Operation - 
+      In the write operation we set the following parameters in the
+      rtsock message
+
+         wmsg->jsrm_type = RTM_JSR;
+         wmsg->jsrm_op   = RTM_ADD_AND_GET;
+         wmsg->jsrm_action = JSR_ACTION_HANDLE_ALLOC;
+
+         wmsg->jsrm_pri_fd = s;  /* Socket which needs to be replicated */
+
+      In case the kernel encountered an error and was unable to create
+      the handle then the write call returns error. The errno set by
+      the write call is returned as is by jsr_handle_alloc().
+
+   . Read Operation =
+      If the write operation is successful then a read is done to get
+      the synchronous message coming back from the kernel. This message
+      has the handle for the socket that was replicated. This handled
+      is returned in the pri_handle argument to jsr_handle_alloc()
+
+         bcopy(rmsg->jsrm_handle, pri_handle, sizeof(jsr_handle_t));
+
+2.3.3.2 RTSOCK - jsr_handle_free()
+
+   int jsr_handle_free(rtslib_cookie_t *cookie,
+                       jsr_handle_t *pri_handle);
+
+   jsr_handle_free() is implemented using a RTM_DELETE call.
+
+   . Write Operation -
+      In the write operation we set the following parameters in the
+      rtsock message
+
+         wmsg->jsrm_type = RTM_JSR;
+         wmsg->jsrm_op   = RTM_DELETE;
+         wmsg->jsrm_action = JSR_ACTION_HANDLE_FREE;
+
+         bcopy(pri_handle, wmsg->jsrm_handle, sizeof(jsr_handle_t));
+
+     In case the kernel encountered an error and was unable to free
+     the handle the write call returns error. The errno set by the
+     write call is returned as is by jsr_handle_free().
+
+2.3.3.2 RTSOCK - jsr_replicate()
+
+   int jsr_replicate(rtslib_cookie_t *cookie,
+                     int s,
+                     jsr_handle_t *sec_handle,
+                     struct timeval *timeout);
+
+   jsr_replicate() is implemented using a RTM_ADD call. We write to the 
+   routing socket to enable replication on a socket
+
+   . Write Operation - 
+      In the write operation we set the following parameters in the
+      rtsock message
+
+         wmsg->jsrm_type = RTM_JSR;
+         wmsg->jsrm_op   = RTM_ADD;
+         wmsg->jsrm_action = JSR_ACTION_REPLICATE;
+
+         wmsg->jsrm_pri_fd = s;  /* Socket which needs to be replicated */
+         wmsg->jsrm_timeout = *timeout;
+
+         bcopy(sec_handle, wmsg->jsrm_handle, sizeof(jsr_handle_t));
+
+      In case the kernel encountered an error and was unable to initiate
+      replication then the write call returns error. The errno set by the
+      write call is returned as is by jsr_replicate().
+
+2.3.3.3 RTSOCK - jsr_unreplicate()
+
+   int jsr_unreplicate(rtslib_cookie_t *cookie, int s);
+
+   jsr_unreplicate() is implemented using a RTM_DELETE call.
+
+   . Write operation
+      The following parameters are set in the write message
+
+         wmsg->jsrm_type = RTM_JSR;
+         wmsg->jsrm_op   = RTM_DELETE;
+         wmsg->jsrm_action = JSR_ACTION_UNREPLICATE;
+
+         wmsg->jsrm_pri_fd = s;  /* Socket which needs to be unreplicated */
+
+     In case of error the errno returned by the write call is returned
+     as is by jsr_unreplicate().
+
+2.3.3.4 RTSOCK - jsr_split()
+
+      int jsr_split(rtslib_cookie_t *cookie,    /* input */
+                    int sock_domain,            /* input */
+                    int sock_type,              /* input */
+                    jsr_handle_t *pri_handle,   /* input */
+                    jsr_handle_t *sec_handle,   /* output */
+                    int *rcv_snoop_fd,          /* output */
+                    int *snd_snoop_fd);         /* output */
+
+   jsr_split() is implemented using a RTM_ADD_AND_GET call. We first write
+   the handle to the routing socket and then read the two fds.
+
+   . Write Operation -
+      The following parameters are set in the write message
+
+         wmsg->jsrm_type = RTM_JSR;
+         wmsg->jsrm_op   = RTM_ADD_AND_GET;
+         wmsg->jsrm_action = JSR_ACTION_SPLIT;
+
+         bcopy(pri_handle, wmsg->jsrm_handle, sizeof(jsr_handle_t));
+
+     In case of error the errno returned by the write call is returned
+     as is by jsr_split().
+
+   . Read operation
+      In the read operation the two fds are read from the routing
+      socket and passed back to the application calling jsr_split()
+      The read operation also returns the handle on the secondary
+      RE that corresponds to these two fds.
+
+         *rcv_snoop_fd = rmsg->jsrm_sec_rfd;
+         *snd_snoop_fd = rmsg->jsrm_sec_sfd;
+
+         bcopy(rmsg->jsrm_handle, sec_handle, sizeof(jsr_handle_t));
+
+
+2.3.3.5 RTSOCK - jsr_merge()
+
+      int jsr_merge(rtslib_cookie_t *cookie,    /* input */
+                    int rcv_snoop_fd,           /* input */
+                    int snd_snoop_fd);          /* input */
+
+   jsr_merge() is implemented using a RTM_CHANGE_AND_GET. The two fds are
+   passed down when writing the message to the routing socket and we then
+   do a read to get the merged fd
+
+   . Write operation
+      The following parameters are set in the write message
+
+         wmsg->jsrm_type = RTM_JSR;
+         wmsg->jsrm_op   = RTM_CHANGE_AND_GET;
+         wmsg->jsrm_action = JSR_ACTION_MERGE;
+
+         wmsg->jsrm_sec_rfd = rcv_snoop_fd;
+         wmsg->jsrm_sec_wfd = snd_snoop_fd;
+
+     In case of error the errno returned by the write call is returned
+     as is by jsr_split().
+
+   . Read Operation
+      In the read opeartion the merged fd value is read from the
+      routing socket
+
+         ret_fd = rmsg->jsrm_sec_rfd;
+         return (ret_fd);
+
+2.3.3.7 RTSOCK - jsr_close()
+
+      int jsr_merge(rtslib_cookie_t *cookie,    /* input */
+                    int rcv_snoop_fd,           /* input */
+                    int snd_snoop_fd);          /* input */
+
+   jsr_close() is implemented using RTM_DELETE. The handle is passed
+   down to the routing socket and it closes both the fds associated
+   with the handle and invalidates the handle
+
+   . Write operation
+      The following parameters are set in the write message
+
+         wmsg->jsrm_type = RTM_JSR;
+         wmsg->jsrm_op   = RTM_DELETE;
+         wmsg->jsrm_action = JSR_ACTION_CLOSE;
+         wmsg->jsrm_sec_rfd = rcv_snoop_fd;
+         wmsg->jsrm_sec_wfd = snd_snoop_fd;
+
+     In case of error the errno returned by the write call is returned
+     as is by jsr_close().
+
+==>  If instead of jsr_close(), the caller issues a regular close()
+     on any of the two JSR secondary fds then the kernel
+     internally treats it as if it got an RTM_DELETE on the handle
+     and it closes both the fds associated with the handle.
+
+2.3.3.9 RTSOCK - jsr_get_handle_by_fd()
+   
+   int  jsr_get_handle_by_fd(rtslib_cookie_t cookie,
+                             int fd,
+                             jsr_handle_t *handle);
+
+   jsr_get_handle_by_fd() is implemented using RTM_GET.
+
+   . Write Operation
+     The following parameters are set in the write message
+
+         wmsg->jsrm_type = RTM_JSR;
+         wmsg->jsrm_op   = RTM_GET;
+
+         wmsg->jsrm_action = JSR_ACTION_NONE;
+
+         wmsg->jsrm_pri_fd = fd;    /* primary */
+            OR
+         wmsg->jsrm_sec_rfd = fd;   /* secondary */
+
+         bzero(wmsg->jsrm_handle, sizeof(jsr_handle_t);
+
+   . Read Operation
+     The read operation returns the handle which is copied to the
+     application supplied buffer
+
+         bcopy(rmsg->jsrm_handle, handle, sizeof(jsr_handle_t));
+
+2.3.4 Asynchronous Notifications in JSR
+
+   Detailed below is the information in the async message that is
+   relevant for each event type
+
+2.3.4.1 JSR_EVENT_SYS_HANDLE_ALLOC
+
+   async_msg->jsrm_event  - JSR_EVENT_SYS_HANDLE_ALLOC
+   async_msg->jsrm_pri_fd - Invalid (should be ignored)
+   async_msg->jsrm_sec_fd - Invalid (should be ignored)
+   async_msg->jsrm_handle - Contains handle that was allocated
+   async_msg->jsrm_sec_handle - Invalid (should be ignored)
+   async_msg->jsrm_pid    - Contains count of handles currently in use
+   async_msg->jsrm_error  - JSR_ERR_OK (should be ignored)
+
+2.3.4.2 JSR_EVENT_SYS_HANDLE_FREE
+
+   async_msg->jsrm_event  - JSR_EVENT_SYS_HANDLE_FREE
+   async_msg->jsrm_pri_fd - Invalid (should be ignored)
+   async_msg->jsrm_sec_fd - Invalid (should be ignored)
+   async_msg->jsrm_handle - Contains handle that was freed
+   async_msg->jsrm_sec_handle - Invalid (should be ignored)
+   async_msg->jsrm_pid    - Contains count of handles currently in use
+   async_msg->jsrm_error  - JSR_ERR_OK (should be ignored)
+
+2.3.4.3 JSR_EVENT_SYS_HANDLE_DFREE
+
+   async_msg->jsrm_event  - JSR_EVENT_SYS_HANDLE_DFREE
+   async_msg->jsrm_pri_fd - Invalid (should be ignored)
+   async_msg->jsrm_sec_fd - Invalid (should be ignored)
+   async_msg->jsrm_handle - Contains handle that was marked for delayed free
+   async_msg->jsrm_sec_handle - Invalid (should be ignored)
+   async_msg->jsrm_pid    - Contains count of handles currently in use
+   async_msg->jsrm_error  - JSR_ERR_OK (should be ignored)
+
+2.3.4.4 JSR_EVENT_PRI_HANDLE_ALLOC
+
+   async_msg->jsrm_event  - JSR_EVENT_PRI_HANDLE_ALLOC
+   async_msg->jsrm_sock_domain - AF Family
+   async_msg->jsrm_sock_type - Sock Type (TCP/UDP etc)
+   async_msg->jsrm_pri_handle - Contains handle that was allocated
+   async_msg->jsrm_sec_handle - Invalid (should be ignored)
+   async_msg->jsrm_pid    - Contains pid of process that requested the handle
+   async_msg->jsrm_error  - JSR_ERR_OK (should be ignored)
+
+2.3.4.5 JSR_EVENT_PRI_HANDLE_FREE
+
+   async_msg->jsrm_event  - JSR_EVENT_PRI_HANDLE_FREE
+   async_msg->jsrm_sock_domain - AF Family
+   async_msg->jsrm_sock_type - Sock Type (TCP/UDP etc)
+   async_msg->jsrm_pri_handle - Contains handle that was allocated
+   async_msg->jsrm_sec_handle - Invalid (should be ignored)
+   async_msg->jsrm_pid - Contains pid of process that freed the handle
+   async_msg->jsrm_error  - JSR_ERR_OK (should be ignored)
+    
+2.3.4.6 JSR_EVENT_PRI_REPLICATE
+
+   async_msg->jsrm_event  - JSR_EVENT_PRI_REPLICATE
+   async_msg->jsrm_sock_domain - AF Family
+   async_msg->jsrm_sock_type - Sock Type (TCP/UDP etc)
+   async_msg->jsrm_pri_handle - Contains primary handle for replication
+   async_msg->jsrm_sec_handle - Contains secondary handle for replication
+   async_msg->jsrm_pid - Contains pid of process that requested replication
+   async_msg->jsrm_error  - JSR_ERR_OK (should be ignored)
+   async_msg->jsrm_error  - JSR_ERR_OK (should be ignored)
+
+2.3.4.7 JSR_EVENT_PRI_REPLICATE_DONE
+
+   async_msg->jsrm_event  - JSR_EVENT_PRI_REPLICATE_DONE
+   async_msg->jsrm_sock_domain - AF Family
+   async_msg->jsrm_sock_type - Sock Type (TCP/UDP etc)
+   async_msg->jsrm_pri_handle - Contains primary handle for replication
+   async_msg->jsrm_sec_handle - Contains secondary handle for replication
+   async_msg->jsrm_pid - Contains pid of process that requested replication
+   async_msg->jsrm_error  - JSR_ERR_OK (should be ignored)
+
+2.3.4.8 JSR_EVENT_PRI_UNREPLICATE
+
+   async_msg->jsrm_event  - JSR_EVENT_PRI_UNREPLICATE
+   async_msg->jsrm_sock_domain - AF Family
+   async_msg->jsrm_sock_type - Sock Type (TCP/UDP etc)
+   async_msg->jsrm_pri_handle - Contains primary handle for replication
+   async_msg->jsrm_sec_handle - Contains secondary handle for replication
+   async_msg->jsrm_pid - Contains pid of process that requested replication
+   async_msg->jsrm_error - Reason why unreplicate happened. The reason
+                           codes are defined by jsr_unrepl_error_enum_t
+                           in sys/sys/jnx/jsr.h.
+
+2.3.4.9  JSR_EVENT_SEC_SPLIT
+
+   async_msg->jsrm_event  - JSR_EVENT_SEC_SPLIT
+   async_msg->jsrm_sock_domain - AF Family
+   async_msg->jsrm_sock_type - Sock Type (TCP/UDP etc)
+   async_msg->jsrm_pri_handle - Contains primary handle for replication
+   async_msg->jsrm_sec_handle - Contains secondary handle for replication
+   async_msg->jsrm_pid - Contains pid of process that requested replication
+   async_msg->jsrm_error  - JSR_ERR_OK (should be ignored)
+
+2.3.4.10 JSR_EVENT_SEC_SPLIT_DONE
+
+   async_msg->jsrm_event  - JSR_EVENT_SEC_SPLIT_DONE
+   async_msg->jsrm_sock_domain - AF Family
+   async_msg->jsrm_sock_type - Sock Type (TCP/UDP etc)
+   async_msg->jsrm_pri_handle - Contains primary handle for replication
+   async_msg->jsrm_sec_handle - Contains secondary handle for replication
+   async_msg->jsrm_pid - Contains pid of process that requested replication
+   async_msg->jsrm_error  - JSR_ERR_OK (should be ignored)
+
+2.3.4.11 JSR_EVENT_SEC_MERGE_DONE
+
+   async_msg->jsrm_event  - JSR_EVENT_SEC_MERGE_DONE
+   async_msg->jsrm_sock_domain - AF Family
+   async_msg->jsrm_sock_type - Sock Type (TCP/UDP etc)
+   async_msg->jsrm_pri_handle - Contains primary handle for replication
+   async_msg->jsrm_sec_handle - Contains secondary handle for replication
+   async_msg->jsrm_pid - Contains pid of process that requested merge
+   async_msg->jsrm_error  - JSR_ERR_OK (should be ignored)
+
+2.3.4.12 JSR_EVENT_SEC_UNREPLICATE
+
+   async_msg->jsrm_event  - JSR_EVENT_SEC_UNREPLICATE
+   async_msg->jsrm_sock_domain - AF Family
+   async_msg->jsrm_sock_type - Sock Type (TCP/UDP etc)
+   async_msg->jsrm_pri_handle - Contains primary handle for replication
+   async_msg->jsrm_sec_handle - Contains secondary handle for replication
+   async_msg->jsrm_pid - Contains pid of process that requested replication
+   async_msg->jsrm_error - Reason why unreplicate happened. The reason
+                           codes are defined by jsr_unrepl_error_enum_t
+                           in sys/sys/jnx/jsr.h.
+
+2.3.4.13 JSR_EVENT_REPLICATION_ACTIVE
+
+   async_msg->jsrm_event  - JSR_EVENT_REPLICATION_ACTIVE
+   async_msg->jsrm_pri_fd - Invalid (should be ignored)
+   async_msg->jsrm_sec_fd - Invalid (should be ignored)
+   async_msg->jsrm_pri_handle - Invalid (should be ignored)
+   async_msg->jsrm_sec_handle - Invalid (should be ignored) 
+   async_msg->jsrm_pid    - Invalid (should be ignored) 
+   async_msg->jsrm_error  - JSR_ERR_OK (should be ignored)
+
+2.3.4.14 JSR_EVENT_REPLICATION_INACTIVE
+
+   async_msg->jsrm_event  - JSR_EVENT_REPLICATION_ACTIVE
+   async_msg->jsrm_pri_fd - Invalid (should be ignored)
+   async_msg->jsrm_sec_fd - Invalid (should be ignored)
+   async_msg->jsrm_pri_handle - Invalid (should be ignored)
+   async_msg->jsrm_sec_handle - Invalid (should be ignored) 
+   async_msg->jsrm_pid    - Invalid (should be ignored) 
+   async_msg->jsrm_error - Reason why replication became inactive. The
+                           reason code is defined by jsr_cleanup_reason_t
+                           in sys/netjsr/jsr_kkcm.h
+
+
+2.4  Examples
+
+   Here is an example of how these functions can be used in what is
+   considered a "typical" manner.
+
+2.4.1 Typical usage scenario
+
+        Primary JSR Application                 Secondary JSR Application
+        -----------------------                 -------------------------
+
+        s = socket();
+        fcntl(s, F_SETFL, O_NONBLOCK);
+    t   hndl_P = jsr_handle_alloc(s); 
+    i
+    m           (Handle hndl_P is sent over to the secondary application)
+    e
+    |                                   hndl_S =jsr_split(hndl_P, split_fds[]);
+    |                                           evSelect(split_fds[], EV_READ);
+    |
+    |           (Secondary app tells the primary app it has done a jsr_split
+    |            and sends back the secondary handle hdnl_S)
+    |
+    |   jsr_replicate(s, hndl_S);
+    |   evSelect(s, EV_READ|EV_WRITE) or kevent;
+    |
+    |   (replication completes, evSelectFD() returns on both applications)
+    |
+    |   (pass traffic on s)                     (snoop on split_fds[]);
+   \|/  close(s);
+                                                (read on split_fds[] 
+                                                 returns 0);
+                                                jsr_close(handle);
+
+2.4.2 Replication failover scenario
+
+        Primary JSR Application                 Secondary JSR Application
+        -----------------------                 -------------------------
+
+        s = socket();
+        fcntl(s, F_SETFL, O_NONBLOCK);
+    t   hndl_P = jsr_handle_alloc(s); 
+    i
+    m           (Handle hndl_P is sent over to the secondary application)
+    e
+    |                                   hndl_S =jsr_split(handle, split_fds[]);
+    |                                           evSelect(split_fds[], EV_READ);
+    |
+    |           (Secondary app tells the primary app it has done a jsr_split
+    |            and sends back the secondary handle hndl_S)
+    |
+    |   jsr_replicate(s, hndl_S);
+    |   evSelect(s, EV_READ|EV_WRITE) or kevent;
+    |
+    |  (replication completes, evSelectFD() returns on both applications)
+    |  (pass traffic on s)                     (snoop on split_fds[]);
+   \|/ (failover occurs)                       (failover occurs, application 
+                                                gets indication that it is 
+                                                the primary now)
+                                                fully read send buffer fd
+                                                s = jsr_merge(handle);
+                                                (life goes on)
+
+
+2.4.3 Async notification API example
+
+   Real examples can be found in jsrmon and jsrutil. For jsrutil
+   please look at src/juniper/usr.bin/jsrutil/jsrasync.c. Shown
+   below is sample code on how to use the JSR async APIs.
+
+    jc_async_cookie = rtslib_open(RTM_ID_UNKNOWN);
+
+    /* Allocate async info */
+    rtslib_set_async_context(jc_async_cookie, jc_ctx);
+
+    /* Register handler for JSR async messages */
+    jsr_async_alloc(jc_async_cookie);
+
+    /* We are interesed in handle free and unreplicate events */
+    jsr_evset_empty(&jsr_evset);
+    jsr_evset_add(&jsr_evset, JSR_EVENT_PRI_HANDLE_FREE);
+    jsr_evset_add(&jsr_evset, JSR_EVENT_PRI_UNREPLICATE);
+
+    /* It is mandatory to register calls back for global events */
+    jsr_evset_add(&jsr_evset, JSR_EVENT_REPLICATION_ACTIVE);
+    jsr_evset_add(&jsr_evset, JSR_EVENT_REPLICATION_INACTIVE);
+
+    /* Register callback for events */
+    jsr_async_evset_cb_register(jc_async_cookie,
+                                &jsr_evset,
+                                jsr_event_common_cb,
+                                jsr_event_name);
+
+    /* Tell kernel we are interested in these events */
+    jsr_async_event_select(jc_async_cookie,
+                               &jsr_evset, JSR_LISTEN_PROC);
+
+    /* Listen for async messages via evLib */
+    evMainLoop();
+
+    /* When its time to quit free up JSR async memory first */
+    jsr_async_free(jc_async_cookie);
+
+    /* And only then close the cookie */
+    rtslib_close(jc_async_cookie);
+
+3. GRES and Mastership Change Notification for RPD and PR 58511
+
+3.1 Requirements
+
+   [a] Whenever mastership changes RPD needs to be notified.
+
+   [b] If mastership is not changed but GRES configuration is
+       changed then RPD should not be notified.       
+
+   [c] RPD should run the global master and global backup. It 
+       should not run on LCC REs on the TX Matrix.
+
+   [d] The notification to RPD should be in the form of a signal. The
+       signal type should be configurable.
+
+3.2 Changes in INIT Daemon
+
+   To provide GRES and Mastership change notification we will use
+   the INIT daemon.
+
+   Currently init.conf supports the following mode statements in the
+   configuration block for daemons:
+
+      mode restart-on-switchover;
+      mode master;
+      mode not-master;
+
+       e.g.
+
+         process "xyz-control" {
+             command "/usr/sbin/xyz -N";
+             mode restart-on-switchover;
+         }
+
+   The "mode restart-on-switchover" statement actually encompasses four
+   different conditions/parameters.
+
+   1) It is specifying which REs the process should run on. In this
+      case all REs (global/local master, backups)
+   2) It is specifying that the process should be restarted
+      on mastership change
+   3) It is specifying that the process should be restarted
+      on GRES change
+   4) The restart on GRES change should only be done on backup RE
+
+   The "mode master" means that the process should only run on the 
+   global master RE.
+
+   The "mode not-master" means that the process should run all REs
+   except the global-master, i.e. all local masters and all backups.
+
+   We remove the above three configuration statements and will
+   instead provide the following new statements:
+
+   [a] re-mode
+       Specifies the mastership state the RE should have for the process
+       to run
+
+       re-mode  [global-master | global-backup | local-master | local-backup |
+                 all-master | all-backup ]
+
+       global-master : a) Master RE on Single Chassis System
+                       b) SCC Master RE on Hobson
+
+       global-backup : a) Backup RE on Single Chassis System
+                       b) SCC Backup RE on Hobson
+
+       local-master  : a) Master RE on LCC on Hobson
+                       b) Will never run on single chassis systems
+
+       local-backup  : a) Backup RE on LCC on Hobson
+                       b) Will never run on single chassis systems
+
+       all-master    : a) All master REs on Single/Multi Chassis systems
+
+       all-backup    : a) All backup REs on Single/Multi Chassis systems
+
+       The re modes can be augmented as needed in the future. Also the
+       statment will be able to read multiple modes on the same line.
+       
+==>    The statements are all deliberately positive (e.g. we don't specify
+       not-local-master etc) to avoid conflicts in case multiple modes
+       are specified. New statements should also be positive.
+
+       If the re-mode statement is omitted then it is equivalent to
+       specifying that the daemon should run on all REs i.e. it is
+       the same as
+
+       re-mode all-master all-backup
+
+   [b] We have a new event statement format which takes action based on 
+       a certain event. The general format is
+
+       <event> <action> <re-mode>
+
+       i.e on a specific event take the specified action provided
+       the RE is a certain mode
+       
+       The grammar is as follows:
+
+       <event_stmts>      : <mastership_stmt>
+                            <gres_stmt>
+
+       <mastership_stmt>  : <Empty Statement>
+                          | mastership <restart_action> ;
+                          | mastership <signal_action> ;
+
+       <gres_stmt>        : <Empty Statement>
+                          | gres <restart_action> <for_re_mode_stmt> ;
+                          | gres <signal_action> <for_re_mode_stmt> ;
+
+       <restart_action>   : restart
+
+       <signal_action>    : signal <SIGTYPE>
+       <SIGTYPE>          : hup
+                          | usr1
+                          | usr2
+
+       <for_re_mode_stmt> : <Empty Statement>
+                          | for-re-mode <re_modes>
+
+       <re_modes>         : <re_mode>
+                          | <re_modes> <re_mode>
+
+       <re_mode>          : all-master
+                          | all-backup
+                          | local-master
+                          | local-backup
+                          | global-master
+                          | global-backup
+
+ 
+==>    The events, actions, signals and re-mode can be augmented
+       further as needed by adding to the above grammar.
+
+       The supported events and corresponding actions thus are:
+
+       "mastership restart"
+         On mastership change, restart the process
+
+       "mastership signal XYZ"
+         On mastership change, send the process the specified signal
+
+       "gres restart for-re-mode all-backup"
+         On gres change, restart the process only if it is running on a
+         backup RE
+
+       "gres signal XYZ"
+         On gres change, send the process the specified signal XYZ
+
+      Signal XYZ is one of "hup", "usr1" or "usr2" (without the quotes)
+
+==>   Note: These event statements are dependent on the re-mode statement 
+            described earlier in [a]. If the process is not supposed to run 
+            on a specific RE then the event statement(s) will be ignored on 
+            that RE for that process
+
+   Action on multiple events
+   -------------------------
+   a) If both "mastership" and "gres" events are specified then action
+      is taken for both events.
+      
+   b) There is a certain priority amongst the actions. If restart and
+      signal actions are both set then restart has higher priority.
+
+      e.g.
+      process "abc" {
+         ....
+         mastership signal hup;
+         gres restart;
+      }
+
+      In the above case only restart will be effected. No signal is
+      sent.
+
+   c) If there are multiple signal actions and the signals are different
+      then both both signals are sent. The signal for the mastership
+      event is sent first.
+
+      e.g.
+      process "abc" {
+         ....
+         mastership signal hup;
+         gres signal usr1;
+      }
+
+      The daemon "abc" will get both SIGHUP and SIGUSR1. It will get
+      SIGHUP before SIGUSR1.
+
+   d) If there are multiple signal actions and the signal is same for
+      all actions then only one signal is sent.
+
+      e.g.
+      process "abc" {
+         ....
+         mastership signal hup;
+         gres signal hup;
+      }
+
+      The daemon "abc" will get only one SIGHUP.
+
+   [c] In init besides an individual process block (in which we will provide
+       [a] and [b] above), there is a generic "processes" can be used to
+       override certain point paramters from the process block and to also
+       enable/disable a daemon from CLI. mgd spits out this "processes"
+       block into /var/etc/init.inc. /etc/init.conf has a default
+       "include /var/etc/init.inc" statement.
+
+
+       We provide a new point update parameter for the re-mode in the
+       existing "processes" block grammar. Thus one can set
+
+       processes {
+          xyz-control re-mode <re_modes>;
+       }
+
+       The re-mode thus set will override the re-mode in the individual
+       process block for "xyz-control" named daemon.
+
+       This point over-ride feature is used by mgd to allow running rpd on
+       global-backup RE if NSR is configured and to disable it if NSR is not
+       configured.
+
+3.2.1 Compatibility with older statements
+
+   The older "mode" statement will be removed. Compatibility with
+   the older statements can be achieved as follows:
+
+      Old Statement                 New Statement
+      -------------                 -------------
+      mode master                   re-mode global-master
+
+      mode not-master               re-mode local-master all-backup
+
+      mode restart-on-switchover    mastership restart  
+                                    gres restart for-re-mode all-backup
+                                    (since re-mode is not specified the
+                                     daemon will run on all REs)
+
+3.2.2 RPD Requirements
+
+   RPD's process block in init.conf should have the following statements
+
+   {
+       re-mode global-master global-backup
+       mastership signal SIGXXX
+   }
+
+   RPD is also interested in knowing if NSR CLI knob is turned on or off.
+   Init will not be used to provide RPD with this notification.
+
+   RPD should normally run only on global-master. If NSR CLI knob is
+   configured then RPD should also run on global-backup.
+
+3.2.3 PR 58511 - SNMPD requirements
+
+   This PR has been filed for a change-request in init to allow snmpd
+   daemon to run only on global-master and global-backup. This can be
+   achieved with the following statements
+
+   {
+      re-mode global-master global-backup
+   }
+
+   One can add "mastership restart" or "mastership signal SIGXXX" as
+   needed.
+
+3.2.4 LACPD Requirements
+
+   LACPD requirements come from the Atlas project. They want the following
+
+   a) When mastership changes LACPD on the new master  should get a signal.
+
+   b) When mastership changes LACPD on the old master (new backup) should 
+      be restarted.
+
+   c) LACPD is not interested in notifications on GRES change.
+
+   With the proposed event notification changes we only allow either
+   a restart or a signal action but not both. LACPD will use the signal
+   action and the signal handler will read mastership status. If LACPD
+   finds that its state changed from master to backup, it will exit
+   and will get restarted. This will thus satisfy requirement b).
+
+4. CLI Knob for NSR
+
+   A new knob
+
+   [set chassis redundancy nonstop-routing enable]
+   [set chassis redundancy nonstop-routing disable]
+
+   will be provided to enable/disable NSR. This knob will have
+   a "must" dependency on
+
+   [set chassis redundancy graceful-switchover enable]
+
+   i.e. NSR cannot be turned without GRES being on. And if NSR
+   and GRES are both on then NSR needs to be turned off first
+   before GRES can be turned off.
+
+   The setting of the non-stop-routine knob will cause a kernel
+   sysctl to be set. The sysctl is really only for kernel purpose
+   and should not be used by JSR applications.
+
+   Applications should monitor the knob through DDL to know if
+   its been configured or unconfigured.
+
+==> The kernel on which the replication knob is turned off will immediately
+    stop replication of all its primary sockets.  It will issue an async
+    notification to applications replication is off on all the primary
+    sockets.  The reason will be specified in the async notification.
+
+    Whenever the knob is turned on, another async notification will
+    be sent.
+
+    These async notifications will be sent as long as the application
+    has registered for them using jsr_async_register(). If there is
+    no registration then no notification is sent.
+
+==> Secondary sockets are not touched and no async notification is
+    sent to applications having secondary sockets. It is the job of the 
+    application to do either jsr_close() or jsr_merge() secondary
+    sockets as appropriate if it finds that the NSR knob has
+    been turned off.
+
+   We provide a new mgd action statement in DDL under the nonstop-routing
+   knob:
+
+        action propagate mgd 'mgd_prop_init_value(daap, "routing",
+                "re-mode global-master global-backup", NULL);';
+
+   This will spit out a point update over-ride for the RE mode for
+   RPD and will ensure that RPD runs on global backup RE whenever NSR 
+   is configured.
+
+5. Notes for Applications using JSR
+
+   [N1] Record based writes
+      Whenever jsr_replicate() is called on a socket, record based writes
+      are turned on the socket. What this means that is the size of
+      the user data buffer supplied as part of the write call is treated as a
+      complete record. If there is not enough space in the socket's
+      send buffer to accept the complete user data buffer then the call will
+      return with a ENOBUF message. Thus each write is treated as a record.
+
+      Record based writes are automatically turned off if jsr_unreplicate()
+      is called.
+
+      In case jsr_replicate() call had succeeded and replication subsequently
+      failed on the socket, then too record based writes stay turned on. Only
+      jsr_unreplicate() can cause record based writes to turn off.
+
+   [N2] Effect of close() on Primary JSR Sockets
+      In case a socket that was being replicated on the primary is is closed
+      without doing a jsr_unreplicate(), the secondary kernel is currently
+      not informed that the handle it is using is no longer valid and that
+      it should not expect any further replicated data for the handle.
+
+TBD   (This may change and we may actually send a mesg to secondary RE
+       at the kernel level which may result in the secondary application
+       getting a async rtsock mesg that replication is off on the
+       secondary dfs).
+
+      Sockets may get closed on the primary application due to the
+      application getting killed or being suppresed by init due to too many
+      restarts.
+
+      It is left to the secondary application to find out that the
+      application on the primary has either synchronously closed the socket
+      or has died.
+
+   [N3] Failure of backup RE
+      In case of failure of the backup RE, all processes
+      on the master RE that are using replicated primary JSR sockets will be 
+      notified of replication failure using a single async notification.
+TBD   A separate notification for each JSR socket may not be sent
+      (TBD). 
+
+      This will typically happen when the master RE's GRES layer finds
+      out that backup RE has crashed. The GRES layer will be used to
+      notify the JSR layer which will then notify all applications.
+
+   [N4] Failure of master RE
+TBD   In case of failure of the master RE, all processes on the
+      backup RE that are using replicated secondary sockets may be
+      notified of replication failure using a single async notification.
+
+TBD   This will typically happen when the backup RE assumes mastership
+      as the old master has crashed. The GRES layer causes mastership
+      switchover and the GRES layer will be used to notify the JSR
+      layer which in turn will notify all applications using JSR.
+
+      On the backup RE no inline socket notification (through error
+      on secondary socket fds) is available in case of failure of the
+      master RE. Applications on backup RE have to find out for themselves
+      that mastership has changed and they need to call jsr_merge()
+      as needed.
+
+      The secondary sockets need to be drained of data. After all
+      data has been drained, the secondary sockets in blocking mode 
+      will continue to stay blocked in select()/read() etc calls.
+      If the socket is in non-blocking mode and all data has been drained
+      then the socket will return -1 and errno EGAIN.
+
+   [N5] Effect of close() on Secondary JSR Sockets
+      A close() on any of the secondary JSR sockets is treated as a
+      jsr_close() on the socket's JSR handle. Both sockets get closed
+      and all resources associated with them including the JSR handle
+      are released.
+
+TBD   A message may be sent by secondary RE kernel to primary RE kernel
+      that secondary handle is no longer available. This message may result
+      in primary application getting an async rtsock message that
+      replication is off because secondary fds are no longer available.
+
+vim:et:ts=3:tw=76:wm=76:sw=3:ru

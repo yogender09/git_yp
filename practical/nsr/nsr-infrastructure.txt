@@ -1,0 +1,74 @@
+1.0 Introduction
+
+For non-stop routing(NSR) functionality routing protocols need to mirror protocol 
+specific information on active RE to standby RE.For exampls ISIS may want to mirror 
+adjacency information and received LSPs on standby RE. To acheive this RPD 
+infrastrucure should provide protocols with a common mechanism to mirror the data.
+
+2.0 Reqirements
+
+The following are the requirements so far from the IGPs like OSPF & ISIS.
+a) APIs to register data that needs to be mirrored.
+b) APIs to add/modify/delete mirrored data.
+c) Provide ack for mirrored data from standby RE.
+
+3.0 Operation
+
+a) IGPs will regsiter each data strucure that needs to be mirrored.
+b) Registration involves specifying the key for the mirrored data strucure,
+   APIs to encode/decode data.
+c) Encode is used on active RE to construct the raw data that will be 
+   mirrored on standby RE. Decode is used on standby to unwrap the recieved
+   data.
+d) The changes to the mirrored data structure are cumulative. For example if 
+   the mirrored data element changes from A to B and from B to C immediately 
+   the standby RE may not see the A to B transition.
+e) IGPs that need ack from standby RE for mirrored data have to maintain the
+   ack data for the corresponding mirrored data on standby RE and do the 
+   mirroring in reverse direction(standby to active).
+f) The communtication between RPDs is two way for mirroring data with ACKs.
+g) IGPs will provide callback functions to iterate and compare the entries in 
+   mirrored data base. These functions will be during for consistency checking.
+
+4.0 Implementation
+
+a) The basic communication between RPDs on active and standby RE is TCP.
+b) One TCP connection is made per RPD(logical router) running.
+c) The updates for mirrored data will be queued with mechanism similar to 
+   existing KRT queuing.
+d) The data mirroring queue is priority queue with priorities HIGH, NORMAL 
+   and LOW.
+e) Usual updates(including acks) will be at NORMAL priority unless specified.
+f) A tree will be maintained for each data structure registered for mirroring.
+   This tree will be used to aggregate the updates for the data sitting in 
+   mirroring queue.
+g) The updated data strucure needs to be reference counted for mirroring 
+   sub-system while its in data mirroring queue. This is to ensure that data
+   is not deleted while mirroring queue is holding on to it.
+
+
+5.0 Consistency Checking
+
+a) A consistencey checking mechanism is needed to uncover the errors in 
+   mirrorring subsystem if any and avoid the propagation of these errors.
+b) A simple way of doing this is sending the mirrored data from standby 
+   to active and comparing.
+c) This could be done periodically at low priority.
+d) Need to come up with good heuristic measurement to differentiate between
+   a busy mirroring sub-system and real errors in mirroring sub-system.
+
+6.0 Data Encoding
+
+a) Couple of ways to encode the mirrored data is using TLVs or pack the
+   bytes of mirrored data structre.
+b) One advantage of using TLV is that it doesn't need any versioning of 
+   mirrored data structure in case of In-service Software Upgrade(ISSU).
+c) The disadvantage of using TLV is if the data structure has too many
+   data elements(fields) and updation of data structure always involves 
+   updating most of them then the type and length per each field is a 
+   overhead.
+d) The big disadvantage of packing the bytes of mirrored data strucure is
+   hassle of maintaining versions.
+c) The protocols could select the appropriate encoding depending on the
+   data sturcture that is getting mirrored.
+

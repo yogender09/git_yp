@@ -1,0 +1,554 @@
+$Id: rli-6748-unit-test-plan.txt,v 1.1 2009/08/03 23:52:27 srik Exp $
+
+S3.02.P05.T02
+{Standard Unit Test Plan Template}
+
+Copyright (C) 2009, Juniper Networks, Inc.
+
+NOTICE: This document contains the proprietary and confidential
+information of Juniper Networks, Inc., and must not be
+distributed outside of the company without the
+permission of Juniper Engineering.
+
+[This document is a template for a standard unit test plan for use in
+Juniper engineering projects.  To use this document just change the
+contents of appropriate sections (marked with {}).  ANYTHING NOT
+MARKED 'AS NECESSARY' MUST BE INCLUDED.  If you do not need to fill
+out a section, leave it blank or mark it n/a -- do not delete it.
+
+1.  INTRODUCTION
+
+This is the unit-test plan to test the changes for improvements in
+BGP NSR Scale and Performance.
+
+The elements of scale are:
+
+    - Number of peers
+    - Number of Prefixes/paths
+
+The elements of performance are:
+
+    - Convergence time 
+    - Reduction in CPU utilization
+
+The Primary goal is to improve the Scaling numbers to a value higher than
+currently supported.
+
+Currently supported scale for family inet:
+    - 500 peers
+    - 7 or 8 peer-groups
+    - 500k prefixes
+    - 1 million paths
+
+Target scale with these changes:
+
+The following scale for family inet has been tested:
+    - 1000 peers
+    - 7 or 8 peer-groups 
+    - 1 million prefixes
+    - around 2 million paths
+
+Depending on systest cycles, the peer scale can be increased and tested.
+
+here are two limiting factors for scaling and performance.
+
+Memory: rpd can grow until 2GB of virtual and physical memory. By design,
+the Backup RE consumes more memory than the Master to store RIB-OUT State.
+This additional memory consumption is dependant on the number of prefixes
+(Actives), number of peer groups.
+
+CPU: The Backup rpd needs to do more work when compared to the Master rpd.
+
+At this stage, the Backup does have remaining CPU cycles and some amount (.5G)
+of memory. During systest, the peer scale can be increased to find out the
+maximum that can be supported.
+
+
+    Target product        : JUNOS
+    Target JUNOS release  : 10.1R1
+    RLI                   : 6748
+    NPI Program           : 326 JUNOS Non-Stop Routing (NSR)
+    Tracking PR           : 290971
+
+Referenced documents and RLIs
+
+[NSR-IMPROV]   - BGP NSR Scale and Performance Improvements Functional
+                 and Design Spec, located at
+                 sw-projects/os/nsr/bgp/rli-6748-funcspec.txt
+
+[SDCL]         - Socket Data Cache Layer (NSR: Kernel Performance
+                 Improvement), RLI 6386
+
+[SDCL-IMPROV]  - Improvements to the SDCL approach described in
+                 sw-projects/os/nsr/bgp/rli-6748-funcspec-old.txt
+
+[UPDATE-HINTS] - BGP NSR Update-Hints approach described in
+                 sw-projects/os/nsr/bgp/rli-6748-funcspec-old2.txt
+
+
+2.  SETUP
+
+2.1 Topology
+------------
+There are two topologies that were utilized.
+
+2.1.1 rbgp/bgpsim
+-----------------
+
+        +-----------+
+        |           |
+        |    DUT    |<--- routes injected thro rbgp
+        |           |
+        +-----------+
+             |
+             | <-- ebgp sessions on multiple vlans over ethernet
+             |     all routes sent to peers
+        +-----------+
+        |           |
+        |   Peers   | Multiple sessions simulated using bgpsim
+        |           | (Sink)
+        +-----------+
+
+- for 500 peers, there was 1 peer group with 200 peers and 6 peer groups with
+  50 peers each.
+- for 1000 peers, there was 1 peer group with 200 peers, 16  peer groups with
+  50 peers each.
+- routes advertised by rbgp peer. The DUT sends it to the peers simulated by
+  bgpsim.
+- DUT: tested with M320 and M10i.
+
+Prefix distribution 
+-------------------
+Number of path attributes sharing a prefix: The real internet has around
+5-7 prefixes that share a path attribute. The unit testing was based on
+this number.
+
+2.1.2 Router-tester
+-------------------
+- This was the standard systest configuration, where the majority of the
+  peers were simulated by the router-tester and some peers were simulated
+  by a real router. The DUT was M320.
+
+2.2 Target platforms
+--------------------
+Faster RE's with 4GB of RAM (eg: RE2000) would offer the best scale and
+performance. This would allow rpd to consume the full 2GB of memory without
+any impact due to the memory consumption of kernel and other processes.
+
+The low-end platforms (eg: m10i) have been sanity tested for regressions.
+
+
+3. FUNCTIONAL TEST CASES
+
+Common Show/debug commands to verify test case results
+------------------------------------------------------
+The below are some helpful commands. Note that most of the commands are
+applicable to both Master and Backup RE and should be run on both unless
+explicitly stated. Also, there's no harm if they're run on an RE that doesn't
+support them.
+
+Common monitoring during tests
+------------------------------
+- monitor cpu utilization (using top tools)
+- monitor memory utilization (using top)
+- monitor convergence time. "show bgp summary" can be done on the Master.
+  When outq's go to 0, it means we're done sending out data. Also,
+  the Backups' outq (from "show bgp summary" can be monitored to see if
+  the count matches the number of prefixes advertised ot that neighbor.
+- do a "clear bgp statistics" on both Master and Backup during the start of
+  the test. Run "show bgp statistics" at the end of the test and collect 
+  the output. Generally, for tests that involve peer flapping (eg:
+  "clear bgp neighbor" or "restart routing", I generally run
+  'clear bgp statistics' after all the peers are established. The reason for
+  this is that the initial flaps (which are the expected behavior)  aren't
+  accounted in the 'show bgp statistics' output. If there are any flaps
+  during the test, they get accounted for in this command after the test
+  completes.
+- 'show task memory detail' can be collected after the completion of the
+  test. This could help check for memory leaks.
+
+Debugging commands
+------------------
+- 'netstat -JS -V > /tmp/netstat.out'
+- 'netstat -p nsr > /tmp/netstat_jsr.out'
+
+can be captured before and after the tests to help in debugging.
+
+Other files
+-----------
+- /var/log/messages
+- any traceoptions output if they're enabled
+
+kernel information
+------------------
+The following can be helpful (probably turned on by default during all testing
+efforts) to turn on:
+
+sysctl -w net.jsr.loglevel=3
+
+Additional debugging can be turned on by using the below, but turn them
+on only if you suspect there's a problem.
+
+sysctl -w net.jsr.debug=1
+sysctl -w debug.kkcm_msg_log=1
+sysctl kern.cpu_hog_panic = 1
+sysctl kern.cpu_hog_checking_enable=1
+
+top commands
+------------
+Measuring cpu utilization. I use the two scripts. I run top.sh (on both
+Master and Backup) when I start the tests. I stop them when the tests
+complete.
+
+I then run top_final.sh which gives me the cpu utilization average during
+the test.
+
+The way to run them is
+- 'sh top.sh'
+- 'sh top_final.sh'
+
+<--- top.sh script --->
+#!/sbin/sh
+
+echo "----------- test start --------" > /tmp/top.final
+date >> /tmp/top.final
+
+count=1
+
+rm /tmp/top.out
+while true
+do
+    top -b -I -d2 -s1 | grep "CPU states" >> /tmp/top.out
+    sleep 10
+    count=$(($count+1))
+
+    if [ ${count} -eq 6 ]; then
+        awk '{ user += $3; sys += $7; intr += $9; idle += $11 } END { print
+user/6, sys/6, intr/6, idle/6 }' /tmp/top.out >> /tmp/top.final
+        rm /tmp/top.out
+        count=0
+    fi
+done
+
+
+<-- top_final.sh script --->
+#!/sbin/sh
+
+sed '1d' /tmp/top.final | sed '1d' > /tmp/junk
+div=`wc -l /tmp/junk | awk '{ print $1 }'`
+
+grep DT /tmp/top.final
+awk -v divisor=$div '{ user += $1; sys += $2; intr += $3; idle += $4 } END {
+printf "%3.1f %3.1f %3.1f %3.1f\n", user/divisor, sys/divisor, intr/divisor,
+idle/divisor }' /tmp/junk
+
+In case of filing PRs, it can help to copy the file /tmp/top.final (from
+both REs) as well to the PR.
+
+Testcases
+---------
+
+Common Success criteria
+
+This is common to all the tests.
+- Backup BGP should sync all the state correctly
+- No peer flaps during the test
+- No cores
+
+3.1 Router bring-up scenario
+
+Goal:
+    - Verify that router is able to converge at scale with NSR turned on.
+
+Test steps:
+    1. The router is started with clean config.
+    2. The test configuration is committed (this has NSR turned on).
+
+Success Criteria:
+    1. Peers are brought up, routes learnt and bestpaths advertised out.
+
+Result:
+    Pass
+
+3.2 Clear Connection
+
+Goal:
+    - Router is able to re-establish bgp sessions and re-converge post
+      a session/link flap.
+
+Test steps:
+    1. Execute the command "clear bgp neighbor" which would clear all
+       BGP sessions.
+
+Success Criteria:
+    1. Both Master and Backup clean their state, Sessions would get
+       re-established.
+    2. Routes re-learnt and bestpaths calculated and advertised out.
+
+Results:
+    Pass
+
+3.3 Soft Clear
+
+Goal:
+    - Verifies outbound state is refreshed correctly to the peers.
+    - This is the best-case scenario in terms of performance improvements
+      with the new changes. Check for performance improvements over
+      Stock NSR.
+
+Test steps:
+    1. Execute 'clear bgp neighbor soft'.
+
+Success Criteria:
+    - This would refresh the complete Rib-Out state to all the Peers.
+
+Results:
+    Pass
+
+3.4. Restart routing on Backup RE
+
+Goal:
+    - This tests the rsync mechanism. This tests both rsync as well as the
+      regular snooping mechanism and reconciliation between them.
+
+There are two testcases here:
+
+Test Steps:
+3.4.1 Restart Backup rpd after everything has converged
+
+3.4.2 Restart Backup rpd in the middle of congergence
+
+Success Criteria:
+    - Backup has the complete RIB-IN and RIB-OUT state in sync with the
+    - Master and is able to continue updating its state with network changes.
+
+Results
+    Pass
+
+3.5 Restart Routing on Master RE
+
+Goal:
+    - To verify the sessions get re-established and the router re-converges
+    - To verify if the Backup is able to re-sync its state correctly.
+
+Test steps:
+    - Issue 'restart routing' on Master RE
+
+Success Criteria:
+    - Sessions are up and router conerges
+    - Backup has the complete RIB-IN and RIB-OUT state in sync with the
+    - The Backup rpd doesn't become the Master
+    - There's no Graceful-restart (peers don't act as receiving-speakers).
+    - There's no NSR
+
+Results:
+    Pass
+
+3.6 RE Switchover
+
+Goal:
+    - To verify the new Master has all the State
+    - There are no peer flaps for peers that've completed the initial
+      replication (rsync)
+    - One additional data to measure here is how long does it take for the CPU
+      load to come down to normal.
+
+Test steps:
+
+The following scenarios can be tested:
+
+3.6.1 RE switchover post convergence
+
+    This triggers a switchover in steady state.
+
+3.6.2 RE switchover in the middle of convergence
+
+    This triggers a switchover after all the sessions are Established, but
+    convergence is in progress. Ideally, the switchover should be done when
+    the 'outq' in the Master is a sizeable number (few thousands). This may
+    or may not mean the Backup's send-size socket queues are full, but means
+    that they do have some data and are not empty. This tests the additional
+    processing load required to empty and process these bgp updates in addition
+    to regular reconciliation and this process does not flap the BGP sessions
+    due to starvation from sending keepalives.
+
+Success Criteria:
+    - No session flaps for established sessions that've completed initial
+      replication (rsync)
+    - State is correctly replicated
+    - Pending actions are completed. (eg. if updaes need to be sent out)
+    - Duplicate updates can be sent out under certain situations. This is
+      ok by design and could be addressed in a case-by-case basis.
+
+Results:
+    Pass
+
+3.7. Topology changes
+
+Goal:
+    - Unit testing to verify if the Backup maintains its state correctly
+      with the Masster.
+
+Test Steps:
+
+The following can be tested:
+
+3.7.1 Route withdraws
+
+3.7.2 Bestpath changes
+
+3.7.3 Route flaps
+
+3.7.4 Peer flaps
+
+Success Criteria:
+    - Verify bgp state in the Master and Backup RE using the show commands.
+
+Results
+    Pass
+
+3.8 Address Families
+
+Goal:
+    To test various address families.
+
+Test steps:
+    The following families can be tested for scale.
+
+    - inet
+    - inet6
+    - inet-vpn
+    - inet6-vpn
+    - l2vpn
+    - vpls
+    - route-target
+
+Success criteria:
+    - Sessions are able to come up and the router converges
+    - Backup has its state in-sync with the Master including AF (label) state.
+    - Various scenarios (switchover, restart-routing, clear bgp neighbor, etc.
+      work correctly).
+
+Result
+    Pass
+    - Tested inet in scale inet-vpn for functionality.
+
+3.9 Configuration Changes
+
+Goal:
+    - Verify correct config processing primarily looking for regressions.
+    - Its a non-goal to address rpd Scheduler slips that exist currently.
+
+Test steps:
+    - This happens automatically during adding and deleting config as part
+      of the test script during the start and end of the test.
+    - In addition, verify there are no adverse effects to config commit
+      processing in the middle of convergence.
+
+Success Criteria:
+    - Committed configuration takes effect.
+
+Results
+    Pass
+
+3.10 Sanity
+
+Goal:
+    - Verify there are no regressions without NSR.
+    - This would also need to done to get performance comparison
+      numbers between NSR and Non-NSR.
+
+Test Steps:
+    - Run some testcases without NSR turned on.
+
+Success Criteria:
+    - No regressions
+
+Results
+    Pass
+
+3.11 Longetivity
+
+Goal:
+    - Observe for crashes and memory leaks during longetivity tests.
+
+Test steps:
+    - Let the router converge and sit there.
+
+Success criteria:
+    - No crashes or memory leaks.
+
+Results
+    - Performed some sanity testing, but dependant on systest for this.
+
+3.12 Lower-end routers
+
+Goal:
+    - Measure the scale that can be achieved in low-end platforms that
+      support NSR.
+    - Make sure there are no regressions due to the changes in
+      low-end platforms.
+
+Test steps:
+    - Test on M10is.
+
+Sucess criteria:
+    - Check for common criteria.
+
+Results
+    - Pass (no cores/regressions)
+    - Scale supported:
+        + around 500 peers
+        + around 500k prefixes
+        + convergence takes close to 1 hour.
+
+
+4.  BOUNDARY TEST CASES
+
+Refer testcaes 3.5, 3.6 and 3.9, 3.11 and 3.12.
+
+
+5.  GRES TEST CASES
+
+n/a. This RLI deals with nonstop-routing and graceful-restart cannot be
+configured on the DUT when nonstop-routing is configured. From a configuration
+perspective, 'chassis redundancy graceful-switchover' needs to be configured.
+
+6.  ISSU TEST CASES
+
+ISSU will not be impacted. BGP NSR during ISSU should work as before.
+
+7. TX TEST CASES
+
+TX is supported, but there is no platform specific changes associated with
+the RLI. Dependent on systest for sanity test.
+
+8.  REGRESSION TEST CASES
+
+- Refer testcase 3.10.
+- Dependant on CAM/EDVT/systest for complete regression testing.
+
+9.  INTEROP TEST CASES
+
+There is no functionality impact for interop. Dependent on Regression/CAM
+coverage to verify there's no regression while interoperating with routers
+from other vendors.
+
+10.  MIGRATION & COMPATIBILITY TEST CASES
+
+n/a
+
+11.  TEST COVERAGE REMAINING
+
+Complete systest regression.
+
+12.  DEFECTS REMAINING
+
+Test failures:
+
+PR 457476: BGP session flaps during initial bringup
+
+This has been identified as an issue outside of BGP and is currently being
+looked at by dcd group. This PR is in pending state with configuration
+information requested by dcd DE.
+

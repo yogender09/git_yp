@@ -1,0 +1,174 @@
+$Id: jsr_ipc_msg.txt,v 1.3 2005/05/23 21:21:33 yadav Exp $
+        
+                        Juniper Socket Replicatieon
+                           IPC Message Formats
+
+
+                  Author: Navneet Yadav, May 2005
+
+Copyright Notice
+
+   Copyright (C) 2005, Juniper Networks, Inc.
+
+   NOTICE: This document contains proprietary and confidential
+   information of Juniper Networks, Inc. and must not be distributed
+   outside of the company without the permission of Juniper Networks
+   engineering.
+
+1. INTRODUCTION
+
+   This document discusses the common message format to be used for
+   the IPC messages exchanged between the two REs for Juniper Socket
+   Replication
+
+2. FUNCTIONALITY
+
+   The IPC messages are expected to be sent over a TCP transport.
+
+2.1 Requirements
+
+   [R1]
+   There is an assumption that the JSR kernel modules that are
+   the consumers and producers of the IPC messages can have
+   arbitrarily long data messages. The messages only need to be lesser
+   than (2^32 - 1) bytes in size.
+
+   As long as a single data message is less than the above limit
+   the JSR IPC mechanism will not force producers to split it
+   across multiple IPC messages.
+
+   [R2]
+   Each IPC message will have a common header portion and variable
+   data portion. The fields in the data portion will depend on the
+   type of the IPC message
+
+3. IMPLEMENTATION
+
+3.1 Common Header
+
+    typedef uint8_t  jsr_ipc_type_t;
+    typedef uint8_t  jsr_ipc_subtype_t;
+    typedef uint8_t  jsr_ipc_version_t;
+    typedef uint32_t jsr_ipc_length_t;
+
+    /* IPC Message Header */
+    typedef struct jsr_ipc_hdr_ {
+        jsr_ipc_type_t    type;
+        jsr_ipc_subtype_t subtype;
+        jsr_ipc_version_t version;
+        char              unused[1];    /* Align at 4-byte boundary */
+        jsr_ipc_length_t  length;   /* Length of the entire IPC message */
+    } jsr_ipc_hdr_t;
+
+    The length field is the length of the entire IPC message including
+    the header.
+   
+    /* Generic IPC message. Mainly for typecasting */
+    tyepdef struct jsr_ipc_msg_ {
+        jsr_ipc_hdr_t   jsr_hdr;
+        char            data[0];
+    } jsr_ipc_msg_t;
+
+
+    The jsr_ipc_type_t has the following values
+
+    enum {
+        JSR_IPC_TYPE_IHA,
+        JSR_IPC_TYPE_SDRL,
+        JSR_IPC_TYPE_PRL,
+        JSR_IPC_TYPE_KKCM,
+        JSR_IPC_TYPE_MAX
+    };
+
+3.2 Specific Message formats
+
+3.2.1 IHA Module Message Formats
+
+   The message type for the IHA module is JSR_IPC_TYPE_IHA
+
+   The message subtypes IHA Module are
+
+   enum {
+       JSR_IPC_IHA_INIT,
+       JSR_IPC_IHA_INIT_ACK,
+       JSR_IPC_IHA_SEND_DATA,
+       JSR_IPC_IHA_SEND_ACK,
+       JSR_IPC_IHA_RECV_DATA,
+       JSR_IPC_IHA_RECV_ACK,
+       JSR_IPC_IHA_UNREPLICATE
+       JSR_IPC_IHA_MAX
+   };
+
+   For each of the subtypes we define the following IPC
+   messages:
+
+   Subtype JSR_IPC_IHA_INIT:
+       typedef struct jsr_ipc_iha_init_ {
+           jsr_ipc_hdr_t    iha_hdr;
+           jsr_handle_t     iha_handle;
+           u_int32_t        sdrl_info_len;
+           u_int32_t        psrm_info_len;
+           u_int32_t        sdrl_send_data_len;
+           u_int32_t        sdrl_recv_data_len;
+           u_int8_t         data[0];
+       } jsr_ipc_iha_init_t;
+
+   Subtype JSR_IPC_IHA_SEND_DATA:
+       typedef struct jsr_ipc_iha_send_ {
+           jsr_ipc_hdr_t    iha_hdr;
+           jsr_handle_t     iha_handle;
+           u_int32_t        sdrl_send_data_len;
+           u_int8_t         data[0];
+       } jsr_ipc_iha_send_t;
+
+   Subtype JSR_IPC_IHA_RECV_DATA:
+       typedef struct jsr_ipc_iha_recv_ {
+           jsr_ipc_hdr_t    iha_hdr;
+           jsr_handle_t     iha_handle;
+           u_int32_t        sdrl_recv_data_len;
+           u_int8_t         data[0];
+       } jsr_ipc_iha_recv_t;
+
+   Subtype JSR_IPC_IHA_INIT_ACK:
+   Subtype JSR_IPC_IHA_SEND_ACK:
+   Subtype JSR_IPC_IHA_RECV_ACK:
+       typedef struct jsr_ipc_iha_ack_ {
+           jsr_ipc_hdr_t    iha_hdr;
+           jsr_handle_t     iha_handle;
+           jsr_ipc_err_t    iha_error;
+       } jsr_ipc_iha_ack_t;
+
+     . iha_error if 0 means a positive ACK (no errors).
+     . iha_error if non-zero means a NACK. The value in iha_error
+       indicates the type of error.
+
+   Subtype JSR_IPC_IHA_UNREPLICATE:
+       typedef struct jsr_ipc_iha_ack_ {
+           jsr_ipc_hdr_t    iha_hdr;
+           jsr_handle_t     iha_handle;
+       } jsr_ipc_iha_ack_t;
+
+3.2.2 SDRL Module Message Formats
+
+3.2.3 PSRM Message Formats
+
+3.2.4 PRL Module Message Formats
+
+3.2.5 KKCM Message Formats
+
+3.3 IPC NACK Error Codes
+
+   For some of the IPC messages the kernel sending the message
+   expects an ACK/NACK from the recieving kernel. All such ACKs will 
+   have one field of type jsr_ipc_err_t which will specify the error 
+   code. The error code has following values:
+
+   typedef enum {
+      JSR_IPC_ERR_OK = 0,           /* No error */
+      JSR_IPC_ERR_INVALID_HANDLE,   /* The JSR handle was invalid */
+      JSR_IPC_ERR_INVALID_IPC,      /* The IPC message for which the ACK is
+                                       needed failed basic sanity checks */
+      JSR_IPC_ERR_INTERNAL,         /* The sending side had an internal error */
+      JSR_IPC_ERR_MAX
+   } jsr_ipc_err_t
+

@@ -1,0 +1,765 @@
+$Id: msdp-nsr-2729-ut-plan.txt,v 1.5 2011/03/22 03:13:21 aasthana Exp $
+
+                  NSR: MSDP stateful replication
+                         Unit Test Plan
+
+                  Abhishek Asthana <aasthana@juniper.net>
+
+
+Copyright (C) 2010, Juniper Networks, Inc.
+
+NOTICE: This document contains proprietary and confidential
+information of Juniper Networks, Inc. and must not be distributed
+outside of the company without the permission of Juniper Networks
+engineering.
+
+1.  INTRODUCTION
+
+The UTP in this document caters to MSDP NSR. 
+
+Related Functional Spec:
+    http://cvs.juniper.net/cgi-bin/viewcvs.cgi/sw-projects/os/nsr/msdp-nsr-2729-funcspec.txt?view=markup
+
+RLI Page:
+    https://deepthought.juniper.net/app/do/showView?tableName=RLI&record_number=2729
+PR Page:
+    https://gnats.juniper.net/web/default/572316-1
+
+Supported Platforms: M/MX,T
+
+Tracks:
+  RLI 2729: NSR: MSDP stateful replication
+  PR: 572316
+  Functional spec: sw-projects/os/nsr/msdp-nsr-2729-funcspec.txt
+
+Enabling NSR:
+         set routing-options nonstop-routing 
+         set chassis redundancy graceful-switchover
+         set system commit synchronize
+
+Terminology:
+  ISS:  Initial State Sync. This would be done when the backup rpd is just
+        starting or NSR just got enabled or if MSDP just got enabled on the
+        backup rpd already configured for NSR.
+  RESO: RE SwitchOver
+  RDB: Replication Database
+
+2.  SCOPE
+
+3.  SETUP Topology
+
+3.1.1 MSDP NSR Topology-1:
+                local-RP
+         R0+-------R1+---------R2
+                   DUT   
+
+3.1.2 MSDP NSR Topology-2:
+                local-RP    local-RP
+       Src1+-------R1+---------R2
+                    \        /DUT
+                     \      /
+                      \    /
+                       \  /       
+                        R3---------+Src2
+                       DUT   
+                     local-RP
+
+R1, R2 and R3 are local RP's 
+R2 and R3 are DUTs. 
+
+NOTE: 
+All the test cases mentioned in this document needs to be verified on both the DUTs.
+
+Enabling NSR on all Routers
+ set routing-options nonstop-routing
+ set chassis redundancy graceful-switchover
+ set system commit synchronize
+
+Configuration of R1
+ set protocols msdp local-address 110.1.1.1
+ set protocols msdp peer 110.1.1.2
+ set protocols msdp peer 110.1.1.3
+ set protocols ospf area 0.0.0.0 interface all
+ set protocols ospf area 0.0.0.0 interface fxp0.0 disable
+ set protocols pim rp local address 200.1.1.1
+ set protocols pim interface all
+
+Configuration of R2
+ set protocols msdp local-address 110.1.1.2
+ set protocols msdp peer 110.1.1.1
+ set protocols msdp peer 110.1.1.3
+ set protocols ospf area 0.0.0.0 interface all
+ set protocols ospf area 0.0.0.0 interface fxp0.0 disable
+ set protocols pim rp local address 200.1.1.1
+ set protocols pim interface all
+
+Configuration of R3
+ set protocols msdp local-address 110.1.1.3
+ set protocols msdp peer 110.1.1.1
+ set protocols msdp peer 110.1.1.2
+ set protocols ospf area 0.0.0.0 interface all
+ set protocols ospf area 0.0.0.0 interface fxp0.0 disable
+ set protocols pim rp local address 200.1.1.1
+ set protocols pim interface all
+
+3.2 Hardware
+
+Routers: M/MX, T640/T1600 
+BSD Hosts as Sources and Receivers
+
+4 FUNCTIONAL TEST CASES
+
+4.1 General Testing 
+
+4.1.a MSDP NSR Trace Option:
+   
+    Goal: Setting/Un-setting MSDP NSR Trace Option.
+   
+    Test Steps:
+        1. Enable NSR.
+        2. Enable MSDP.
+        3. Set MSDP NSR Trace option " set protocols msdp traceoptions flag
+        nsr-synchronization"
+        4. Execute "restart routing"
+        5. Reset MSDP NSR Trace Option "delete protocols msdp
+        traceoptions flag nsr-synchronization"
+        6. Execute "restart routing"
+    
+    Success Criteria:
+        1. When MSDP-NSR Trace Option flag is set, it should be available in
+           configuration. Verify using "show protocol msdp" command.
+        2. Check for appropriate Trace Messages in log file.
+        3. When Trace option is reset, MSDP-NSR related Trace messages should
+        not be written to log file.
+
+          Above cases can be verified using following commands and LOG files
+              - "show protocol msdp"
+              - "show msdp" 
+              - "show system core-dumps"
+
+    Result:
+        Pass
+
+4.1.b Switch to NSR config from non-NSR config:
+   
+    Goal: Testing the Data Structures (Memory usage):
+
+    Test Steps: 
+        1. Enable NSR.
+        2. Enable MSDP.
+        3. Repeat the test by reversing the ordering of the above steps.
+        4. Disable MSDP NSR, by trying combinations of ordering of:
+             - Disable NSR.
+             - Disable MSDP.
+
+    Success Criteria:
+        1. Backup RE function vectors should get initialized with appropriate
+           values. 
+        2. MSDP NSR is enabled, RDB data-structure get initialized.
+           These should not be initialized before NSR is enabled (Memory Usage).
+        3. NSR is disabled with MSDP still enabled, the RDB data-structures
+           should get freed.
+        4. MSDP is disabled while NSR is still enabled, the RDB
+           data-structures should get freed.
+        5. Use "show task memory detail | match msdp" command to check memory
+
+          RDB should get created only when both MSDP and NSR(globally) are
+          enabled. When either of these gets disabled, the RDB should get freed.
+
+          - All the above cases can be verified using GDB and Trace-Logs.
+          - Use "set protocols msdp traceoptions flag nsr-synchronization" to
+            enable MSDP NSR Trace-option
+          - Use command "show task memory detail | match msdp" to check
+            memory usage   
+
+    Result:
+        Pass
+
+4.1.c Initial state replication:
+   
+    Goal: Initial State Replication of MSDP RDB's:
+
+    Test Steps: 
+        1. Enable MSDP.
+        2. Enable NSR.
+          (Enable NSR after Router as already formed MSDP Peers on the
+          network. When NSR get enabled, MSDP becomes active on Backup RE)
+
+    Success Criteria:
+        1. MSDP on Master should generate RDBs for pre-existing MSDP
+           Sessions.
+        2. MSDP on Master should replicate theses RDB to the Backup.
+        3. Execute the hidden command "show msdp socket" on both REs and compare 
+                - MSDP Peer States
+                - Socket Replication Handler value.
+          
+          - All the above cases can be verified using GDB and Trace-Logs.
+          - Use "set protocols msdp traceoptions flag nsr-synchronization" to
+            enable MSDP NSR Trace-option
+          - Use command "show msdp socket"
+
+    Result:
+        Pass
+
+4.1.d Socket Handle Replication:
+   
+    Goal: TCP Socket Handle gets replicated between Master/Backup RE:
+
+    Test Steps: 
+        1. Enable MSDP.
+        2. Enable NSR.
+           (Enable NSR after Router as already formed MSDP Peers on the
+           network. When NSR get enabled, MSDP becomes active on Backup RE)
+        3. Repeat the test by reversing the ordering of the above steps.
+
+    Success Criteria:
+        1. MSDP on Master should replicate Master socket handle for all the
+           existing sessions to Backup.
+        2. MSDP on Backup should replicate secondary socket handles, for all
+           socket handles received, to Master.
+        3. If Backup is active, as and when Master adds a socket it should
+           Replicate the Handle to Backup.
+        4. Execute the hidden command "show msdp socket" on both REs and
+           compare the Socket Replication Handler value.
+          
+          - All the above cases can be verified using GDB and Trace-Logs.
+          - Use "set protocols msdp traceoptions flag nsr-synchronization" to
+            enable MSDP NSR Trace-option
+          - Use command "show msdp socket"
+          
+    Result:
+        Pass
+
+4.1.e Disable MSDP NSR:
+   
+    Goal: Disable MSDP NSR and check MSDP States and Memory usage:
+
+    Test Steps: 
+        1. Enable MSDP.
+        2. Enable NSR.
+        3. Disable MSDP NSR
+        4. Check for memory usage on both REs
+        5. Enable MSDP NSR
+        6. Repeat step 4
+        7. Repeat the test by reversing the ordering of the above steps.
+
+    Success Criteria:
+        1. MSDP on Master should replicate Master socket handle for all the
+           existing sessions to Backup.
+        2. MSDP on Backup should replicate secondary socket handles, for all
+           socket handles received, to Master.
+        3. If Backup is active, as and when Master adds a socket it should
+           Replicate the Handle to Backup.
+        4. Execute the hidden command "show msdp socket" on both REs and
+           compare the Socket Replication Handler value.
+        5. Check for memory usage using command 
+                - "show task memory detail | grep msdp"   
+        6. Disable MSDP-NSR using Hidden CLI command 
+                - "set protocol msdp nonstop-routing-disable"
+
+          - All the above cases can be verified using GDB and Trace-Logs.
+          - Use "set protocols msdp traceoptions flag nsr-synchronization" to
+            enable MSDP NSR Trace-option
+          
+    Result:
+        Pass
+
+4.2 MSDP Functional Testing:
+
+4.2.a Sending out MSDP Packets:
+   
+    Goal: Only the Master RE sends MSDP Packets.(Keepalive/ SA's)
+
+    Test Steps:
+        1. Enable MSDP.
+        2. Enable NSR.
+   
+    Success Criteria:
+        1. Only Master RE should send MSDP Packets out.
+        2. Backup should not send out any MSDP Packets. 
+          
+          This test case can be verified by using a sniffer and Trace-Logs.
+
+    Result:
+        Pass
+
+4.2.b Receiving MSDP Packets:
+
+    Goal: Both Master/Backup RE read Packets from the Network.
+
+    Test Steps:
+        1. Enable MSDP.
+        2. Enable NSR.
+        3. Wait for Socket Replication to complete between Master/Backup.
+   
+    Success Criteria:
+        1. Both RE's must receive MSDP Packets.(Keep-Alive and MSDP SA's)
+          
+         - Above cases can be verified using GDB and Trace-Logs.
+         - Use "set protocols msdp traceoptions flag nsr-synchronization" to
+           enable MSDP NSR Trace-option
+
+    Result:
+        Pass
+
+4.2.c Maintain and Refresh Timers for MSDP Peers:
+   
+    Goal: Both Master/Backup RE should maintain and refresh timers for the
+    MSDP Peers independently. 
+
+    Test Steps:
+        1. Enable MSDP.
+        2. Enable NSR.
+        3. Wait for Socket Replication to complete between Master/Backup.
+   
+    Success Criteria:
+        Both Master/Backup RE 
+        1. should run independent timers for each of the Peers. 
+        2. should display time-remaining value for each of the Peers.
+        3. should be able to independently refresh timers on receiving MSPD
+           KeepAlives/ Source-Active Messages from the Peers
+
+          Above cases can be verified using "show msdp" command and Trace-Logs
+          on both Master/Backup RE.
+        
+    Result:
+        Pass
+
+4.2.d Timeout for MSDP Peers:
+   
+    Goal: Both Master/Backup RE should timeout the Peer. 
+
+    Test Steps:
+        1. Enable MSDP.
+        2. Enable NSR.
+        3. Wait for Socket Replication to complete between Master/Backup.
+        4. Disable MSDP on Peers Routers to avoid Keepalives and Source-Active
+           message exchanges.
+   
+    Success Criteria:
+        Both Master/Backup RE 
+        1. should run independent timers for each of the Peers. 
+        2. should display time-remaining value for each of the Peers.
+        3. should be able to independently timeout the Peers
+          
+          Above cases can be verified using "show msdp" command and Trace-Logs
+          on both Master/Backup RE.
+        
+    Result:
+        Pass
+
+4.2.e MSDP Peer State Update:
+   
+    Goal: State changes for are in Sync between Master/Backup RE.
+   
+    Test Steps:
+        1. Enable NSR.
+        2. Enable MSDP.
+    
+    Success Criteria:
+        1. After the Master RE goes to "ESTABLISHED" state for a Peer, Backup
+           RE should also go to "ESTABLISHED" state, as both REs are listening
+           on the network for MSDP Packets from Peers.
+
+          Above cases can be verified using "show msdp" command and Trace-Logs
+          on both Master/Backup RE.
+
+    Result:
+        Pass
+
+4.2.f RE Switchover
+
+    Goal: No state loss due to switchovers.
+    
+    Test Steps:
+        1. Enable NSR.
+        2. Enable MSDP.
+        3. Allow socket replication to complete 
+        4. Do RE switchover. (Use command "request chassis routing-engine master
+        switch")
+        5. Repeat step 4 multiple times.
+    
+    Success Criteria:
+        1. After the MSPD Peers (for the adjacent router) has come up, do a
+           switchover.
+        2. The Peer list on the new master should be the same as before
+           after switchover.
+        3. After Switchover the new master must continue with the nbr-timeout
+           timer, in the output of "show msdp", from where it was before
+           switchover.  
+        4. There should not be any core on any of the RE's
+        5. There should be no information LOSS, New Master should know about
+           all the Active Sources.
+          
+          Above cases can be verified using following commands
+              - "show msdp" 
+              - show system core-dumps
+
+   Result:
+        Pass
+
+4.2.g Restart Routing:
+    
+    Goal: RE shall be smart enough to discover that the other RE has gone
+          down.
+    
+    Test Steps:
+        1. Enable NSR.
+        2. Enable MSDP.
+        3. Allow socket replication to complete
+        4. Verify Peer list on Both the REs.
+        5. Reboot Backup RE.
+        6. Repeat step 5 with at different timings
+        7. Reboot Master RE
+        8. Repeat step 7 with at different timings
+    
+    Success Criteria:
+        1. After Backup RE comes back from the reboot, it must get the states
+           sync as the Master. 
+           (This will test that the master will provide an "initial state replication")
+        2. After Master reboots, it re-learn from the network and should
+           replicate the new information to the Backup.
+        3. There should not be any cores on any of the RE.
+        4. Both RE's should be in Sync. 
+        5. Till the time replication is not complete Master RE should show
+           task replication as InProgress. Use command "show task replication"
+           
+          This test case is true even after the rpd crashes (crashes & reboots).
+          
+          Above cases can be verified using following commands
+              - "show msdp" 
+              - "show system core-dumps"
+              - "show task replication"
+
+    Result:
+        Pass
+
+4.2.h MSDP Clear command:
+   
+    Goal: Executing Clear command on Master/Backup RE.
+   
+    Test Steps:
+        1. Enable NSR.
+        2. Enable MSDP.
+        3. Allow socket replication to complete
+        4. Allow Master/Backup to learn SA's from the Peers
+        5. Execute "clear msdp cache" on Backup RE
+        6. Execute "clear msdp cache" on Master RE
+    
+    Success Criteria:
+        1. Executing Clear command on Backup should clear MSDP SAs from Backup
+           RE. However Backup should relearn these SAs once SAs get refreshed
+           on the network. Clearing of SAs on Backup should not affect Master
+        2. Executing Clear command on Master should clear MSDP SAs from Master
+           RE. However Master should relearn these SAs once SAs get refreshed
+           on the network. Clearing of SAs on Master should not affect Backup
+        3. There should not be any cores on any of the RE.   
+        4. Valgrind should not show any memory leak
+
+          Above cases can be verified using following commands
+              - "show msdp" 
+              - show system core-dumps
+          Valgrind Report should not show any memory leaks.
+
+    Result:
+        Pass
+
+4.2.i MSDP Peer Deletion/Addition:
+   
+    Goal: Deletion/Addition of MSDP Peer via configuration.
+   
+    Test Steps:
+        1. Enable NSR.
+        2. Enable MSDP.
+        3. Allow socket replication to complete
+        4. Allow Master/Backup to learn SA's from the Peers
+        5. Check Memory using "show task memory"
+        6. Delete MSDP Peer via configuration
+        7. Add MSDP Peer Back via configuration
+        8. Check Memory using "show task memory"
+    
+    Success Criteria:
+        1. On deletion of Peer Config Master/Backup should delete Peer and
+           related memory. SAs related to the Peer should get cleared
+        2. When Peer is configured back, state information should be restored
+           as though Peer has come up for the first time.
+        3. Master should replicate socket information related to this Peer to
+           Backup.
+        4. There should not be any cores on any of the RE's
+        5. There should not be any memory leaks.
+
+          Above cases can be verified using following commands
+              - "show msdp" 
+              - "show system core-dumps"
+
+    Result:
+        Pass
+
+4.2.j MSDP State during Interface Flap:
+   
+    Goal: Verify MSDP State on Master/Backup RE during Interface Flapping.
+   
+    Test Steps:
+        1. Enable NSR.
+        2. Enable MSDP.
+        3. Allow socket replication to complete
+        4. Allow Master/Backup to learn SA's from the Peers
+        5. Check Memory using "show task memory"
+        6. Delete interface towards MSDP Peer via configuration
+        7. Add the interface back via configuration
+        8. Check Memory using "show task memory"
+    
+    Success Criteria:
+        1. On deletion of interface Master/Backup should timeout Peer State.
+           SAs related to the Peer should get cleared
+        2. When interface is configured back, state should get restored
+           as though Peer has come up for the first time.
+        3. Master should replicate socket information related to this Peer to
+           Backup.
+        4. There should not be any cores on any of the RE's
+        5. There should not be any memory leaks.
+
+          Above cases can be verified using following commands
+              - "show msdp" 
+              - "show msdp socket" - Hidden Command
+              - "show msdp source-active" 
+              - "show system core-dumps"
+
+    Result:
+        Pass
+
+4.2.k Switchover during MSDP Peer Flap:
+   
+    Goal: Verify MSDP State on Master/Backup RE before and after switchover
+    during MSDP Peer Flapping.
+   
+    Test Steps:
+        1. Enable NSR.
+        2. Enable MSDP.
+        3. Allow socket replication to complete
+        4. Allow Master/Backup to learn SA's from the Peers
+        5. Check Memory using "show task memory"
+        6. Bring down MSDP Peer (Reset Peer Router)
+        7. Do Switchover
+        8. Do Switchover
+        9. Check for MSDP Peers and SA's on New Master/Backup
+        10. Check Memory using "show task memory"
+    
+    Success Criteria:
+        1. On reseting MSDP on Peer Router, MSDP State on Master/Backup RE
+           should get reset.
+        2. State should be in sync between Master/Backup RE before and after
+           switchover.
+        3. When Peer Router MSDP comes UP, state should get restored on New
+           Master as though Peer has come up for the first time. 
+        4. New Master should replicate socket information related to this Peer to
+           New Backup.
+        6. SA's should be learnt by both New Master/Backup RE and should be in
+           sync.
+        7. There should not be any cores on any of the RE's
+        8. There should not be any memory leaks.
+          
+          Above cases can be verified using following commands
+              - "show msdp" 
+              - "show msdp socket" - Hidden Command
+              - "show msdp source-active" 
+              - "show system core-dumps"
+
+    Result:
+        Pass
+   
+4.2.l MSDP CLI Configuration should be available on Backup RE:
+   
+    Goal: Verify availability of MSDP CLI config on Backup RE.
+   
+    Test Steps:
+        1. Enable NSR.
+        2. Enable MSDP.
+        3. Configure various MSDP configs on Master RE. 
+    
+    Success Criteria:
+        1. All the MSDP CLI config should be available both on Master and Backup
+           RE.
+        2. Verify outputs of various MSDP on Master and Backup RE.
+           Both REs should give similar results, as the config on both RE's
+           are similar.
+        3. There should not be any cores on any of the RE's
+
+    Result:
+        Pass
+
+4.2.m MSDP "Show" Commands should be available on Backup RE:
+   
+    Goal: Verify availability MSDP Commands on Backup RE.
+   
+    Test Steps:
+        1. Enable NSR.
+        2. Enable MSDP.
+        3. Allow socket replication to complete
+        4. Allow Master/Backup to learn SA's from the Peers
+        5. Execute various MSDP commands on Master and Backup RE. 
+    
+    Success Criteria:
+        1. All the MSDP command should be available both on Master and Backup
+           RE.
+        2. Verify outputs of various MSDP commands on Master and Backup RE.
+           Both REs should give similar results.
+        3. There should not be any cores on any of the RE's
+
+          Some of the MSDP display and execution commands are as follows:
+              - "show msdp" 
+              - "clear msdp cache"
+              - "clear msdp statistics"
+
+    Result:
+        Pass
+
+4.3 Generic Mirroring testing:
+4.3.a NSR enabled
+    MSDP Peer RDBs should get created.
+4.3.b NSR disabled
+    MSDP Peer RDBs should get deleted.
+4.3.c Mirroring Connection taken down (with rpds still running):
+    Master:
+      + Master rpd should mirror RDBs again when the connection goes up.
+    Backup
+      + RDBs should get deleted. When the connection comes back up,the
+        master should re-mirror the RDBs to the backup.
+
+4.4 ISS:
+    ISS will be done each time that the Master sees connection up event.
+
+4.5 Race conditions 
+4.5.a Between mirror-connection going UP/DOWN & MSDP-NSR getting
+configured/unconfigured. 
+    MSDP-NSR can get configured in 2 different orders:
+     - MSDP is configured before NSR is enabled. 
+     - NSR is already enabled before MSDP is enabled.
+4.5.b Ordering between NSR being enabled  & mirror connection coming up.
+4.5.c Mirror connection is already up before NSR is enabled for MSDP.
+
+4.6 RESO:
+    1. New-Master: ALL unresolved RDBs should get deleted.
+    2. New-Master: MUST mirror all its RDBs.
+    3. Race condition between CONN_DOWN & RESO SIGHUP: when commit is done
+        on backup, the CONN_DOWN will likely be seen before the mastership
+        change (at kernel level) by the backup (the new-master).
+
+5.  BOUNDARY TEST CASES
+None.
+
+6.  GRES TEST CASES
+None.
+
+7.  ISSU TEST CASES
+7.1 Goal: Testing the ISSU module with MSDP NSR
+
+    Test Steps: 
+        1. Configure NSR and perform ISSU 
+        2. Check for cli>show task replication output.
+           It should appropriately move from Init->InProcess->Complete
+
+    Success Criteria:
+        1. ISSU with MSDP NSR should go through without being aborted. 
+        2. CLI output of "show task replication"  should appropriately move from Init->InProcess->Complete
+        3. During an ISSU at Initial State replication, the backup should bail out without abort or crashes. 
+ 
+    Result:
+        Pass 
+               
+8.  TX TEST CASES
+None.
+
+9.  AGGREGATED ETHERNET/SONET TEST CASES
+None.
+
+10. REGRESSION TEST CASES
+None.
+
+11. INTEROPERABILITY TEST CASES
+None.
+
+12. MIGRATION & COMPATIBILITY TEST CASES
+None.
+
+13. TEST COVERAGE REMAINING
+None.
+
+14. DEFECTS REMAINING
+None.
+
+15. SCALING AND PERFORMANCE
+Execute MSDP existing Scaling Scripts.
+
+16. STATIC ANALYSIS
+None.
+
+17. CODE COVERAGE
+None.
+
+18. AUTOMATION
+
+18.a JCML Enabled Automated Unit Cases
+The location of the scripts is given below:
+        - /src/functional-tests/apps/rpd/multicast/msdp/msdp-nsr
+
+script can be run using following command for any shell server
+        - run_jcml -ut -c msdp -l pro-bng-mc2
+
+18.b Logic of the scripts that match the unit-tests is as below.
+(i)     - Configure as per given in the setup.
+        
+(ii)    - Check CLI output on master and backup and compare.
+        - Pump Multicast Traffic. 
+        - Check for CLI outputs listed above.
+        
+(iii)   - Do a failover on routers  G, E and I.
+        - Check for CLI outputs listed above.
+        
+(iv)    - Do restart routing on Master RE.
+        - Check for CLI outputs listed above.
+        
+(v)     - Do a failover on routers  G, E and I.
+        - Check for CLI outputs listed above.
+        
+(vi)    - Do restart routing on Backup RE.
+        - Check for CLI outputs listed above.
+        
+(vii)   - Do a failover on routers  G, E and I.
+        - Check for CLI outputs listed above.
+        
+(viii)  - Disable Protocol MSDP on Router G, E and I.
+        - Check for CLI outputs listed above.
+        
+(ix)    - Enable Protocol MSDP on Router G, E and I.
+        - Check for CLI outputs listed above.
+        
+(x)     - Do a failover on routers  G, E and I.
+        - Check for CLI outputs listed above.
+
+
+18.c JCML Related Files:
+
+(i)  Topology Config File: 
+        - msdp.lab
+        - msdp.topo
+
+(ii)  Base Config File:
+        - msdp.cfg
+
+(iii) JCML Master Resource File: 
+        - msdp
+
+(iv) Test Case File:        
+        - msdp-multiple-failover-test.cli
+        - msdp-disable-enable-test.cli
+        - msdp-restart-test.cli
+
+(v) Multicast Traffic Simulation:
+        - msdp-ping-traffic.cli
+
+(vi) Compare Output, Verify:
+        - msdp-compare-output.cli
+
+19. UNIT TEST PLAN REVIEW FEEDBACK
+None.

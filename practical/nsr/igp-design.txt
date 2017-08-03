@@ -1,0 +1,388 @@
+IGP Synchronization for NSR
+----------------------------
+
+There are 2 primary IGP data-structures which need to be synchronized
+between primary and secondary REs for NSR. The first one is the IGP
+Database and the other one is the adjacency information.
+
+1. Database Synchronization
+---------------------------
+
+1.1 Inital DB Sync
+
+When the seconday RE first comes up it needs to replicate the IGP
+Database from the primary RE. There are 2 ways.
+
+
+1.1.1 Using an internal IGP adjacency
+
+a) Using software GRE logical interfaces over the internal ethernet
+connecting the primary RE to the secondary RE (one GRE ifl per
+routing-instance).
+
+b) Using a TCP/UDP session between the two RPDs. A shim layer needs to
+be defined which would allow demuxing packets to different applications
+within RPD. One such application would be emulation of logical
+interfaces connecting routing-instances between the two RPDs. Using UDP
+for emulating a fake inter-RPD ifl would be simpler code-wise. This
+seems to be the preferred method for initial DB sync at this time.
+
+
+1.1.2 Generic DB replication
+
+Using a generic out-of-band DB mirroring mechanism.
+
+
+1.2 Ongoing DB Sync
+
+After initial DB synchronization, primary RE needs to update the
+secondary RE whenever a new LSA/LSP instance is received.
+
+
+1.2.1 Using an internal IGP adjacency
+
+Using the same IGP adjacency as in section 1.1.1. Either of the methods
+a) or b) desribed in section 1.1.1 could be used.
+
+Since OSPF doesn't have an out-of-band DB sync mechanism, the secondary
+RE needs to be kept in sync with primary RE at all times. ISIS on the
+other hand has an out of band sync mechansism and can recover any
+missing DB entries which are lost in transit during a RE switchover. For
+this reason, OSPF on the primary needs to be modified. First, it needs
+to flood a new instance of an LSA only on the internal adjacency and
+wait for the secondary RE to ack it before the LSA could be flooded to
+external links or the sending nbr could be acked.
+
+
+1.2.2 Generic DB replication
+
+Use the same generic DB mirroring mechanism as alluded to in
+1.section 1.2. Same OSPF modification as described in 1.2.1 is required.
+
+
+2. Synchronizing Adjacency Info
+-------------------------------
+
+Fundamentally, there are a couple of ways for the secondary RE to
+replicate all the adj. info present on the primary. The first
+one is to transfer existing and new adj info from the primary
+to secondary by encoding the adj info as part of the IGP database
+or by using some other DB mirroring mechanism. The other way is
+to replicate the IGP hellos received on the primary RE to the
+secondary RE. This replication need not be reliable as the
+hellos are periodically received.
+
+
+2.1 IGP Hello Replication
+
+Whenever secondary RPD sees a hello from a nbr which lists the local
+router-id (system-id), it will mark the adj in UP state (ISIS uses the
+UP state to denote a full adj, while OSPF uses 2-way or FULL state to
+denote a full adj). Essentially, secondary RPD from this point on
+assumes that a full adj will be (or already has been) succesfully
+established on the primary RPD.
+
+In case of ISIS nothing special is needed. Even if the adj is not fully
+established by the primary RPD when the switchover occurs, the
+secondary RPD will receive the hellos from the nbr and bring up the
+adj.
+
+In case of OSPF, If the adj is not fully established on the primary RPD
+and the switchover occurs, then the secondary will end up receiving a 
+DBD packet and it will reset the adj to 2-Way and go thru the entire
+process of DB sync and bring up the adj.
+
+There are 3 possible ways discussed below, which use the IGP 
+replication mechanism.
+
+
+2.1.1 Kernel<->PPMD IGP socket replication
+
+
+           Primary             |            Seocndary
+                               |
+          +-------+            |            +-------+
+          |       |            |            |       |
+          |  RPD  |            |            |  RPD  |
+          |       |            |            |       |
+          +-------+            |            +-------+
+              ^                |                ^
+              |                |                |
+              |                |                |
+              v                |                v
+          +-------+            |            +-------+
+          |       |            |            |       |
+          | PPMD  |            |            | PPMD  |
+          |       |            |            |       |
+          +-------+            |            +-------+
+              ^                |                ^
+              |                |                |
+--------------|---------------------------------|-----------------
+ Kernel       |                |                |
+              <--------------------------------->
+
+
+Even thought the kernel<->PPMD may be reliably replicated between
+primary and secondary, this approach doesn't guarantee that all the
+RPD<->PPMD interaction is reliably replicated, e.g. RPD on one of the RE
+is slower than RPD on the other RE and so some IGP control traffic gets
+dropped on the PPMD<->RPD socket on that RE while the same control
+traffic get consumed by RPD on the other RE. But this shortcoming
+is not really a problem as IGP hellos are periodically transmitted
+and so even if one hellos is dropped, a subsequent hello will help
+recover the adj state. 
+
+One of the shortcomings of this approach is that it cannot handle
+demand circuits in OSPF. The issue is that there is no periodic 
+trasnmission of IGP hellos on demand circuit. If the secondary
+RE starts after primary has established an adj on a demand circuit
+or if secondary RE misses a hello which was used by the primary
+to establish an adj and if this was the last hello then the secondary
+might never recover the adj info.
+
+
+2.1.2 PPMD<->RPD Unix Socket Replication
+
+           Primary             |            Seocndary
+                               |
+          +-------+            |            +-------+
+          |       |            |            |       |
+          |  RPD  |            |            |  RPD  |
+          |       |            |            |       |
+          +-------+            |            +-------+
+           ^     |             |             ^     |
+           |     |             |             |     |
+           |-----|---------------------------+     |
+           |     V             |                   v
+          +-------+            |            +-------+
+          |       |            |            |       |
+          | PPMD  |            |            | PPMD  |
+          |       |            |            |       |
+          +-------+            |            +-------+
+                               |
+
+
+This solution can be used to relieve the issue with demand circuits
+discussed in 2.1.1, as follows :
+
+a) When secondary RE comes up, primary RPD will trigger an adjacency
+database read on primary PPMD. Primary PPMD will walk all the adjs in an
+instance and write the last saved hellos for each adj on the PPMD<->RPD
+unix socket. Since this socket write is replicated, seconday RPD will
+also see the hellos and prime its state.
+
+b) After the intial upload of adj info by the secondary RPD, any
+subsequent unabsorbed hellos will be reflected by primary PPMD to both
+primary and secondary RPDs. Note that this replication is reliable
+as long as RPD doesn't drop any of the hello packets after reading
+them off the socket.
+
+Note that the above requires that the PPMD<->RPD socket is only
+replicated in one direction, i.e. from PPMD to RPD. If the socket
+replication mechanism provided by the kernel mandates replication in
+both directions, then we can add a TLV in all messages which will
+indicate the source of the message, i.e. primary or secondary and can be
+appropriately blocked.
+
+The problem with this mechanism is that the kernel will have to
+provide a mechanism for replicating unix sockets. This requires
+a large amount of kernel work.
+
+
+2.1.3 Using a TCP session between RPDs
+
+Here we would emulate the RPD<->PPMD API using a TCP session between
+the two RPDs.
+
+a) When secondary RE comes up, primary RPD will trigger an adjacency
+database read on primary PPMD. Primary PPMD will walk all the adjs in an
+instance and send the last saved hello for each adj over to the primary
+RPD in a PPMD message.  Primary RPD upon receiving this message will
+forward it over to the seconday RPD over the inter-RPD TCP session.
+
+b) After the intial upload of adj info by the secondary RPD, any
+subsequent unabsorbed hellos sent by primary PPMD to primary RPD will be
+reflected to the secondary RPD, Primary RPD will copy the received PPMD
+message over to the TCP session bound to the secondary RPD.
+
+One of the issue with this approach is that primary RPD will have to
+queue these hello messages if the TCP socket blocks because it has run
+out of buffer space. But the length of this queue is bounded by the
+number of adjs and so if we don't impose any limits on the length of
+this queue, primary RPD will never drop a packet because of TCP socket
+being full. In the worst case, if a queue entry cannot be allocated,
+primary RPD itself should not consume the packet.
+
+
+2.2 Replicating Adjacency Database
+-----------------------------------
+
+2.2.1 Generic DB mirroring mechanism over TCP
+
+A generic DB mirroring mechansim will be defined over the inter-RPD
+TCP session. Any RPD database can be replicated by providing an
+API into this DB mirroring mechanism. The API will provide a routine
+to initialize replication of a DB and another routine for replicating
+a particular entry in the DB.
+
+For replicating IGP adjacencies, we will define a key which will include the
+address of the nbr, and the interface index of the interface to the nbr.
+The database entry will contain, the last received hello, state of the nbr,
+and any other pertinent info.
+
+This is the preferred mechanism for now since it leverages the generic
+DB mirroring mechanism. Once the generic DB mechanism is in place
+nothing new needs to be done. In any case, the generic DB mirroring
+mechanism will be implemented for other reasons.
+
+
+2.2.2 Encoding Adj Info in an OSPF LSA or an ISIS LSP
+
+One could encode the adj. info using an opaque OSPF lsa or a new kind of
+ISIS LSP packet. This LSA or LSP is exchanged over the internal IGP
+adjacency between the primary and seconday RPD.
+
+
+3. Common IGP issues
+-------------------
+
+3.1 Router-id/System-id on secondary RE
+
+Even though the local router-id/system-id used by the secondary RPD is
+same as the primary RE for doing all the normal protocol packet
+processing, secondary RPD will have to use a different router-id/
+system-id in any protocol packets it generates on the internal inter-RPD
+adjacency so that the primary RE will not confuse those primary packets
+as self-originated. It may be possible to use a reserved system-id
+or router-id.
+
+
+3.2 Tracing
+
+We will define one or more new traceflags to trace NSR specific
+mechanisms. Should the standby RPD ignore traceflags other than NSR
+specific traceflags ? Should active RPD ignore NSR specific trace
+flags. Sounds like we will use all the flags, NSR specific or otherwise,
+on both RPDs.
+
+3.3 Interaction between overload and switcover.  
+
+At switchover, the standby will set the overload bit if it hasn't been
+up for the time configured for overload timeout. So, I guess nothing
+special needs to be done here. The standby should go thru the overload
+timeout whenever if comes up.
+
+3.4. Prefix-limit on Standby RPD
+
+Secondary would also obey the prefix-export-limit, i.e.  while doing
+normal export processing of flashed routes (before, during and after
+switchover).
+
+3.5. BFD
+
+There are 2 issues here:
+
+1) How do we replicate the end result of running BFD from active to
+standby RE which is the state of any given adjacency. Apparently,
+nothing special needs to be done here as if we replicate
+all the IGP adjacency info from active to standby RPD including
+the adj's state (using a generic DB replication mechansim).
+
+2) BFD sessions timing out across a switchover because of the switchover
+delay or any other delay related to initializing of state in BFDD/PPMD
+on the newly active RPD. Taking ISSU into consideration, it would be
+best to either gracefully tear down BFD sessions (without killing
+the IGP adjs) or by increasing the session timoeout interval for
+a planned restart. For an unplanned restart, one ugly possiblility is
+to run BFDD/PPMD live on the standby, i.e. the standby RE also
+generates BFD keepalives in addition to primary RE.
+
+
+3.6. Triggering hello generation on switchover
+
+Activating hellos upon switchover on the newly active RPD - we might
+send a message from RPD to PPMD to tell it that a switchover has
+occured. PPMD upon receiving such a message could walk its list of
+programmed xmit entries and intialize the corresponding periodic hello
+xmit timer and also immediatly send the first hello. Standby RPD could
+always program standby PPMD with the last hello it receives from the
+primary RPD. But a simpler approach for the newly active RPD would be to
+trigger a walk of its interface list and program PPMD with xmit entries
+for each interface.
+
+3.7. Race conditions
+
+a) Receiving Adj info on standby RPD from active RPD for an interface
+which is not yet known to the standby - we will simply put the adj info
+in a patricia tree and wait for the interface to come up before creating
+the corresponfing nbr info and binding it to the interface.
+
+
+4. OSPF specific isses 
+----------------------
+
+4.1 Dealing with MD5 sequence numbers in OSPF
+
+When secondary RE takes over after a switchover, it should wait for a
+second before trasnmitting any IGP packet on an interface or adjacecny.
+This will ensure the non-decreasing property of MD5 sequence numbes
+across a switchover. On receive, secondary RE after switchover, will
+accept the first incoming packet from a nbr without doing the 
+check for non-decreasing sequence #.
+
+4.2  Dealing with IPSEC Sequence number in OSPFv3 across a switchover
+
+May need to replicate the sequence number from primary kernel to
+secondary kernel.
+
+
+5. ISIS specific issues
+-----------------------
+
+5.1. LSP regeneration on swithover
+
+5.1.1 Rearranging TLVs in LSP fragments upon switchover
+
+After switchover, when the secondary RE generates its own LSP fragments,
+various information, e.g. IS reachability, prefix TLVs etc.  might get
+rearranged with respect to the LSP framgents generated by the primary
+RE. This can cause transient blackholing.
+
+5.1.2 Keeping track of exported prefixes
+
+Keep track of the list of prefixes currently being exported in our LSP
+fragments on the Standby RPD. See PR 4697 for explanation. In general,
+it may be a good idea to create local data on standby corresponding to
+exported prefixes, adjs and whatever else requiring local-data.  The
+local data can be maintained in patricia trees, one per local data
+type. Whenever an LSP fragment containing info pertaining to a
+local-data is received from primary, we could retreive the local-data
+from its tree and bind it to the corresponding lsdb_entry. On the other
+hand it might be much simpler to create local-data for each exported
+prefix and maintain it is a list of exported prefixes but not associate
+with any LSP fragment.  The mapping from a route to a prefix local-data
+is still maintained in the tsi data-structure on the route.
+
+5.2 Preserving interface circuit-id across switchover
+
+Circuit-id for an ethernet interface need to be preserved across a
+switchover. This can be achieved if the standby doesn't allocate
+circuit-id for an interface and learns it thru adj info replication
+mechanism.
+
+5.3 CSNP timers
+
+On standby, we won't start the initial CSN timer on P2P links and
+suppress activation of normal CSN timer on a lan interface when the node
+becomes a DR. Note that the normal CSN timer would never get activated
+on a P2P link on the standby as we suppressed the initial CSN timer
+itself (expiration of which triggers activation of the normal CSN
+timer). Upon switchover, we will have to walk all our interfaces and
+activate the normal CSN timer on the newly active RPD. Should we also
+activate the intial CSN timer on all our P2P links (in case a P2P link
+was in the process of coming up at the time of switchover and the nbr
+was sent only a partial set of our CSNP PDUs (if we do this than upon
+switchover we will have to walk only the set of LAN interfaces and
+activate their CSN timers as the expiration of the initial CSN timer on
+P2P links would take care of activating the normal CSN timer).
+

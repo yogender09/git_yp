@@ -1,0 +1,193 @@
+$Header: /cvs/juniper/sw-projects/os/nsr/nsr-kernel-performance-rli-6958-funcspec.txt,v 1.1 2008/01/12 04:58:50 aassadza Exp $
+
+S3.02.P05.T01
+
+          NSR: Early Testing of NSR Kernel Performance Improvement 
+
+                              RLI 6958
+
+                       Functional Specification
+
+          -----------------------------------------------------------
+
+Author: Luc Bazinet <lbazinet@juniper.net>
+Author: Alireza Assadzadeh <aassadza@juniper.net>
+
+Copyright (C) 2008, Juniper Networks, Inc.
+
+NOTICE: This document contains proprietary and confidential information of 
+Juniper Networks, Inc. and must not be distributed outside of the company
+without the permission of Juniper Networks engineering.
+
+1.  INTRODUCTION
+
+This functional specification describes the changes targeted for JUNOS
+9.2 for RLI 6958 to improve performance and scaling (P&S) numbers for 
+NSR. The functionality is broken into two milestones delivered 
+sequentially:
+
+  M1) On the backup RE, use memory buffers in rpd to drain the kernel 
+      socket data.
+  M2) Use hard-disk to store and handle over-flow of the memory buffer 
+      in M1 (above).
+
+M1 is targeted for JUNOS 9.2. M2 is targeted for 9.3.
+
+NSR functionality has been provided several releases prior to JUNOS 9.2.
+BGP was one of the first protocols that used NSR and benefited from it.
+
+Although the scaling and performance requirements depend on various
+factors such as workload, scenario, configuration, hardware, etc., there
+is expectation that the current P&S numbers should be improved as they
+are not meeting customer requirement and that customers are regularly
+asking for better performance. Furthermore, NSR enabled P&S numbers are
+compared with NSR disabled numbers which are used as a benchmark. The
+goal is for the P&S numbers for these two cases to be close to each
+other; in some cases 10% overheard has been noted as acceptable.
+
+The primary consideration of this work is for BGP with peer groups. Other
+routing protocols and JSR users may also benefit from this infrastructure
+work.
+
+One limitation for the BGP scenario is that during large burst update
+event the router has high convergence time. This effectively reduces the
+supported P&S numbers. This is the case that the router receives the
+updates and has to update all its peers in the peer groups.
+
+The analysis suggested that the bottleneck is within the backup RE. The
+rpd on the backup RE is not draining the kernel replicated(snooped) socket 
+buffers quickly. This then results in pushback from the backup RE to 
+the master RE. This slows down progress on the master RE to send the BGP
+updates to its peers. Refer to section 5 for more information.
+
+Several options were considered to optimize the system in this situation.
+The option that is implemented is described in this functional
+specification (FS). Contrary to the title of the RLI and FS, there are
+no changes to the kernel. The changes are made in rpd to help the kernel.
+
+This functionality is tracked by RLI 6958 and RLI 6386.
+
+RLI 6958 is an Early Testing RLI targeted for 9.2. The parent RLI is RLI
+6386 and is targeted for 9.3
+
+The 9.2 functionality is a sub-set of the full functionality that will be
+provided in 9.3 In 9.2, the hard-disk off-load is not provided.
+
+The URLs are:
+
+https://deepthought.juniper.net/app/do/showView?tableName=RLI&record_numb
+er=6958&view=markup
+
+https://deepthought.juniper.net/app/do/showView?tableName=RLI&record_numb
+er=6386&view=markup
+
+The tracking PR is 269274.
+
+2.  FUNCTIONALITY
+
+This is an infrastructure only functionality. The changes in the system
+are transparent to the operator.
+
+The externally (customer) visible functionality is not modified.
+
+This change SHOULD not negatively impact the P&S numbers. For JUNOS 9.2,
+in fact the goal is that P&S numbers SHOULD be the same or slightly
+better under some circumstances.
+
+2.1 Changes to RPD Internal Behavior
+------------------------------------
+
+All the changes pertain to the rpd on the backup RE. The rpd processing
+on the master RE is not modified.
+
+The following describes the changes to rpd on the backup RE.
+
+The rpd needs to drain the kernel socket buffers more quickly. This then
+removes the pushback from the backup RE to the master RE through JSR.
+This frees up the sockets on the master RE. As a result, on the master
+RE, the rpd can push more data through the sockets.
+
+In order for rpd on the backup RE to drain the socket more quickly, it
+needs to read the data on the sockets with minimum amount of processing
+them, since the extra processing is time consuming and is reducing the
+throughput.
+
+The rpd on the backup RE uses memory buffers within rpd to read the data
+from the sockets. If the rpd memory buffers are exhausted, the hard-disk
+is used as secondary storage. It is assumed that because of the large
+volume of the data in scaling setup, the use of hard-disk will be
+necessary.
+
+Note that use of hard disk will be implemented only in M2 (JUNOS 9.3).
+
+3.  CAVEATS
+
+None.
+
+4.  OTHER REQUIREMENTS
+
+Loosely speaking, the target performance and scaling number is to support
+1M active routes with 500 BGP peers in peer groups on high end M/T
+routers (M320 and T-series).
+
+The burst update for this case can result in 15 GB of data to be received
+by the router over 15 minutes.
+
+For the high P&S setups, the router is required to have the maximum
+amount of physical memory that is currently supported. This is 4GB.
+
+5.  IMPLEMENTATION DETAILS
+
+Additional information will be provided for this section as part of RLI
+6386.
+
+6.  PERFORMANCE
+
+There is no performance degradation as a result of this feature.
+
+It is possible that for some medium size scenarios, even without the use
+of hard-disk, there is performance enhancements.
+
+7.  COMPATIBILITY ISSUES
+
+This feature is disabled on platforms without hard-disk.
+
+8.  SECURITY ISSUES
+
+None.
+
+9. Graceful RE Switchover (GRES), Hobson Impact
+
+The functionality will support GRES and will also be supported on TX.
+
+There is no impact on GRES or TX as result of this functionality.
+
+Kernel JSR functionality is not changed.
+
+10.  NSR Impact
+
+This functionality directly changes the NSR implementation. The
+changes in the system are transparent to the operator. The system should
+exhibit the same or improved P&S numbers.
+
+11.  Platforms Supported
+
+This feature is disabled on platforms without hard-disk.
+
+12.  SDK Impact
+
+None.
+
+13.  NOTES
+
+None.
+
+14.  GLOSSARY
+
+P&S - Performance and Scaling
+JSR - Juniper Socket Replication
+
+15.  REVIEW COMMENTS
+
+See the audit trail of the RLI tracking PR 269274.
+

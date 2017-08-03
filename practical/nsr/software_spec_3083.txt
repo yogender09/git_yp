@@ -1,0 +1,226 @@
+$Header: /cvs/juniper/sw-projects/os/nsr/software_spec_3083.txt,v 1.2 2006/04/18 00:46:22 steven Exp $
+
+S3.02.P05.T01
+
+Initial Non-Stop Routing Features
+
+Steven Lin (steven@juniper.net)
+
+Copyright (C) 2005, Juniper Networks, Inc.
+
+NOTICE: This document contains proprietary and confidential
+information of Juniper Networks, Inc. and must not be distributed
+outside of the company without the permission of Juniper Networks
+engineering.
+
+
+
+1.  INTRODUCTION
+
+RLI 3083
+
+This document describes those elements of Non-Stop Routing that will
+implemented first.  Non-Stop routing is described in detail in
+cvs:sw-projects/os/nsr/.
+
+
+2.  FUNCTIONALITY
+
+This section describes the functional changes to support NSR.
+
+2.1 BGP
+
+See bgp-design.txt in the nsr directory for complete details.  Initial
+functionality will include the following:
+
+- rpd-to-rpd Connection establishment and initial database synchronization
+- BGP session establishment
+- RE switchover
+
+2.2 KRT
+
+- Route and indirect nexthop listeners
+- RE switchover
+
+2.3 Static routes
+
+- RE switchover
+
+2.4 RPD Infrastructure
+
+- synced commits between primary and secondary rpds
+- Handling of RE switchover notifications
+
+2.5 init
+
+- RE switchover notifications
+
+2.6 CLI
+
+One new configuration knob will be added to enable NSR.  This knob
+will be available starting in 8.0.
+
+routing-options {
+    + nonstop-routing { enable | disable };
+}
+
+Configuration of NSR requires that GRES be enabled via [chassis
+redundancy graceful-switchover enable].  The default setting is
+disabled.
+
+Already available with GRES, the failure of rpd can be configured to
+initiate an RE failover via [ system process routing failover
+other-routing-engine ].  This behavior can be used in conjunction with
+NSR.
+
+When enabled, NSR will start rpd on the backup route-engine.
+Operational commands that are handled by rpd will be serviced as and
+when NSR functionality is implemented for various protocols in future
+RLIs.  For the purposes of this RLI, the following operational
+commands should work as usual:
+
+    show interfaces routing
+    show mpls
+    show policy
+    show route
+    show task
+    test policy
+    restart routing
+
+3.  CAVEATS
+
+None.
+
+
+4.  OTHER REQUIREMENTS
+
+None.
+
+[=== Everything from here down is internal (white box) documentation
+and should not be documented or related to customers without a
+specific need. (e.g. customer support workarounds for critical issues,
+performance targets where the performance is the feature, etc.) ===]
+
+
+5.  IMPLEMENTATION DETAILS
+
+{As necessary, give a description of the internal implementation
+details.}
+
+a., b., c. {description of implementation of functional sub-areas}
+
+{As necessary, describe the internal implementation details including
+each of the following which are relevant to the functionality:
+
+Goals (and non-goals}
+Assumptions
+Description of the implementation
+    Description of whether the work is wholly new or extends existing work
+    Components
+    Data structures
+    Algorithms
+Rationale (for the design decisions made -- useful for the next person
+	  who touches this code)
+Internal APIs/Messages (and intent)
+Constraints and limitations
+Examples or interaction description
+}
+
+
+6.  PERFORMANCE
+
+{As necessary, describe any performance issues or that there are
+none.}
+
+6.1.  Performance Related Resources
+
+{As necessary, Describe the resource bottlenecks (e.g. CPU, RAM,
+interface bandwidth, # of logical interfaces, etc.) of the function
+and the general assumptions underlying any given performance
+calculation.}
+
+6.2.  Target Performance
+
+{As necessary and appropriate, describe the target performance.  Where
+possible, justify this target based on the resource estimates.
+Specify if this target performance is based on believed maximum
+performance of the function or based on a comfortably achievable
+number.  Where relevant, specify where conditions will reduce the
+performance below the target performance (e.g. extended functionality,
+other load on the box, etc.).  It is also useful to return to this
+section and fill in the actual tested performance when the numbers are
+available.}
+
+
+7.  COMPATIBILITY ISSUES
+
+{As necessary, list any issues related to migration,
+backwards/forwards compatibility, etc.  This would include any places
+where config will break, config will be deprecated, network layouts
+must change, the feature will or will not work with new or old
+hardware, etc.}
+
+
+8.  SECURITY ISSUES
+
+{As necessary, list any security considerations or issues here.}
+
+
+9.  Graceful RE Switchover (GRES), Hobson Impact
+
+{Generally, when you are updating state in the kernel which is to be
+consumed by other peers -- PFEs, LCCs --, you need to consider adding
+support for GRES.  Some examples of these are:
+- New ifstates
+- Change in the routing socket message format for an existing message
+- New daemons
+- Updating kernel state in non-rtsock context
+- State updates on the RE owing to messages from the PFE
+- New IPCs to the PFE/FPCs
+- New TLVs
+- New rtsock messages
+- New PICs
+If you have questions, send email to replicant-coders.
+}
+
+10.  NOTES
+
+{As necessary, add any additional notes which do not fit in the above
+sections.}
+
+
+11.  GLOSSARY
+
+{As necessary, define any terms or acronyms used.}
+
+
+12.  REVIEW COMMENTS
+
+{We use the audit trail of the RLI tracking PR to record review comments,
+so please include a pointer to the pr here. If the spec review is done
+via email, the owner of the spec will send it out for comments with
+"bugs@juniper.net" included on the To: or CC: line and the Subject:
+containing "<catagory>/<tracking pr number>:", as shown below:
+
+Subject: rli/12345: Code review for new frombitz feature
+
+More info on valid Subject: line formats can be found at
+http://www-in.juniper.net/useful_info/gnats-faq.html. All the reviewers
+have to do is reply to the email with their review comments, making
+sure "bugs@juniper.net" is in the To: or CC: and their comments will
+be automagically archived to the pr. In the case of a meeting to
+review the specs, the owner will add the review comments to the audit
+trail of the tracking pr themselves. Review comments would include who
+attended the meeting and the input provided by the reviewers.
+
+When the owner updates the spec in cvs, they include the changes
+made and the tracking pr number in the commit log, something like:
+
+   pr: 12345
+   Comments:
+
+   Updates from spec review:
+
+   - add description of ucode changes (jdoe)
+   - remove the "annoy user" config command (bsmith)
+}

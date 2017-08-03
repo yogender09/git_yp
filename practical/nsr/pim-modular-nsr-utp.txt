@@ -1,0 +1,670 @@
+$Header: /cvs/juniper/sw-projects/os/nsr/pim-modular-nsr-utp.txt,v 1.2 2012/07/31 14:00:53 afuellemann Exp $
+
+Process Template J3.02.P05.T04S
+{Standard Unit Test Plan Template}
+
+Copyright (C) 2012, Juniper Networks, Inc.
+
+NOTICE: This document contains the proprietary and confidential
+information of Juniper Networks, Inc., and must not be
+distributed outside of the company without the
+permission of Juniper Engineering.
+
+
+1.  INTRODUCTION
+
+This is the unit test plan for PIM NSR refactoring.
+
+Tracking:
+	RLI: 17733
+	PR: 717454
+
+2.  SCOPE
+
+   a.  Read the functional specification.
+
+   b.  The changes for this RLI resulted in almost all of the PIM 
+       NSR implementation being rewritten/redesigned.  All PIM
+       regression scripts MUST be run to verify this RLI.
+
+       Read the design specification for details.
+
+   c.  Implementation affects PIM/PIM NSR/PIM BiDir/Rosen MVPN/NGEN MVPN.
+
+   d.  RPD (which contains PIM) is platform independent.
+
+3.  SETUP
+
+3.1 Tools and test environment.
+
+3.1.1 Physical setup
+
+   There are several physical setups that are needed to test PIM
+   NSR.  The various physical topologies are shown below:
+
+   Topology A:
+
+          +------------+        +---------+        +---------+
+      +==>|            |        |         |        |         |<==+
+      |   |  Railyard  |========|  Utica  |========|  Weber  |   |
+      +===|            |        |  (DUT)  |        |         |===+
+          +------------+        +---------+        +---------+
+
+   The connections are ethernet (needed for VLANs).  Weber and Railyard
+   also have looped back ethernet connections.
+
+   Topology B:
+
+          +------------+         +---------+      +----------+
+          |            |         |         |      |          |
+          |  Railyard  |         |  Weber  |      |  Tivoli  |
+          |            |         |         |      |          |
+          +------------+         +---------+      +----------+
+                |                     |                 |
+       ===========================================================
+                        |                          |
+                   +----------+               +---------+
+                   |          |               |         |
+                   |  Shiner  |               |  Utica  |
+                   |          |               |  (DUT)  |
+                   +----------+               +---------+
+
+   The connection is a shared ethernet segment.
+
+   This topology is used for PIM neighbor state replication testing.
+
+   Topology C:
+
+                              +----------+
+                              |          |
+                              |  Shiner  |
+                              |          |
+                              +----------+
+                                /       \
+                               /         \
+                              /           \
+                             /             \
+                      +------------+     +----------+
+                      |            |     |          |
+                      |  Railyard  |     |  Tivoli  |
+                      |            |     |          |
+                      +------------+     +----------+
+                             |                  |
+       ===========================================================
+                        |                     |
+                   +---------+           +----------+
+                   |         |           |          |
+                   |  Utica  |           |  Tivoli  |
+                   |  (DUT)  |           |          |
+                   +---------+           +----------+
+
+       The bottom four routers are on a shared ethernet segment.
+
+       Shiner has a loopbacked ethernet connection for traffic injection.
+
+       This topology is used for sparse-mode and dense-mode assert testing.
+
+   Topology D:
+
+          +------------+      +---------+     +---------+     +--------+
+      +==>|            |      |         |     |         |     |        |<==+
+      |   |  Railyard  |======|  Utica  |=====|  Weber  |=====| Shiner |   |
+      +===|            |      |  (DUT)  |     |         |     |        |===+
+          +------------+      +---------+     +---------+     +--------+
+
+   This topology is used for MDT replication testing.
+   Railyard and Shiner have loopbacked connections.
+
+3.1.4 Hidden debug commands.
+
+   A hidden command "request pim mirroring reset" is used to clear and 
+   replay PIM state that is mirrored from the master to the backup RE.
+   This command is used at various times during each set of tests.
+
+   On the master RE, this command will replay all PIM state that needs
+   to be mirrored to the backup RE.
+
+   On the backup RE, this command will remove all PIM state that has
+   been mirrored to it.
+
+   See the design spec for more details.
+
+3.2 Equipment list.
+
+   Railyard, Utica, Weber.
+
+4. FUNCTIONAL TEST CASES
+
+   Please note that all unit tests are under:
+
+      functional-tests/apps/rpd/multicast/pim/pim-nsr
+
+   Instead of writing down all the test details in this document, this
+   document refers to the individual JCML tests that have been written
+   for each test case.
+
+   This has been done to save time (and sanity).
+
+   Note that for PIM NSR, the same set of tests need to be done for each
+   set of PIM control state that can be replicated.  Hence the format of
+   the following sections.
+
+   Notes on success criteria:
+
+     1) All unit test checks need to pass for the test to pass.
+        See source code for what checks are made for each test.
+
+     2) To verify that replicated state matches between the master
+        and backup RE, PIM show command output is generated for both
+        the master and backup REs and is compared.
+
+        This show command output is filtered to remove state that 
+        cannot be the same between the master and backup RE (e.g.
+        timeout values).
+
+        If the filtered command output is not the same between the
+        master and backup RE, the test will have failed.
+
+4.1 Common tests for all PIM NSR state
+
+    This section documents the sequence of tests that are done for all
+    sets of PIM state that can be replicated.  The details may vary
+    from one set of state to another, but the basic goal of each test 
+    is the same across all sets of PIM control state.
+
+    NOTE: "!Y" means to check that state does not exist.
+
+    Operation                            | Check  | Check
+                                         | Master | Standby
+    -------------------------------------+--------+----------
+     Configure DUT (no NSR)              | Y      | N/A
+    -------------------------------------+--------+----------
+     Turn on full NSR                    | Y      | Y
+    -------------------------------------+--------+----------
+     Turn off full NSR                   | Y      | !Y
+    -------------------------------------+--------+----------
+     Turn on full NSR                    | Y      | Y
+    -------------------------------------+--------+----------
+     Turn off PIM NSR                    | Y      | !Y
+    -------------------------------------+--------+----------
+     Turn on PIM NSR                     | Y      | Y
+    -------------------------------------+--------+----------
+     Clear PIM mirroring on backup RE    | Y      | !Y
+    -------------------------------------+--------+----------
+     Replay PIM mirroring from master RE | Y      | Y
+     to cleared backup RE.               |        |
+    -------------------------------------+--------+----------
+     Replay PIM mirroring from master RE | Y      | Y 
+     to populated backup RE.             |        |
+    -------------------------------------+--------+----------
+     Bounce backup RE RPD process        | Y      | Y
+    -------------------------------------+--------+----------
+     Bounce master RE RPD process        | Y      | Y
+    -------------------------------------+--------+----------
+     RE switchover re0 -> re1            | Y      | Y
+    -------------------------------------+--------+----------
+     RE switchover re1 -> re0            | Y      | Y
+    -------------------------------------+--------+----------
+     Explicitly disable PIM              | !Y     | !Y
+    -------------------------------------+--------+----------
+     Explicitly enable PIM               | Y      | Y
+    -------------------------------------+--------+----------
+     Remove PIM runtime state while NSR  | Y      | Y
+     is enabled.  Verify backup RE is in |        |
+     sync with master RE.                |        |
+    -------------------------------------+--------+----------
+     Add PIM runtime state while NSR is  | Y      | Y
+     enabled.  Verify backup RE is in    |        |
+     sync with master RE.                |        |
+    -------------------------------------+--------+----------
+     Delta PIM runtime state while NSR   | Y      | Y
+     is enabled.  e.g. link bounce, RP   |        |
+     priority change, nbr secondary      |        |
+     address change.  Verify backup RE   |        |
+     is in sync with master RE.          |        |
+    -------------------------------------+--------+----------
+     Reboot master RE when state is in   | Y      | Y
+     sync.  Verify that state is still   |        |
+     in sync after it comes back up.     |        |
+    -------------------------------------+--------+----------
+     After old master RE has finished    | Y      | Y
+     rebooting and is in sync, do an RE  |        |
+     switchover back to the old mstr RE. |        |
+    -------------------------------------+--------+----------
+
+    Unless otherwise stated, the above test sequence is done for
+    each section below.
+
+    Note that the last two tests were added after most of the unit tests
+    were written, so these two tests may not be present in all of the
+    unit tests.
+
+    To verify that PIM control state is identical between the master and
+    backup REs, the PIM show commands are run on each RE and the results
+    are saved in a NFS mounted directory and then are compared using diff.
+
+    To prevent false negatives, output fields that are variable (such as
+    timeouts or time remaining) are filtered from the command output.
+
+4.2 Basic PIM <S,G> sparse mode replication
+
+   Goal: 1) Verify that basic PIM <S,G> sparse mode state is replicated.
+
+   Test Steps:
+       a) See nsr_test_003
+       b) See nsr_test_004
+       c) See nsr_test_005
+       d) See nsr_test_006
+       e) See nsr_test_007
+       f) See nsr_test_008
+       g) See nsr_test_009
+       h) See nsr_test_010
+       i) See nsr_test_011
+       j) See nsr_test_012
+       k) See nsr_test_013
+       l) See nsr_test_014
+       m) See nsr_test_015
+       n) See nsr_test_016
+       o) See nsr_test_017
+
+   Results:
+       a) 1 IPv4 <S,G> join result: PASS
+       b) 10 IPv4 <S,G> joins + 10 streams result: PASS
+       c) 100 IPv4 <S,G> joins + 10 streams result: PASS
+       d) 1000 IPv4 <S,G> joins + 10 streams result: PASS
+       e) 10000 IPv4 <S,G> joins + 10 streams result: PASS
+       f) 1 IPv6 <S,G> join result: PASS
+       g) 10 IPv6 <S,G> joins + 10 streams result: PASS
+       h) 100 IPv4 <S,G> joins + 10 streams result: PASS
+       i) 1000 IPv4 <S,G> joins + 10 streams result: PASS
+       j) 10000 IPv4 <S,G> joins + 10 streams result: PASS
+       k) 1 IPv4/IPv6 <S,G> join result: PASS
+       l) 10 IPv4/IPv6 <S,G> joins + 20 streams result: PASS
+       m) 100 IPv4/IPv6 <S,G> joins + 20 streams result: PASS
+       n) 1000 IPv4/IPv6 <S,G> joins + 20 streams result: PASS
+       o) 10000 IPv4/IPv6 <S,G> joins + 20 streams result: PASS
+
+4.3 Basic PIM <*,G> sparse mode replication
+
+   Goal: 1) Verify that basic PIM <*,G> sparse mode state is replicated.
+
+       a) See nsr_test_018
+       b) See nsr_test_019
+       c) See nsr_test_020
+       d) See nsr_test_021
+       e) See nsr_test_022
+       f) See nsr_test_023
+       g) See nsr_test_024
+       h) See nsr_test_025
+       i) See nsr_test_026
+       j) See nsr_test_027
+       k) See nsr_test_028
+       l) See nsr_test_029
+
+   Results:
+       a) 1 IPv4 <*,G> join result: PASS
+       b) 10 IPv4 <*,G> joins + 10 streams result: PASS
+       c) 100 IPv4 <*,G> joins + 10 streams result: PASS
+       d) 1000 IPv4 <*,G> joins + 10 streams result: PASS
+       e) 1 IPv6 <*,G> join result: PASS
+       f) 10 IPv6 <*,G> joins + 10 streams result: PASS
+       g) 100 IPv6 <*,G> joins + 10 streams result: PASS
+       h) 1000 IPv6 <*,G> joins + 10 streams result: PASS
+       i) 1 IPv4/IPv6 <*,G> join result: PASS
+       j) 10 IPv4/IPv6 <*,G> joins + 10 streams result: PASS
+       k) 100 IPv4/IPv6 <*,G> joins + 10 streams result: PASS
+       l) 1000 IPv4/IPv6 <*,G> joins + 10 streams result: PASS
+
+4.4 Basic PIM dense mode replication
+
+  Goal: 1) Verify that basic PIM dense mode state is replicated.
+
+      a) See nsr_test_030
+      b) See nsr_test_031
+      c) See nsr_test_032
+      d) See nsr_test_033
+      e) See nsr_test_034
+      f) See nsr_test_035
+
+  Results:
+
+      a) 10 IPv4 streams (no receivers): PASS
+      b) 10 IPv4 streams (with receivers): PASS
+      c) 10 IPv6 streams (no receivers): PASS
+      d) 10 IPv6 streams (with receivers): PASS
+      e) 10 IPv4/IPv6 streams (no receivers): PASS
+      f) 10 IPv4/IPv6 streams (with receivers): PASS
+
+4.5 PIM neighbor replication
+
+  Goal: 1) Verify that PIM neigbor state is replicated
+
+      a) See nsr_test_036
+
+  Results:
+
+      a) 4 IPv4/IPv6 neighbors on one interface: PASS
+
+4.6 Basic PIM JLB state replication
+
+  Note that the unit tests for PIM JLB include NSR scenarios.
+  All of these PIM JLB unit tests pass.
+
+  Goal: 1) Verify that PIM JLB state is replicated
+
+      a) See nsr_test_037
+
+  Results:
+
+      a) IPv4 PIM JLB state replication: PASS
+
+
+4.7 Multiple OIFs for the same <S,G> are replicated
+
+  Goal: 1) Verify that <S,G>s with multiple OIFs are replicated.
+
+      a) See nsr_test_038
+
+  Results:  
+
+      a) <S,G>s with multiple OIFs are replicated: PASS
+
+4.8 Simple IGMP-only state can be replicated
+
+  Note that there are additional unit tests for IGMP-only NSR state
+  replication.  This test covers the cases in this document.
+
+  Goal: 1) Verify that simple IGMP-only state can be replicated
+
+      a) See nsr_test_039
+
+  Results:
+
+      a) Simple IGMP-only state replication: PASS
+
+4.9 PIM IPv4/IPv6 register state replication
+
+  Goal: 1) Verify that register state can be replicated
+
+      a) See nsr_test_040
+
+  Results:
+
+      a) PIM IPv4/IPv6 register state replication: PASS
+
+4.10 PIM auto-rp state replication
+
+  Goal: 1) Verify that PIM auto-rp state can be replicated
+
+      a) See nsr_test_041
+
+  Results:
+
+      a) PIM auto-rp state replication: PASS
+
+4.11 PIM IPv4/IPv6 BSR state replication
+
+  Goal: 1) Verify that IPv4/IPv6 PIM BSR state can be replicated
+
+      a) See nsr_test_042
+
+  Results:
+
+      a) PIM IPv4/IPv6 BSR state replication: PASS
+
+4.12 PIM IPv4/IPv6 bidir-df state replication
+
+  Goal: 1) Verify that IPv4/IPv6 PIM BSR state can be replicated
+
+      a) See nsr_test_043
+
+  Results:
+
+      a) PIM IPv4/IPv6 BSR state replication: PASS
+
+4.13 PIM IPv4/IPv6 sparse-mode assert state replication
+
+  Goal: 1) Verify that IPv4/IPv6 PIM sparse-mode assert state can be
+           replicated
+
+      a) See nsr_test_044
+
+  Results:
+
+      a) PIM IPv4/IPv6 sparse-mode assert state replication: PASS
+
+4.14 PIM IPv4/IPv6 dense mode assert state replication
+
+  Goal: 1) Verify that IPv4/IPv6 PIM dense-mode assert state can be
+           replicated.
+
+  Tests have been done manually, but have not been scripted yet.
+  Once they have been scripted per section 4.1, this section will
+  be updated.
+
+4.15 PIM MDT state replication
+
+  Goal: 1) Verify that MDT state can be replicated
+
+  Tests have been done manually, but have not been scripted yet.
+  Once they have been scripted per section 4.1, this section will
+  be updated.
+
+5.  BOUNDARY TEST CASES
+
+  Boundary test cases are documented in section 4.1.
+
+6.  GRES TEST CASES
+
+  This RLI is all about PIM NSR, so all test cases in this document apply.
+
+7.  ISSU TEST CASES
+
+  Similar tests need to be done as in section 4.x for ISSU testing.
+
+  This has been done manually by running the same base jinstall image
+  on both REs and then manually running an RPD image with the changes for
+  RLI 17733 on the backup RE.
+
+  The master RE runs an unmodified RPD image that matches the base 
+  jinstall image.
+
+  The PIM control state was then manually compared.
+
+  ISSU should be done with some mcast traffic present (implying mcast routes)
+  for IPv4 and IPv6.
+
+8. TX TEST CASES
+
+  This RLI is platform-independent.
+
+9.  AGGREGATED ETHERNET/SONET TEST CASES
+ 
+  PIM is interface independent.
+ 
+10.  REGRESSION TEST CASES
+
+  For this RLI, the PIM NSR implementation has been rewritten/redesigned.
+
+  Additionally, the structure of PIM received join/prune (RXJP) state 
+  has been changed to support PIM NSR replication.
+
+  All multicast regression tests need to be run.
+  All multicast NSR regression tests need to be run.
+  All Rosen MVPN regression tests need to be run.
+  All NGEN MVPN regression tests need to be run.
+
+11.  INTEROPERABILITY TEST CASES
+
+  Not applicable.
+
+12.  MIGRATION & COMPATIBILITY TEST CASES
+
+  Not applicable.
+
+13.  TEST COVERAGE REMAINING
+
+  1) Scaling tests need to be done with more multicast traffic being present.
+     The unit tests only cover up to 10 streams.
+
+  2) Further ISSU testing needs to be done.
+
+  3) Verify that there is no traffic loss during NSR switchover.
+
+14.  DEFECTS REMAINING
+
+  None.
+
+15. SCALING AND PERFORMANCE
+ 
+  Not a scaling RLI.
+
+16. STATIC ANALYSIS 
+
+  wfd-junos-pool17.juniper.net> run_coverity
+
+  =======================================================================
+  Date: Fri Jul 27 09:25:44 EDT 2012
+
+    /volume/buildtools/bin/run-coverity
+
+  The Environment:
+
+    PWD[/b/afuellemann/pr717454_pvt_h/src/junos/usr.sbin/rpd]
+    BUILD_SERVER[wfd-junos-pool17]
+    PATH[...]
+
+  Version of the script [3.0.25]
+  =======================================================================
+  Fri Jul 27 09:25:44 EDT 2012
+
+  ...
+
+  Building /b/afuellemann/pr717454_pvt_h/obj-i386/junos/usr.sbin/rpd/rpd/mc_phantom_rt.o
+  Building /b/afuellemann/pr717454_pvt_h/obj-i386/junos/usr.sbin/rpd/rpd/pim_anycast.o
+  Building /b/afuellemann/pr717454_pvt_h/obj-i386/junos/usr.sbin/rpd/rpd/pim_assert.o
+  Building /b/afuellemann/pr717454_pvt_h/obj-i386/junos/usr.sbin/rpd/rpd/pim_assert_bkup_re_rdb.o
+  Building /b/afuellemann/pr717454_pvt_h/obj-i386/junos/usr.sbin/rpd/rpd/pim_assert_mstr_re_rdb.o
+  Building /b/afuellemann/pr717454_pvt_h/obj-i386/junos/usr.sbin/rpd/rpd/pim_autorp.o
+  Building /b/afuellemann/pr717454_pvt_h/obj-i386/junos/usr.sbin/rpd/rpd/pim_bfd_intf.o
+  Building /b/afuellemann/pr717454_pvt_h/obj-i386/junos/usr.sbin/rpd/rpd/pim_bidir.o
+  Building /b/afuellemann/pr717454_pvt_h/obj-i386/junos/usr.sbin/rpd/rpd/pim_bidir_df.o
+  Building /b/afuellemann/pr717454_pvt_h/obj-i386/junos/usr.sbin/rpd/rpd/pim_bidir_df_bkup_re_rdb.o
+  Building /b/afuellemann/pr717454_pvt_h/obj-i386/junos/usr.sbin/rpd/rpd/pim_bidir_df_mstr_re_rdb.o
+  Building /b/afuellemann/pr717454_pvt_h/obj-i386/junos/usr.sbin/rpd/rpd/pim_bidir_fsm.o
+  Building /b/afuellemann/pr717454_pvt_h/obj-i386/junos/usr.sbin/rpd/rpd/pim_bidir_fwd.o
+  Building /b/afuellemann/pr717454_pvt_h/obj-i386/junos/usr.sbin/rpd/rpd/pim_bsr.o
+  Building /b/afuellemann/pr717454_pvt_h/obj-i386/junos/usr.sbin/rpd/rpd/pim_bsr_bkup_re_rdb.o
+  Building /b/afuellemann/pr717454_pvt_h/obj-i386/junos/usr.sbin/rpd/rpd/pim_bsr_mstr_re_rdb.o
+  Building /b/afuellemann/pr717454_pvt_h/obj-i386/junos/usr.sbin/rpd/rpd/pim_config.o
+  Building /b/afuellemann/pr717454_pvt_h/obj-i386/junos/usr.sbin/rpd/rpd/pim_dense.o
+  Building /b/afuellemann/pr717454_pvt_h/obj-i386/junos/usr.sbin/rpd/rpd/pim_fsm_common.o
+  Building /b/afuellemann/pr717454_pvt_h/obj-i386/junos/usr.sbin/rpd/rpd/pim_group.o
+  Building /b/afuellemann/pr717454_pvt_h/obj-i386/junos/usr.sbin/rpd/rpd/pim_hello.o
+  Building /b/afuellemann/pr717454_pvt_h/obj-i386/junos/usr.sbin/rpd/rpd/pim_if.o
+  Building /b/afuellemann/pr717454_pvt_h/obj-i386/junos/usr.sbin/rpd/rpd/pim_init.o
+  Building /b/afuellemann/pr717454_pvt_h/obj-i386/junos/usr.sbin/rpd/rpd/pim_io.o
+  Building /b/afuellemann/pr717454_pvt_h/obj-i386/junos/usr.sbin/rpd/rpd/pim_jp_in.o
+  Building /b/afuellemann/pr717454_pvt_h/obj-i386/junos/usr.sbin/rpd/rpd/pim_jp_out.o
+  Building /b/afuellemann/pr717454_pvt_h/obj-i386/junos/usr.sbin/rpd/rpd/pim_limit.o
+  Building /b/afuellemann/pr717454_pvt_h/obj-i386/junos/usr.sbin/rpd/rpd/pim_mcast_rt.o
+  Building /b/afuellemann/pr717454_pvt_h/obj-i386/junos/usr.sbin/rpd/rpd/pim_mdt_bkup_re_rdb.o
+  Building /b/afuellemann/pr717454_pvt_h/obj-i386/junos/usr.sbin/rpd/rpd/pim_mdt_mstr_re_rdb.o
+  Building /b/afuellemann/pr717454_pvt_h/obj-i386/junos/usr.sbin/rpd/rpd/pim_mirror.o
+  Building /b/afuellemann/pr717454_pvt_h/obj-i386/junos/usr.sbin/rpd/rpd/pim_msdp.o
+  Building /b/afuellemann/pr717454_pvt_h/obj-i386/junos/usr.sbin/rpd/rpd/pim_mt.o
+  Building /b/afuellemann/pr717454_pvt_h/obj-i386/junos/usr.sbin/rpd/rpd/pim_mtrace.o
+  Building /b/afuellemann/pr717454_pvt_h/obj-i386/junos/usr.sbin/rpd/rpd/pim_mvpn.o
+  Building /b/afuellemann/pr717454_pvt_h/obj-i386/junos/usr.sbin/rpd/rpd/pim_nbr.o
+  Building /b/afuellemann/pr717454_pvt_h/obj-i386/junos/usr.sbin/rpd/rpd/pim_nbr_bkup_re_rdb.o
+  Building /b/afuellemann/pr717454_pvt_h/obj-i386/junos/usr.sbin/rpd/rpd/pim_nbr_mstr_re_rdb.o
+  Building /b/afuellemann/pr717454_pvt_h/obj-i386/junos/usr.sbin/rpd/rpd/pim_nsr.o
+  Building /b/afuellemann/pr717454_pvt_h/obj-i386/junos/usr.sbin/rpd/rpd/pim_pfi.o
+  Building /b/afuellemann/pr717454_pvt_h/obj-i386/junos/usr.sbin/rpd/rpd/pim_pkt_bkup_re_rdb.o
+  Building /b/afuellemann/pr717454_pvt_h/obj-i386/junos/usr.sbin/rpd/rpd/pim_ppm.o
+  Building /b/afuellemann/pr717454_pvt_h/obj-i386/junos/usr.sbin/rpd/rpd/pim_ppm_intf.o
+  Building /b/afuellemann/pr717454_pvt_h/obj-i386/junos/usr.sbin/rpd/rpd/pim_ppm_trace.o
+  Building /b/afuellemann/pr717454_pvt_h/obj-i386/junos/usr.sbin/rpd/rpd/pim_pseudo_gmp_bkup_rdb.o
+  Building /b/afuellemann/pr717454_pvt_h/obj-i386/junos/usr.sbin/rpd/rpd/pim_pseudo_gmp_mstr_rdb.o
+  Building /b/afuellemann/pr717454_pvt_h/obj-i386/junos/usr.sbin/rpd/rpd/pim_pseudo_gmp_reso.o
+  Building /b/afuellemann/pr717454_pvt_h/obj-i386/junos/usr.sbin/rpd/rpd/pim_regif_bkup_re_rdb.o
+  Building /b/afuellemann/pr717454_pvt_h/obj-i386/junos/usr.sbin/rpd/rpd/pim_regif_mstr_re_rdb.o
+  Building /b/afuellemann/pr717454_pvt_h/obj-i386/junos/usr.sbin/rpd/rpd/pim_register.o
+  Building /b/afuellemann/pr717454_pvt_h/obj-i386/junos/usr.sbin/rpd/rpd/pim_register_filter.o
+  Building /b/afuellemann/pr717454_pvt_h/obj-i386/junos/usr.sbin/rpd/rpd/pim_restart.o
+  Building /b/afuellemann/pr717454_pvt_h/obj-i386/junos/usr.sbin/rpd/rpd/pim_rp.o
+  Building /b/afuellemann/pr717454_pvt_h/obj-i386/junos/usr.sbin/rpd/rpd/pim_rp_bkup_re_rdb.o
+  Building /b/afuellemann/pr717454_pvt_h/obj-i386/junos/usr.sbin/rpd/rpd/pim_rp_mstr_re_rdb.o
+  Building /b/afuellemann/pr717454_pvt_h/obj-i386/junos/usr.sbin/rpd/rpd/pim_rpf.o
+  Building /b/afuellemann/pr717454_pvt_h/obj-i386/junos/usr.sbin/rpd/rpd/pim_rpf_bkup_re_rdb.o
+  Building /b/afuellemann/pr717454_pvt_h/obj-i386/junos/usr.sbin/rpd/rpd/pim_rpf_mstr_re_rdb.o
+  Building /b/afuellemann/pr717454_pvt_h/obj-i386/junos/usr.sbin/rpd/rpd/pim_rxjp_bkup_re_rdb.o
+  Building /b/afuellemann/pr717454_pvt_h/obj-i386/junos/usr.sbin/rpd/rpd/pim_rxjp_mstr_re_rdb.o
+  Building /b/afuellemann/pr717454_pvt_h/obj-i386/junos/usr.sbin/rpd/rpd/pim_sfsm.o
+  Building /b/afuellemann/pr717454_pvt_h/obj-i386/junos/usr.sbin/rpd/rpd/pim_sfsm_assert.o
+  Building /b/afuellemann/pr717454_pvt_h/obj-i386/junos/usr.sbin/rpd/rpd/pim_sfsm_data_ev.o
+  Building /b/afuellemann/pr717454_pvt_h/obj-i386/junos/usr.sbin/rpd/rpd/pim_sfsm_ds.o
+  Building /b/afuellemann/pr717454_pvt_h/obj-i386/junos/usr.sbin/rpd/rpd/pim_sfsm_dsm.o
+  Building /b/afuellemann/pr717454_pvt_h/obj-i386/junos/usr.sbin/rpd/rpd/pim_sfsm_fwd_cache.o
+  Building /b/afuellemann/pr717454_pvt_h/obj-i386/junos/usr.sbin/rpd/rpd/pim_sfsm_rp.o
+  Building /b/afuellemann/pr717454_pvt_h/obj-i386/junos/usr.sbin/rpd/rpd/pim_sfsm_us.o
+  Building /b/afuellemann/pr717454_pvt_h/obj-i386/junos/usr.sbin/rpd/rpd/pim_sg_db.o
+  Building /b/afuellemann/pr717454_pvt_h/obj-i386/junos/usr.sbin/rpd/rpd/pim_show.o
+  Building /b/afuellemann/pr717454_pvt_h/obj-i386/junos/usr.sbin/rpd/rpd/pim_tree.o
+  Building /b/afuellemann/pr717454_pvt_h/obj-i386/junos/usr.sbin/rpd/rpd/pim_unicast_rg.o
+  Building /b/afuellemann/pr717454_pvt_h/obj-i386/junos/usr.sbin/rpd/rpd/pim_vpn.o
+  Building /b/afuellemann/pr717454_pvt_h/obj-i386/junos/usr.sbin/rpd/rpd/pim_vpn_backup.o
+  Building /b/afuellemann/pr717454_pvt_h/obj-i386/junos/usr.sbin/rpd/rpd/pim_xif.o
+  Building /b/afuellemann/pr717454_pvt_h/obj-i386/junos/usr.sbin/rpd/rpd/pimmib_mthd.o
+  Building /b/afuellemann/pr717454_pvt_h/obj-i386/junos/usr.sbin/rpd/rpd/version.c
+  Building version.c ...
+  Building /b/afuellemann/pr717454_pvt_h/obj-i386/junos/usr.sbin/rpd/rpd/version.o
+  Building /b/afuellemann/pr717454_pvt_h/obj-i386/junos/usr.sbin/rpd/rpd/rpd
+  Checking /b/afuellemann/pr717454_pvt_h/src/junos/usr.sbin/rpd/rpdc for i386 ...
+  77 compilation units (100%) are ready for analysis
+  The Coverity Prevent build utility completed successfully.
+
+  Elapsed time: 00:57:17
+  Build Completed Successfully, rc[0]
+  Fri Jul 27 10:23:03 EDT 2012
+  Elapsed time for build (seconds): 3439
+  Build Time = 00:57:19
+  Fri Jul 27 10:23:03 EDT 2012
+  Fri Jul 27 10:25:26 EDT 2012
+  Elapsed time for analysis (seconds): 143
+  Analysis Time = 00:02:23
+
+  ===============================================================================
+         Coverity  Report                     
+  ===============================================================================
+
+  Error report generated : ./cov-logs/rpd_new_20120727102527.txt
+
+  Total of 0 new defects detected
+
+  No new defects found. Use -a with run-coverity to check existing defects.
+
+  ===============================================================================
+  Elapsed time for build (seconds): 3439
+  Elapsed time for analysis (seconds): 143
+  Elapsed time for commit (seconds): 0
+  Total Time (seconds): 3582
+  Total Time = 00:59:42
+  wfd-junos-pool17.juniper.net> 
+
+17. CODE COVERAGE
+
+  Not required yet.
+
+  https://matrix.juniper.net/message/23396#23396
+
+18. AUTOMATION
+
+  All unit tests in this document (unless otherwise specified) have
+  been automated.
+
+  Location:  functional-tests/apps/rpd/multicast/pim/pim-nsr
+
+19. UNIT TEST PLAN REVIEW FEEDBACK
+
+  See https://drt.juniper.net/cgi-bin/drt/view_review.cgi?review_id=7528

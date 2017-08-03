@@ -1,0 +1,712 @@
+$Header: /cvs/juniper/sw-projects/os/nsr/p2mp-nsr-ingress-funcspec.txt,v 1.1 2011/02/28 20:17:22 mjork Exp $
+
+
+Process Template J3.02.P05.T01S
+
+
+	  NSR for RSVP P2MP Ingress Functional Specification
+
+		   Markus Jork <mjork@juniper.net>
+
+Copyright (C) 2011, Juniper Networks, Inc.
+Template Owner(s):  Waldek Mikolajczyk
+Template Version 1.1
+
+NOTICE: This document contains proprietary and confidential
+information of Juniper Networks, Inc. and must not be distributed
+outside of the company without the permission of Juniper Networks
+engineering.
+
+
+
+TABLE OF CONTENTS
+
+1.	INTRODUCTION
+1.1	DOCUMENT REVISION HISTORY
+1.2	REFERENCE
+1.3	RLI LIST
+1.4     FEATURE PARITY TRACEABILITY
+2.	FUNCTIONALITY
+2.1	GOALS
+2.2	NON-GOALS
+2.3	FUNCTIONAL COMPETITIVE DATA
+2.4	APIS/MESSAGES
+2.5	CLI CONFIG
+2.5.1	CLI CONFIG DETAILS
+2.6	CLI COMMANDS
+2.6.1	CLI COMMAND DETAILS
+2.7	JUNOSCRIPT
+2.8	J-WEB QUICK CONFIGURATION AND MONITOR SCREEN
+2.9	SNMP
+2.10	SYSLOG – ERRMSG
+2.11	SERVICEABILITY AND DIAGNOSE-ABILITY
+2.12	ASSUMPTIONS
+2.13	CONSTRAINTS AND LIMITATIONS
+2.14	DEPENDENCIES AND INTERACTIONS WITH OTHER COMPONENTS IN THE SYSTEM
+2.15	EXAMPLES OR INTERACTION DESCRIPTIONS
+2.16	FREE SOFTWARE CONSIDERATIONS
+2.17	3RD PARTY SOFTWARE CONSIDERATIONS
+2.17.1	3RD PARTY SOFTWARE PACKAGE INFORMATION AND ITS FUNCTIONALITY
+2.17.2	ANTICIPATED USAGE OF 3RD PARTY CODE
+2.17.3	ANTICIPATED INTEGRATION RULES WITHIN JUNOS
+3.	CAVEATS
+4.	OTHER REQUIREMENTS
+5.	PERFORMANCE
+5.1	PERFORMANCE RELATED RESOURCES
+5.2	TARGET PERFORMANCE
+6.	COMPATIBILITY ISSUES
+7.	SECURITY ISSUES
+8.	PLATFORMS SUPPORTED
+9.	HIGH AVAILABILITY (HA)
+9.1	GRACEFUL RE SWITCHOVER (GRES) OR ISSU IMPACT
+9.2	NSR IMPACT
+10.	AGGREGATED ETHERNET/SONET SUPPORT
+11.	SDK IMPACT
+11.1	SDK CUSTOMER USAGE
+12.	SERVICES/JSF (JUNOS SERVICES FRAMEWORK) IMPACT
+13.	JUNOS READY SOFTWARE CONSIDERATIONS
+14.	MULTI-CHASSIS SUPPORT
+15.	64-BIT SUPPORT
+16.	LOGICAL SYSTEM SUPPORT
+17.	NOTES
+18.	GLOSSARY
+19.	Design Specification exception
+20.	REVIEW COMMENTS
+20.1	REVIEW STAKEHOLDER MATRIX
+
+
+
+
+1. INTRODUCTION
+
+This functional spec describes Nonstop Routing (NSR) support for RSVP
+P2MP LSPs at the LSP ingress node. It implements the requirements from
+RLI 12173. This is a continuation of RLI 9023 which implemented NSR
+support for RSVP P2MP LSPs at the transit and egress nodes.
+
+
+1.1 DOCUMENT REVISION HISTORY
+
+Revision 1.0, mjork, 02/28/2011: initial version
+
+
+1.2 REFERENCE
+	
+Tracking PR: 588341
+
+Design specification: 
+ http://cvs.juniper.net/cgi-bin/viewcvs.cgi/sw-projects/os/nsr/p2mp-nsr-ingress-design.txt
+
+Specs for the related transit/egress P2MP NSR feature:
+ http://cvs.juniper.net/cgi-bin/viewcvs.cgi/sw-projects/os/nsr/p2mp-nsr-funcspec.html
+ http://cvs.juniper.net/cgi-bin/viewcvs.cgi/sw-projects/os/nsr/p2mp-nsr-transit-utp.txt
+ http://cvs.juniper.net/cgi-bin/viewcvs.cgi/sw-projects/os/nsr/p2mp-nsr-transit-devtest-testplan.txt
+
+P2P RSVP NSR specifications:
+ http://cvs.juniper.net/cgi-bin/viewcvs.cgi/sw-projects/os/nsr/rsvp-design.txt
+ http://cvs.juniper.net/cgi-bin/viewcvs.cgi/sw-projects/os/nsr/rsvp-funcspec.txt
+ http://cvs.juniper.net/cgi-bin/viewcvs.cgi/sw-projects/os/nsr/rsvp_nsr_ingress_utp.txt
+
+P2MP specifications:
+ http://cvs.juniper.net/cgi-bin/viewcvs.cgi/sw-projects/mpls/p2mp/p2mp-master-reference.txt
+
+Related RLIs:
+ https://deepthought.juniper.net/app/do/showView?tableName=RLI&record_number=12173
+ https://deepthought.juniper.net/app/do/showView?tableName=RLI&record_number=9023
+ https://deepthought.juniper.net/app/do/showView?tableName=RLI&record_number=2720
+ https://deepthought.juniper.net/app/do/showView?tableName=RLI&record_number=3167
+ https://deepthought.juniper.net/app/do/showView?tableName=RLI&record_number=4211
+
+NPI:
+ https://deepthought.juniper.net/app/do/showView?tableName=npi&record_number=326
+
+
+1.3 RLI LIST
+
+RLI 12173 - "NSR: P2MP for multicast - Ingress", targeted for Junos 12.1
+
+
+1.4 FEATURE PARITY TRACEABILITY
+n/a			
+
+
+2. FUNCTIONALITY
+
+When nonstop-routing is configured on the ingress router of a P2MP
+LSP, the state for that LSP will be replicated from the master RE to
+the backup RE. When an NSR failover event happens, the forwarding
+state in the PFE remains unaffected. The new master RE will seamlessly
+take over the job of signaling the P2MP LSP without affecting any RSVP
+neighbor in the network.
+
+The types of P2MP LSPs that will be supported for NSR are those used
+with static routes or CCC. Note that so far CCC is not supported even
+for P2P LSPs and this P2P NSR functionality will be added, too.
+
+The ideal failover scenario for a P2MP LSP at the ingress is that all
+branches remain on their existing path and no resignaling of the tree
+is needed (the existing rsvp signaling state thus just has to keep
+getting refreshed). This can only be accomplished under the following
+conditions which need to be true for every single one of the P2MP
+branches:
+
+- the branch was up on the master RE;
+- the path taken by the branch is still valid according to the TED,
+  i.e. it still meets all of the constraints.
+
+Even if only a single branch does not meet the conditions, the entire
+P2MP tree will be recomputed after failover and will switch over to a
+new tree instance in a MBB fashion.
+
+The lsp history (as shown by "show mpls lsp extensive") on the backup
+RE does not match the history of the master RE. Instead, it lists the
+events observed on the backup.
+
+P2MP LSPs with link-protection configured will be supported for NSR
+but see limitations further below.
+
+
+2.1 GOALS
+
+- NSR support for P2MP LSPs used with static routes
+
+- NSR support for P2MP LSPs used with CCC
+
+- NSR support for P2P LSPs used with CCC
+
+- NSR support on the egress for UHP based on vt interfaces
+  ("tunnel-services" config)
+
+- NSR support for P2MP LSP link-protection on ingress and transit routers
+  (though see Caveats section for limitations of this)
+
+
+2.2 NON-GOALS
+
+- NSR support for P2MP LSPs used by VPLS.
+
+- NSR support for P2MP LSPs used by NG-MVPN (because MVPN does not support NSR).
+
+- The above two restrictions imply that no dynamically created P2MP LSPs will
+  be supported. The same restriction already applies to P2P LSPs.
+
+- No data loss when failing over an LSP which has link-protection in use.
+
+- Preserving LSP statistics across failovers.
+
+- Preserving LSP timers across failovers.
+
+- NSR support for upstream label allocation.
+
+- NSR support for BFD OAM.
+
+- GMPLS support.
+
+- LSP hierarchy support (FA-LSP).
+
+
+2.3 FUNCTIONAL COMPETITIVE DATA
+
+Not available.
+
+
+2.4 APIs/MESSAGES
+n/a
+
+
+2.5 CLI CONFIG
+
+There are no new or changed config commands. The ingress P2MP NSR
+feature will be enabled by default when "nonstop-routing" is
+configured. The feature cannot be enabled or disabled separately.
+
+
+2.5.1	CLI CONFIG DETAILS
+n/a
+
+
+2.6 CLI COMMANDS
+
+There are no new or changed operational commands.
+
+The "detail" and "extensive" variants of the "show rsvp session"
+command will be enhanced to display some more P2MP related details:
+the p2mp branch id and p2mp subgroup originator id (see below).
+
+The LSP history as shown by the "show mpls lsp extensive" command will
+be enhanced with additional NSR-related types of events:
+- "CSPF: retracing after failover successful  <ip_addr, ...>".
+
+Additionally, there will be some new and enhanced hidden show commands
+for debugging. These are described in the design specification.
+
+
+2.6.1	CLI COMMAND DETAILS
+
+2.6.1.1 show rsvp session {detail|extensive}
+
+regress@wfpro2-c> show rsvp session detail    
+Ingress RSVP: 1 sessions
+
+22.0.0.4
+  From: 22.0.0.3, LSPstate: Up, ActiveRoute: 0
+  LSPname: to0ingress, LSPpath: Primary
+  LSPtype: Static Configured
+  P2MP LSPname: ingress_test, Re-merge: None
+  Suggested label received: -, Suggested label sent: -
+  Recovery label received: -, Recovery label sent: 3
+  Resv style: 1 SE, Label in: -, Label out: 3
+  Time left:    -, Since: Thu Feb 24 05:58:13 2011
+  Tspec: rate 1000bps size 1000bps peak Infbps m 20 M 1500
+  Port number: sender 2 receiver 40245 protocol 0
+  P2MP branch id: 8, Subgroup Originator: 22.0.0.3
+  PATH rcvfrom: localclient 
+  Adspec: sent MTU 1500
+  Path MTU: received 1500
+  PATH sentto: 1.1.0.1 (fe-0/0/1.0) 502 pkts
+  RESV rcvfrom: 1.1.0.1 (fe-0/0/1.0) 502 pkts
+  Explct route: 1.1.0.1 
+  Record route: <self> 1.1.0.1  
+Total 1 displayed, Up 1, Down 0
+
+Egress RSVP: 0 sessions
+Total 0 displayed, Up 0, Down 0
+
+Transit RSVP: 1 sessions
+
+1.0.0.4
+  From: 22.0.0.4, LSPstate: Up, ActiveRoute: 0
+  LSPname: to4, LSPpath: Primary
+  P2MP LSPname: test, Re-merge: None
+  Suggested label received: -, Suggested label sent: -
+  Recovery label received: -, Recovery label sent: 299792
+  Resv style: 1 SE, Label in: 299792, Label out: 299792
+  Time left:  157, Since: Thu Feb 24 12:11:29 2011
+  Tspec: rate 0bps size 0bps peak Infbps m 20 M 1500
+  Port number: sender 1 receiver 38798 protocol 0
+  P2MP branch id: 2, Subgroup Originator: 22.0.0.4
+  PATH rcvfrom: 1.1.1.1 (fe-0/0/0.0) 1 pkts
+  Adspec: received MTU 1500 sent MTU 1500
+  PATH sentto: 1.1.2.1 (t1-0/2/2.0) 1 pkts
+  RESV rcvfrom: 1.1.2.1 (t1-0/2/2.0) 1 pkts
+  Explct route: 1.1.2.1 1.124.0.4 
+  Record route: 1.1.1.1 <self> 1.1.2.1 1.124.0.4  
+Total 1 displayed, Up 1, Down 0
+
+
+regress@wfpro2-c> show rsvp session detail ingress | display xml 
+<rpc-reply xmlns:junos="http://xml.juniper.net/junos/11.3I0/junos">
+    <rsvp-session-information xmlns="http://xml.juniper.net/junos/11.3I0/junos-routing">
+        <rsvp-session-data>
+            <session-type>Ingress</session-type>
+            <count>1</count>
+            <rsvp-session junos:style="detail">
+                <destination-address>22.0.0.4</destination-address>
+                <source-address>22.0.0.3</source-address>
+                <lsp-state>Up</lsp-state>
+                <route-count>0</route-count>
+                <name>to0ingress</name>
+                <lsp-path-type>Primary</lsp-path-type>
+                <mpls-lsp-type>Static Configured</mpls-lsp-type>
+                <mpls-p2mp-lsp-name>ingress_test</mpls-p2mp-lsp-name>
+                <p2mp-remerge-state>None</p2mp-remerge-state>
+                <suggested-label-in>-</suggested-label-in>
+                <suggested-label-out>-</suggested-label-out>
+                <recovery-label-in>-</recovery-label-in>
+                <recovery-label-out>3</recovery-label-out>
+                <rsb-count>1</rsb-count>
+                <resv-style>SE</resv-style>
+                <label-in>-</label-in>
+                <label-out>3</label-out>
+                <psb-lifetime>   -</psb-lifetime>
+                <psb-creation-time>Thu Feb 24 05:58:13 2011
+                </psb-creation-time>
+                <sender-tspec>rate 1000bps size 1000bps peak Infbps m 20 M 1500</sender-tspec>
+                <lsp-id>2</lsp-id>
+                <tunnel-id>40245</tunnel-id>
+                <proto-id>0</proto-id>
+                <p2mp-branch-id>8</p2mp-branch-id>
+                <p2mp-subgroup-orig>22.0.0.3</p2mp-subgroup-orig>
+                <lsp-attribute-flags>
+                </lsp-attribute-flags>
+                <packet-information heading="  PATH">
+                    <previous-hop>localclient</previous-hop>
+                </packet-information>
+                <adspec>sent MTU 1500</adspec>
+                <path-mtu>1500</path-mtu>
+                <packet-information heading="  PATH">
+                    <next-hop>1.1.0.1</next-hop>
+                    <interface-name>fe-0/0/1.0</interface-name>
+                    <count>506</count>
+                </packet-information>
+                <packet-information heading="  RESV">
+                    <previous-hop>1.1.0.1</previous-hop>
+                    <interface-name>fe-0/0/1.0</interface-name>
+                    <count>505</count>
+                </packet-information>
+                <explicit-route heading="  Explct route: ">
+                    <address>1.1.0.1</address>
+                </explicit-route>
+                <record-route heading="  Record route: ">
+                    <self/>
+                    <address>1.1.0.1</address>
+                </record-route>
+            </rsvp-session>             
+            <display-count>1</display-count>
+            <up-count>1</up-count>
+            <down-count>0</down-count>
+        </rsvp-session-data>
+    </rsvp-session-information>
+    <cli>
+        <banner>{master}</banner>
+    </cli>
+</rpc-reply>
+
+
+
+2.7 JUNOSCRIPT
+n/a
+
+
+2.8 J-WEB QUICK CONFIGURATION AND MONITOR SCREEN
+n/a
+
+
+2.9 SNMP
+
+This project just adds NSR support to an existing protocol. This is
+transparent to SNMP and no SNMP changes will be done.
+
+
+2.10 SYSLOG – ERRMSG
+n/a
+
+
+2.11 SERVICEABILITY AND DIAGNOSE-ABILITY
+
+The trace messages will be enhanced to provide some more information
+about what is happening during the failover period.
+
+Any additional state that is now replicated to the backup RE will also
+be shown in the trace messages.
+
+Enhancements to the LSP history (see 2.6) will provide some extra
+information about failover events.
+
+Additionally, also see new and modified hidden commands in the design
+specification.
+
+
+2.12 ASSUMPTIONS
+
+It is assumed that NSR support for P2P LSPs at the ingress is working
+as documented.
+
+
+2.13 CONSTRAINTS AND LIMITATIONS
+
+Any LSP timers are not replicated to the backup.
+
+If MBB was in progress on the master RE before failover, it may be
+restarted anew on the new master after failover.
+
+There are a large number of configuration options that affect P2MP
+LSPs at the ingress. All of these (and permutations thereof) will be
+supported for NSR except where noted below.
+
+The list of per-LSP options which applies to p2mp LSPs is:
+
+- admin-down
+- admin-group
+- admin-group-extended
+- associate-backup-pe-groups (requires bfd, not supported)
+- bandwidth
+- class-of-service
+- description
+- disable
+- hop-limit
+- inter-domain
+- least-fill
+- link-protection
+- lsp-attributes
+- metric
+- most-fill
+- no-cspf
+- no-decrement-ttl
+- no-record
+- oam (bfd not supported)
+- optimize-hold-dead-delay (timer won't be replicated to standby)
+- optimize-timer (timer won't be replicated to standby)
+- policing
+- preference
+- primary <path>
+- priority
+- random
+- record
+- retry-limit (counter won't be replicated to standby)
+- retry-timer (timer won't be replicated to standby)
+- revert-timer (timer won't be replicated to standby)
+- soft-preemption
+- template (not supported: no dynamic LSPs)
+
+The list of global mpls options that apply to p2mp is:
+
+- admin-down
+- admin-group
+- advertisement-hold-time (timer won't be replicated to standby)
+- auto-policing (currently not supported for GR) ???
+- bandwidth
+- class-of-service
+- diffserv-te
+- diable
+- expand-loose-hop
+- explicit-null
+- log-updown
+- mib-mpls-show-p2mp
+- no-cspf
+- no-decrement-ttl
+- no-propagate-ttl
+- no-record
+- oam (not supported)
+- optimize-aggressive
+- optimize-hold-dead-delay (timer won't be replicated to standby)
+- optimize-switchover-delay (timer won't be replicated to standby)
+- optimize-timer (timer won't be replicated to standby)
+- path-mtu
+- preference
+- priority
+- record
+- revert-timer (timer won't be replicated to standby)
+- rsvp-error-hold-time (timer won't be replicated to standby)
+- smart-optimize-timer (timer won't be replicated to standby)
+- statistics
+
+Hidden commands that apply to P2MP LSPs:
+
+- optimize-hold-dead-delay
+- optimize-switchover-delay
+
+The list of global rsvp options that apply to p2mp is:
+
+- disable
+- keep-multiplier
+- load-balance (???)
+- no-local-reversion
+- no-node-id-subobject
+- no-p2mp-sublsp
+- preemption
+- refresh-time
+- tunnel-services
+
+Per-interface rsvp options that affect P2MP LSPs:
+
+- aggregate
+- no-aggregate
+- no-reliable
+- reliable
+
+
+2.14 DEPENDENCIES AND INTERACTIONS WITH OTHER COMPONENTS IN THE SYSTEM
+
+No NSR support will be provided to P2MP LSPs used by either MVPN or
+VPLS. Should NSR be enabled in these scenarios, packet loss will occur
+during failover. However, the system must remain stable and should
+ultimately recover and resume packet forwarding.
+
+
+2.15 EXAMPLES OR INTERACTION DESCRIPTIONS
+
+
+2.16 FREE SOFTWARE CONSIDERATIONS
+
+No new free software will be included. The feature will be implemented
+only through changes to existing code.
+
+
+2.17 3RD PARTY SOFTWARE CONSIDERATIONS
+
+No new 3rd party code will be used.
+
+
+3. CAVEATS
+
+When link-protection is in use for any of the P2MP branches (due to a
+link failure), the backup LSPs for those branches will not be
+replicated. As a result, when NSR failover occurs in this situation,
+traffic on those branches will stop getting forwarded until either the
+failed interface comes back up or the ingress router can bring up a
+new P2MP tree instance on alternate paths.
+
+The above also means that there is no NSR support for setup protection
+(RLI 14242).
+
+Inter-area not supported?
+
+Even though most of the content is also presented in this functional
+spec, please also consult the caveat list in the P2P ingress NSR spec
+(rsvp-funcspec.txt). Unless stated otherwise in this document, these
+caveats still apply to P2MP.
+
+
+4. OTHER REQUIREMENTS
+n/a
+
+
+
+[=== Everything from here down is internal (white box) documentation and should not be documented or related to customers 
+without a specific need. (e.g. customer support workarounds for critical issues,  performance targets where the performance 
+is the feature, etc.) ===]
+
+
+
+5. PERFORMANCE
+
+5.1 PERFORMANCE RELATED RESOURCES
+
+Rpd will use an increased amount of memory and cpu time to replicate the P2MP ingress state.
+
+
+5.2 TARGET PERFORMANCE
+
+The target is to support the same amount of P2MP LSPs as before.
+
+
+6. COMPATIBILITY ISSUES
+
+   <List any potential issues related to:
+   1. Migration to/from this feature
+   2. Any change of default system or software behavior
+   3. Backward/ forward compatibility: this would include any places old config will break, config will be deprecated,  network 
+      layouts must change, the feature will or will not work with new or old hardware, etc.
+   4. Interoperability with competitive or complementary equipment
+   5. Interoperability with Juniper equipment being part of the same customer solution
+   6. Compliance or deviation from compliance to supported industry standards >
+
+
+
+7. SECURITY ISSUES
+
+
+
+8. PLATFORMS SUPPORTED
+
+This feature is platform independent. See the design spec for platform
+specific implementation variations that might need attention during
+system test.
+
+
+9. HIGH AVAILABILITY (HA)
+
+9.1 GRACEFUL RE SWITCHOVER (GRES) OR ISSU IMPACT
+
+Some additional information is included in mpls replication
+messages. This does not adversely impact ISSU because the IDL message
+formatting is design to handle this.
+
+The new NSR support for "tunnel-services" UHP will be designed to also
+support GR.
+
+
+9.2 NSR IMPACT
+
+This functional spec is all about NSR enhancements to the system.
+
+
+10. AGGREGATED ETHERNET/SONET SUPPORT
+
+No impact.
+
+
+11. SDK IMPACT
+
+No impact.
+
+
+11.1 SDK CUSTOMER USAGE
+n/a
+
+
+12. SERVICES/JSF (JUNOS SERVICES FRAMEWORK) IMPACT
+n/a
+
+
+13. JUNOS READY SOFTWARE CONSIDERATIONS
+n/a
+
+
+14. MULTI-CHASSIS SUPPORT
+
+This feature adds NSR support. That should transparently include
+support for virtual chassis, too.
+
+
+15. 64-BIT SUPPORT
+
+This functional spec describes new functionality for rpd. The rpd
+daemon does not currently support 64-bit. Nevertheless, any new code
+added should be 64-bit clean.
+
+
+16. LOGICAL SYSTEM SUPPORT
+
+There is no NSR support for logical systems.
+
+
+17. NOTES
+
+
+
+18. GLOSSARY
+
+
+
+19. Design Specification exception
+n/a
+
+
+20. REVIEW COMMENTS
+
+Tracking PR 588341 will be used for capturing review comments.
+
+<We use the audit trail of the RLI tracking PR to record review comments, so please include a pointer to the pr here. If the spec review is done 
+via email, the owner of the spec will send it out for comments with "bugs@juniper.net" included on the To: or CC: line and the Subject: containing 
+"<category>/<tracking pr number>:", as shown below:
+
+Subject: PR 12345: Code review for new frombitz feature
+
+More info on valid Subject: line formats can be found ati:  
+http://www-in.juniper.net/useful_info/gnats-faq.html
+
+All the reviewers have to do is reply to the email with their review comments, making sure "bugs@juniper.net" is in the To: or CC: and their comments
+will be automagically archived to the pr. In the case of a meeting to review the specs, the owner will add the review comments to the audit trail of 
+the tracking pr themselves. Review comments would include who attended the meeting and the input provided by the reviewers.
+When the owner updates the spec in cvs, they include the changes made and the tracking pr number in the commit log, something like:
+
+pr: 12345
+Comments:
+
+Updates from spec review:
+- add description of ucode changes (jdoe)
+- remove the "annoy user" config command (bsmith)>
+
+
+20.1 REVIEW STAKEHOLDER MATRIX
+
+Function			Name			Required?	Approval State
+---------------------------------------------------------------------------------------------------------------
+SW (rpd rsvp)			Ravi Torvi		Yes		Approved/Rejected/Approved with actions
+SW Manager			Harish Sitaraman	Yes		Approved/Rejected/Approved with actions
+JAB							No		-
+Systest				Pom Kim			Yes		Approved/Rejected/Approved with actions
+Tech-pubs			Betsy Lichtenberg	Yes		Approved/Rejected/Approved with actions
+PLM				Sreedhevi Sankar	Yes		Approved/Rejected/Approved with actions
+JTAC							Optional	Approved/Rejected/Approved with actions
+HW							No		-
+---------------------------------------------------------------------------------------------------------------
+
+
+
+
+© Copyright 2011 Juniper Networks, Inc. -- Proprietary and Confidential – 
+Do not distribute outside of the company without the permission of Juniper Networks engineering
+Printed copies are for reference only!

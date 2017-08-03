@@ -1,0 +1,574 @@
+$Header: /cvs/juniper/sw-projects/os/nsr/software_spec.txt,v 1.8 2005/10/18 23:28:35 roque Exp $
+
+S3.02.P05.T01
+
+Non-Stop Routing (NSR) - Functional specification.
+
+Copyright (C) 2004, Juniper Networks, Inc.
+
+NOTICE: This document contains proprietary and confidential
+information of Juniper Networks, Inc. and must not be distributed
+outside of the company without the permission of Juniper Networks
+engineering.
+
+
+
+1.  INTRODUCTION
+
+The goal of Non-Stop Routing is to be able to fail-over between a
+primary and secondary Routing Engine without this being a visible
+event to routing protocol peers. This must be achieved without
+requiring protocol modifications or expecting co-operation from remote
+peers (i.e. the mechanism must be self-contained).
+
+This feature is targeted, in particular, for edge platforms where
+customer circuits are terminated. These systems usually represent
+single points of failure, as far as the customer network is
+concerned.
+
+Currently, graceful-restart, is the solution that Juniper proposes in
+order to maintain uninterrupted forwarding during an RE switch-over
+event. Graceful-restart, has several drawbacks: it requires protocol
+extensions in routing peers, which are often not present at the edge;
+it leads to using stale routing and forwarding information during
+potentially long periods while the restarting router is re-converging;
+it is not guaranteed to complete successfully given interdependencies
+between components.
+
+This project is integrated in the larger In-Service Software Upgrade
+(ISSU) project which aims to be able to upgrade the software load on a
+redundant platform without forwarding or routing interruptions. Thus,
+while NSRs initial deliveries targets are for hot-standby between REs
+running the same version of software, the long term goal is to be able
+to support hot-standby switch-over across distinct software versions.
+
+2.  FUNCTIONALITY
+
+2.1 Top level design
+
+For transparent fail-over of routing protocols between a primary and
+secondary RE to occur, it is required to replicate routing protocol
+information so that the secondary can take over.
+
+This is specially true for protocols that use incremental state
+changes, such as BGP and LDP. Without the knowledge of the exact state
+that has been exchanged with a network peer, it is not possible to
+generate incremental state updates for routing information.
+
+The design of the state replication, initial synchronization and
+switch-over procedures should be such that it takes in mind the
+performance impact of this mechanism in the primary.
+
+The routing engine on edge platforms is usually underpowered for the
+task at hand. If stateful replication of routing information adds more
+than a 10% - 20% overhead to the primary RE, it will become unusable
+for the purpose of hot-standby.
+
+One way to implement state replication between redundant components is
+to have the active component send messages to the standby for every
+state change that is performed in the data that we wish to see
+replicated.
+
+This typically requires the primary to wait for an acknowledgment
+before proceeding with subsequent actions that depend on having
+replicated the state in question.
+
+It is unlikely that such a design would meet the performance criteria
+that has been set above, when one considers the rate of change of
+routing information, which can be in the order of the 1000s/sec.
+
+Another aspect to take into account is that the design should
+accommodate state replication between different major releases. This
+requires that the messages exchanged avoid implementation details that
+are likely to change.
+
+Thus the messages exchanged between primary and secondary, for state
+replication, should be forwards/backwards compatible across releases
+and attempt to abstract implementation details from information that
+is key to the task at hand.
+
+This criteria is better met by using routing protocol messages
+them-selfs. They are necessarly implementation independent and
+backwards / forwards compatible.
+
+These two requirements from the centerpiece of the design for routing
+protocol state replication: the use of routing protocol messages
+exchanged between primary and network peers to reconstruct the routing
+information in the secondary RE.
+
+This approach relies on the secondary having the possibility of seeing
+all messages that are received (ACKed actually) by the primary from a
+network peer and also on being able to see all messages that are sent
+by the primary to a network peer.
+
+This should allow a routing protocol to reconstruct its inputs and
+also the output database consisting of the messages it has exchanged
+with the peer. Note that in this design the secondary rpd is not
+synchronized with the primary. Instead the secondary is synchronized
+with the network peer(s).
+
+The design also assumes that some information may be lost when a
+switch-over occurs. As long as no information on the peering sessions
+between the system and the network peer(s) occur, the secondary should
+be able to recover from this state.
+
+NSR depends on the existing GRES functionality. On switch-over, the
+secondary routing process, not only needs to make sure it updates
+network peers with any possible differences between previous and
+current state but also that is updates the forwarding table state.
+
+
+	   Primary RE		      Secondary RE
+          +---------------------+    +---------------------+
+          |     +------+        |    |     +------+        |
+          |     | rpd  | Master |    |     | rpd  |        |
+          |     +------+        |    |     +------+        |
+          |        || add/delete|    |        /\           |
+          |        \/           |    |        ||           |
+          | +---------------+   |    | +---------------+   |
+          | | kernel        |   |    | | kernel        |   |
+          | |               | ========>|               |   |
+          | +---------------+   |    | +---------------+   |
+          +---------------------+    +---------------------+
+
+			      Figure 1.
+
+Figure 1 above represents a system with two routing engines. While the
+primary RE is running, it is the authoritative source of forwarding
+information for the system. Routing information on the master is used
+to calculate forwarding entries which are installed in the kernel.
+
+This information is replicated, via GRES, to the secondary kernel (via
+ksyncd). It is then received by the secondary rpd, by listening to
+rtsock messages on the local routing socket.
+
+It is assumed that switch-over can occur at any point in time. This means
+that state changes may be flowing through the system and that messages
+from the primary may be lost.
+
+For example, the primary may have received a routing change and it has
+not yet done the resulting forwarding table update (or propagated it
+via GRES), when the switch-over occurs.
+
+When the secondary becomes the active RE, and its rpd becomes the
+authoritative source of forwarding information in the system, it must
+reconciliate the forwarding information present on the RE with the
+routing information that it has.
+
+2.2 Initial synchronization
+
+It is assumed that the secondary RE can be started (or fail) at any
+point in time. This means that there must be a mechanism to learn the
+current routing state present in the primary system.
+
+Future messages exchanged between primary and peer will give the
+secondary the up-to-date state, but it needs to be able to establish
+the base line of current state from querying the primary, at startup.
+
+This requires having an out-band mechanism, between primary and
+secondary, that can provide this initial state. The simplest way to
+achieve this is via TCP message exchange using the internal routing
+instance (__juniper_private1__).
+
+When possible it makes sense to use the same protocol messages that
+the secondary uses to recreate state to establish the initial starting
+point.
+
+This means that the primary should have the ability to "replay" the
+current per-peer input and output databases to the secondary.
+
+2.3 BGP
+
+BGP is a protocol that uses TCP sessions with incremental updates to
+exchange information with peers. It does so since it does process,
+under certain events, large change sets of information.
+While usually the message rate for BGP is reasonably low, the system
+must be designed to deal with the large message flow that may occur.
+
+At top-level, rpd's BGP implementation can be described as follows:
+
+- Received advertisements are stored in the RIB. The original metrics
+  as part of rt_data and the post import policy metrics as the
+  attributes of the routing table entry.
+
+- Route changes are communicate to all routing protocols via rt_flash
+  callback.
+
+- BGP rt_flash callback runs export policy on the active route for a
+  prefix and calculates the desired state to advertise.
+
+- This desired state is compared with the previously advertised state
+  (rib-out). If the state is the same, any enqueued updates are
+  discarded. Otherwise a new update is enqueued to update the
+  neighbor state.
+
+  output processing
+|------------------------------------------------------------------|
+		    policy			    cmp
+  {routing-table} =========> {desired peer state} <=====> {rib-out}
+
+	if delta(desired - current)
+	    then enqueue advertisement
+
+	when advertisement is sent to peer
+	    => update rib-out w/ new current state.
+|------------------------------------------------------------------|
+
+For stateful replication, BGP will use a copy of messages received by
+the primary (from a peer) in order to construct the RIB entries, both
+pre-policy and post policy information.
+
+Simultaneously, it will use a copy of the messages sent from the
+primary to network peers in order to build the rib-out state (what
+metrics where previously advertised).
+
+Thus, while secondary, the rib-out state is created by snooping
+outgoing messages from the secondary and the rt_flash path can be
+disabled.
+
+When switch-over occurs, BGP will register its flash routine and all
+routes must be re-examined such that their desired output metrics are
+calculated, for each group.
+
+2.4 Resolver
+
+Route resolution will run on the secondary RE, so that the secondary
+can independently determine the reachability state for routes.
+
+It is necessary to do so, so that at switch-over time, the secondary
+can immediately determine the state of an indirect route, without the
+need to create a switch-over procedure with extensive
+dependencies. Such dependencies could easily become cyclical, e.g. BGP
+routes may resolve over other BGP routes that in turn resolve over an
+IGP route.
+
+The secondary cannot, however, create corresponding indirect next-hop
+state, i.e. the krt_inh database which is created by the primary.
+
+As secondary, the KRT module, should attempt to learn via the rtsock
+interface, which are the current mappings in place between inh index
+and forwarding next-hops.
+
+This information can be use as an "hint" at switch-over time, in order
+to populate the contents of the krt_inh_db.  The indirect next hop
+state in the kernel will need to be augmented with protocol next hop
+address and VPN tag information.  This information is used as a key
+for mapping between an inh and its forwarding next hops.
+
+At switch-over time:
+- when associating a resolved path with an indirect next-hop, if no
+match is found in the database,
+
+- search the inh information learned as secondary for entries with the
+same <protocol next-hop, label>.
+
+- if multiple entries are found, an entry with the same forwarding
+next-hop as calculated by resolution consists on an exact match.
+
+- otherwise, crate a new entry (forwarding state changes).
+
+
+2.5 KRT
+
+As mentioned in the previous section, KRT will monitor indirect next
+hop state replicated from the primary via GRES.  In addition, KRT will
+monitor routing table, route and interface state.
+
+Monitoring of kernel state will be passive, meaning that no updates
+are permitted.  This implies no table, route, next hop, interface and
+IFDEST updates.
+
+KRT's flash routine will be disabled since its main purpose is to
+diff RIB and FIB state and schedule the necessary updates.
+
+Initial startup should be similar to the primary except that there
+will be no purging of kernel route and indirect next hop state since
+it is desired to cache the replicated state of the primary.  As
+indicated in 2.4, indirect next hop state will be cached in a
+secondary database to be used as a 'hint' when a switchover occurs.
+
+Upon a switchover event, KRT's flash routine will be reenabled and the
+necessary updates to resynchronize the kernel with rpd will be scheduled.
+
+
+2.6 RSVP
+
+The implementation of RSVP LSPs comprises of two modules.
+
+i) MPLS module - deals with configuration, path computation, 
+originating certain signaling parameters for the LSP, association of
+configuration to signaling parameters (client to RSVP). This module 
+only exists on ingress LSR.
+ii) RSVP module - deals with just the signaled state, maintains
+backward association to the MPLS module (if any) that owns the
+signaled state.
+
+At the head-end, the usual sequence of events on a commit is that
+MPLS will parse the config and create tunnels (pvcs) and one or more
+paths (paths: primary, secondary) for each tunnel. It will then
+perform path computation, remember which paths take which links and
+on a successful path computation will initiate path setup via RSVP
+for each path. Note that signaling parameters which RSVP signals is
+actually set by MPLS and passed on to RSVP.
+
+At the transit, there is usually no MPLS state. RSVP states are
+created and removed purely based on messages coming from neighbors.
+The exception is link protection or FRR.
+
+
+Re-creating MPLS/RSVP states on secondary RE
+---------------------------------------------
+
+MPLS module:-
+
+   - configuration will be present on secondary RE
+   - issue is creation of pvcs and paths since it is difficult to
+   do that based on just RSVP messages. May need out-of-band
+   communication for this. Then there is the part where MPLS states
+   get associated with RSVP states. This could happen after
+   switchover.
+   - TE database needs to be maintained by IGPs on secondary RE
+   - CSPF cross-connects (relationship between paths and links that
+   they traverse) needs to be kept. May not be worthwhile doing this
+   when secondary RE is slave, since this involves CSPF computations
+   on secondary RE. It may be worthwhile postponing this to after
+   switchover.
+
+RSVP module:-
+
+On the secondary RE,
+
+   - states (sblk, psb, rsb, tcb) need to be maintained by snooping
+   outgoing and incoming messages. Would be nice if the states can 
+   be re-created purely based on message snooping.
+   - RSVP neighbor state and associated local state per neighbor 
+   will need to be maintained (instance sensitive hellos,
+   i.e. change in certain contents of Hellos can cause neighbor down
+   event)
+   - no independent label allocation decisions. Allocate labels
+   based on snooped messages.
+   - need to be able to determine if src or transit LSR based on 
+   messages.
+   - association with corresponding mpls state may not be available
+   or needed when secondary RE is slave. We may need to get this
+   association right, only after switchover.
+   - continue to add/delete RSVP routes.
+
+For NSR, there may be a need to change the sequence and trigger for
+RSVP state creation on the secondary RE. Essentially, RSVP may have
+to start looking at incoming and outgoing Path/Resv/PathTear
+/ResvTear messages and start creating/deleting states. On transit,
+this is only natural, but on ingress this would be done independent
+of MPLS, similar to what it would do on a transit.
+
+MPLS would need to maintain tunnels (pvcs), paths (primary/secondary)
+notion of active path; etc based on out-of-band info. This should be
+fairly static. Once the switchover happens, go through regular
+commit process, re-compute (re-validate) paths in CSPF, to establish
+the association between paths and links and instead of creating new
+RSVP states for all the paths, we may need to simply lookup existing
+RSVP states based on path params and associate the MPLS states to
+the corresponding RSVP states.
+
+The idea would be to try and have wrappers to handle snooped messages
+or out-of-band messaging and translate this into corresponding state
+creation. We will try not to execute regular code paths on the
+secondary RE (when it is slave). So, the notion that the RE is in 
+the "slave mode" needs to be present in the RSVP and MPLS modules.
+After switchover, hopefully all the information is present and we
+can switch modes to "regular or master mode".
+
+Outstanding issues to be looked into
+------------------------------------
+
+o What about sequence no. and or self ID: locally significant and
+  associated with an RSVP PSB...if this is part of nexthop info
+  (tag), how do I maintain this ? Currently these IDs are allocated
+  by RSVP and are random numbers...can we change ownership ? can we
+  make these number assignment more predictable ? What would be the
+  effect of not maintaining these IDs across the REs ?
+
+o Explore CCC dependencies
+o Explore LSP advertisement (IGP) dependencies 
+o Explore GMPLS (LMP/LMPD) dependencies
+o Computations on transit - these can take place due to FRR
+  computations for backups or in the future for loose-hop expansion.
+  How do we handle these ? Do these need any additional effort ?
+
+2.7 Commit processing
+
+A prerequisite for NSR is to sync the configuration on the secondary
+to the primary.  This insures that the secondary doesn't attempt to
+reconcile state for unknown configuration.  There is, however, a
+problem with configuration changes.  A small window exists during a
+commit sync in which the primary can begin to replicate state for new
+configuration before the secondary has reconfigured.
+
+To forestall this possibility, the following protocol can be used:
+
+   1. On rpd_reconfig() on primary:
+      a) First step is to send a msg to secondary to inform it that
+         commit has started on primary.
+
+      b) Before exiting from reconfig, it waits for an ACK from the
+         secondary. i.e. primary can go ahead and parse config,
+         init(?), and reinit(?), but not exit into regular operation
+         until secondary ACKs it. Or timeout occurs... timeout must be
+         within quite strict boundaries.
+
+   2. On secondary...
+
+      a) On the receipt of primary message, ACK it immediatly...
+      b) enter stage where we wait for SIGHUP...
+
+2.8 Consistency/monitoring
+
+2.9 CLI
+
+As mentioned in 2.1, NSR depends on GRES.  No additional configuration
+knob is planned to enable NSR.  Setting [ chassis redundancy
+graceful-switchover enable ] will enable NSR unless graceful-restart
+is configured, in which case graceful restart takes precendence.
+
+No new commands are planned.
+
+3.  CAVEATS
+
+3.1 Primary/Secondary RE Detection and Switchover Signaling
+
+Indication of the Primary/Secondary state of the RE on which rpd is
+running are necessary, as well as an indication of a switchover.  The
+former is handled by the mcontrol_re API.  The latter is a new
+functional requirement.
+
+Mastership changes can be indicated via a UNIX signal.  One problem,
+however, is that the standard UNIX signal number space is nearly or
+completely depleted.  SIGVTALRM is a possibility.  The init process
+needs to be updated to send this signal instead of restarting the
+daemon.  Currently, only chassisd is not restarted on a switchover.  A
+proposal is to add a new mode to init.conf:
+
+    process "routing" {
+        mode signal-on-failover; # new mode to signal process on RE failover
+    }
+
+4.  OTHER REQUIREMENTS
+
+{As necessary, outline the general implementation requirements *not*
+covered in the project requirements (RLIs, etc.) and call out any
+specific additional requirements for protocols, edge cases, etc.  If
+there is a significant amount of the latter then you should break this
+section down in to subsections.}
+
+
+[=== Everything from here down is internal (white box) documentation
+and should not be documented or related to customers without a
+specific need. (e.g. customer support workarounds for critical issues,
+performance targets where the performance is the feature, etc.) ===]
+
+
+5.  IMPLEMENTATION DETAILS
+
+{As necessary, give a description of the internal implementation
+details.}
+
+a., b., c. {description of implementation of functional sub-areas}
+
+{As necessary, describe the internal implementation details including
+each of the following which are relevant to the functionality:
+
+Goals (and non-goals}
+Assumptions
+Description of the implementation
+    Description of whether the work is wholly new or extends existing work
+    Components
+    Data structures
+    Algorithms
+Rationale (for the design decisions made -- useful for the next person
+	  who touches this code)
+Internal APIs/Messages (and intent)
+Constraints and limitations
+Examples or interaction description
+}
+
+
+6.  PERFORMANCE
+
+{As necessary, describe any performance issues or that there are
+none.}
+
+6.1.  Performance Related Resources
+
+{As necessary, Describe the resource bottlenecks (e.g. CPU, RAM,
+interface bandwidth, # of logical interfaces, etc.) of the function
+and the general assumptions underlying any given performance
+calculation.}
+
+6.2.  Target Performance
+
+{As necessary and appropriate, describe the target performance.  Where
+possible, justify this target based on the resource estimates.
+Specify if this target performance is based on believed maximum
+performance of the function or based on a comfortably achievable
+number.  Where relevant, specify where conditions will reduce the
+performance below the target performance (e.g. extended functionality,
+other load on the box, etc.).  It is also useful to return to this
+section and fill in the actual tested performance when the numbers are
+available.}
+
+
+7.  COMPATIBILITY ISSUES
+
+{As necessary, list any issues related to migration,
+backwards/forwards compatibility, etc.  This would include any places
+where config will break, config will be deprecated, network layouts
+must change, the feature will or will not work with new or old
+hardware, etc.}
+
+
+8.  SECURITY ISSUES
+
+{As necessary, list any security considerations or issues here.}
+
+
+9.  NOTES
+
+{As necessary, add any additional notes which do not fit in the above
+sections.}
+
+
+10.  GLOSSARY
+
+{As necessary, define any terms or acronyms used.}
+
+
+11.  REVIEW COMMENTS
+
+{We use the audit trail of the RLI tracking PR to record review comments,
+so please include a pointer to the pr here. If the spec review is done
+via email, the owner of the spec will send it out for comments with
+"bugs@juniper.net" included on the To: or CC: line and the Subject:
+containing "<catagory>/<tracking pr number>:", as shown below:
+
+Subject: rli/12345: Code review for new frombitz feature
+
+More info on valid Subject: line formats can be found at
+http://www-in.juniper.net/useful_info/gnats-faq.html. All the reviewers
+have to do is reply to the email with their review comments, making
+sure "bugs@juniper.net" is in the To: or CC: and their comments will
+be automagically archived to the pr. In the case of a meeting to
+review the specs, the owner will add the review comments to the audit
+trail of the tracking pr themselves. Review comments would include who
+attended the meeting and the input provided by the reviewers.
+
+When the owner updates the spec in cvs, they include the changes
+made and the tracking pr number in the commit log, something like:
+
+   pr: 12345
+   Comments:
+
+   Updates from spec review:
+
+   - add description of ucode changes (jdoe)
+   - remove the "annoy user" config command (bsmith)
+}

@@ -1,0 +1,1117 @@
+$Id: unit_test_plan.txt,v 1.4 2008/03/20 23:16:13 srik Exp $
+
+S3.02.P05.T02
+{Standard Unit Test Plan Template}
+
+Copyright (C) 2007, Juniper Networks, Inc.
+
+NOTICE: This document contains the proprietary and confidential
+information of Juniper Networks, Inc., and must not be
+distributed outside of the company without the
+permission of Juniper Engineering.
+
+[This document is a template for a standard unit test plan for use in
+Juniper engineering projects.  To use this document just change the
+contents of appropriate sections (marked with {}).  ANYTHING NOT
+MARKED 'AS NECESSARY' MUST BE INCLUDED.  If you do not need to fill
+out a section, leave it blank or mark it n/a -- do not delete it.
+
+1.  INTRODUCTION
+
+When nonstop-routing is configured on a router, the current BGP implementation
+doesn't have the ability to provide receiving-speaker (graceful-restart
+helper) support for peers that support graceful-restart functionality.
+
+In the event of a BGP peer router failure, although the peer router has 
+the capability to support Non Stop Forwarding, we would end up removing all
+the routes learnt from this peer from our routing-table. Any bestpaths
+learnt from this peer would thus be removed from the forwarding table.
+New bestpaths would be calculated and advertised to peers. Thus, there won't
+be any traffic sent towards the restarting router although it has retained
+its forwarding state and is capable of forwarding traffic during its
+control-plane restart.
+
+Eventually, the peer router will come up and re-establish the bgp session.
+All the prefixes will be relearnt and the network will reconverge.
+
+This RLI enables support for bgp graceful-restart receiving-speaker
+capability. We would advertise receiving-speaker capability for all
+negotiated NLRIs. On a peer restart, we would mark the routes learnt
+from this peer as stale, but would continue to retain forwarding state for
+any bestpaths from this peer. Further there won't be any bestpath
+recalculation based on this peer restart. Traffic will continue to be
+forwarded towards this peer. The paths will be unstaled when the peer
+comes up and reestablishes bgp peering and announces those paths again
+within the configured graceful-restart timing parameters.
+
+Configuration
+-------------
+There is no explicit configuration required to enable the bgp receiving-
+speaker functionality when nonstop-routing is enabled under routing-options.
+If a peer is capable of providing restarting-speaker functionality,
+the receving-speaker functionality is provided by default.
+
+We can disable receiving-speaker support for a given peer/group/completely
+by setting "disable" under "graceful-restart" stanza.
+
+[JUNOS-BGP-GR] describes the BGP graceful-restart functionality and the JUNOS
+implementation.
+
+[BGP-GR] is the RFC describing the gracefl-restart feature itself and
+describes the advantages of supporting the receiving-speaker (helper mode)
+capability.
+
+Traceability information
+
+    Target product        : JUNOS
+    Target JUNOS release  : 9.2R1
+    RLI                   : 3776
+    NPI Program           : 326 JUNOS Non-Stop Routing (NSR)
+    Tracking PR           : 262208
+
+Functional Spec: sw-projects/os/nsr/rpd/bgp/graceful-restart/funcspec.txt
+
+Referenced documents and RLIs
+
+    [BGP-GR] "Graceful Restart Mechanism for BGP" under RFC 4724 at
+    http://www.ietf.org/rfc/rfc4724.txt", January 2007.
+
+    [JUNOS-BGP-GR] "JUNOS BGP graceful-restart implementation" under
+    sw-projects/routing/bgp/graaceful-restart/funcspec.txt
+
+    [JUNOS-BGP-NSR] "JUNOS BGP nonstop-routing implementation" under
+    sw-projects/os/nsr/bgp-design.txt
+
+
+2.  SETUP
+
+{Describe any setup, configuration, tools, test environment, data
+etc. necessary to host the tests.}
+
+Config 1
+--------
+            +-------+                   +-------+
+            |       |----- iBGP --------|       |
+            | DUT   |                   | Peer1 |
+            |       | v4 and v6 unicast |       |
+            |       | NLRIs enabled     |       |
+            +-------+                   +-------+
+                |
+                |eBGP (v4 and v6 unicast NLRIs enabled)
+                |
+            +-------+
+            |       |
+            | Peer2 |
+            |       |
+            +-------+
+
+Configure ipv4 and ipv6 static routes on Peer1 and Peer2 and with a policy 
+to redistribute them into bgp. These routes are announced to the DUT.
+
+Config 2
+--------
+              DUT                       
+            +-------+                   +-------+
+            |       |----- iBGP --------|       |   vrf, l2vpn and
+            | PE1   | inet-vpn, l2vpn-  |  PE2  |   vpls routing-
+            |       | signaling NLRI    |       |   instances
+            |       |                   |       |   configured
+            +-------+                   +-------+
+              ||| multiple routing-
+              ||| instances. (vpls, l2vpn
+              ||| vrf - bgp as pe-ce
+              ||| protocol)
+            +-------+
+            |       |
+            |  CEs  |
+            |       |
+            +-------+
+
+Configure varous routing-instances of instance-types vpls, l2vpn and vrf
+on the DUT (PE1) and PE2. BGP is used as the PE-CE routing protocol for
+the vrf routing-instances. VPN (inet-vpn and l2vpn-signaling) NLRIs
+are configured between the PEs (PE1 and PE2) so that they exchange
+VPN NLRIs.
+                    
+Config 3
+--------
+                                            DUT
+            +-------+                   +---------+
+            |       |----- iBGP --------|         |
+            | PE1   | inet, inet-vpn,   | Route   |
+            |       | l2vpn signaling   |Reflector|
+            |       |    NLRI           |         |
+            +-------+                   +---------+
+              ||| multiple routing-
+              ||| instances. (vpls, l2vpn
+              ||| vrf - bgp as pe-ce
+              ||| protocol)
+            +-------+
+            |       |
+            |  CEs  |
+            |       |
+            +-------+
+
+Similar topology as Config 2. PE2 is the DUT and configured as the 
+Route Reflector. PE1 advertises inet, inet-vpn and l2vpn signaling
+routes to the DUT.
+
+3. FUNCTIONAL TEST CASES
+
+Common Show/debug commands to verify test case results:
+
+1. Common show commands for most of the tests:
+    - show route
+    - show route protocol bgp
+    - show route receive-protocol bgp
+    - show route advertising-protocol bgp
+    - show route forwarding-table
+
+2. Debugs enabled for tests:
+    - rtsockmon -t      # to monitor rpd -> kernel route activity
+    - protocols bgp {
+        traceoptions {
+            file bgp.log
+            flag all detail
+        }
+      }
+
+3. Hints to look for in the bgp.log file:
+
+Search for bgp_restart_timeout. During the peer restart, when the bgp session 
+doesn't get established before the restart-time, this is the entry point 
+to delete all the stale routes.
+
+Search for bgp_stale_rt_timeout. During the peer restart, when the bgp 
+session gets established within the restart-time, but when no routes/some
+routes aren't learnt before the stale-route-time, this is the entry point
+to delete all the stale routes.
+
+4. Example show command outputs when route becomes stale on DUT
+
+show route receive-protocol bgp 5.5.5.2 detail
+
+Master rpd
+----------
+inet.0: 44 destinations, 46 routes (43 active, 0 holddown, 1 hidden)
+* 199.0.0.0/24 (1 entry, 1 announced)
+     Stale
+     Nexthop: 11.11.1.2
+     Localpref: 100
+     AS path: I
+
+ce-2.inet.0: 7 destinations, 7 routes (5 active, 0 holddown, 2 hidden)
+
+* 200.200.1.0/24 (1 entry, 1 announced)
+     Stale
+     Route Distinguisher: 1.0.0.0:1
+     VPN Label: 299904
+     Nexthop: 5.5.5.2
+     Localpref: 100
+     AS path: I
+     Communities: target:100:1
+
+bgp.l3vpn.0: 4 destinations, 4 routes (4 active, 0 holddown, 0 hidden)
+
+* 1.0.0.0:1:200.200.1.0/24 (1 entry, 0 announced)
+     Stale
+     Route Distinguisher: 1.0.0.0:1
+     VPN Label: 299808
+     Nexthop: 5.5.5.2
+     Localpref: 100
+     AS path: I
+     Communities: target:100:1
+
+vpls1.l2vpn.0: 3 destinations, 3 routes (3 active, 0 holddown, 0 hidden)
+
+* 1.0.0.0:1:1:1/96 (1 entry, 1 announced)
+     Stale
+     Route Distinguisher: 1.0.0.0:1
+     Label-base: 262169, range: 8
+     Nexthop: 5.5.5.2
+     Localpref: 100
+     AS path: I
+     Communities: target:300:1 Layer2-info: encaps:VPLS, control flags:, mtu: 0
+
+bgp.l2vpn.0: 2 destinations, 2 routes (2 active, 0 holddown, 0 hidden)
+
+* 1.0.0.0:1:1:1/96 (1 entry, 0 announced)
+     Stale
+     Route Distinguisher: 1.0.0.0:1
+     Label-base: 262169, range: 8
+     Nexthop: 5.5.5.2
+     Localpref: 100
+     AS path: I
+     Communities: target:300:1 Layer2-info: encaps:VPLS, control flags:, mtu: 0
+
+Backup rpd
+----------
+* When the Master rpd detects the peer has restarted, the session is terminated.
+  This ends up in backup rpd deleting all the routes learnt from
+  the peer that went down.
+
+Testcases
+---------
+Note: All the testcases are repeated with the 3 different configurations
+listed above. 
+
+3.1 Graceful-restart capability negotiation
+
+Goal:
+    - Verify if DUT has announced graceful restart receiving-peer support
+      only (not restarting peer support) to the peers.
+    - Verify if the DUT does correct graceful-restart capability negotiation
+      and honors peer's graceful-restart restarting-peer capability.
+
+Test steps:
+    1. configure nonstop-routing on the DUT
+    2. configure graceful-restart on the peer
+
+Success Criteria:
+
+* on DUT
+
+master rpd
+----------
+show bgp neighbor <peer address>
+
+  Restart time configured on the peer: 120
+  Stale routes from peer are kept for: 300
+  Restart time requested by this peer: 120
+  NLRI that peer supports restart for: inet-unicast inet-vpn-unicast
+l2vpn-signaling
+  NLRI peer can save forwarding state: inet-unicast inet-vpn-unicast
+l2vpn-signaling
+  NLRI that peer saved forwarding for: inet-unicast inet-vpn-unicast
+l2vpn-signaling
+  NLRI that restart is negotiated for: inet-unicast inet-vpn-unicast
+l2vpn-signaling
+  NLRI of received end-of-rib markers: inet-unicast inet-vpn-unicast
+l2vpn-signaling
+  NLRI of all end-of-rib markers sent: inet-unicast inet-vpn-unicast
+l2vpn-signaling
+
+backup rpd
+----------
+the back rpd also displays the following output:
+
+  Restart time configured on the peer: 120
+  Stale routes from peer are kept for: 300
+  Restart time requested by this peer: 120
+  NLRI that peer supports restart for: inet-unicast inet-vpn-unicast
+l2vpn-signaling
+  NLRI peer can save forwarding state: inet-unicast inet-vpn-unicast
+l2vpn-signaling
+  NLRI that restart is negotiated for: inet-unicast inet-vpn-unicast
+l2vpn-signaling
+
+* the received end-of-rib information and the forwarding state peer state
+isn't displayed.
+
+From DUT's bgp traceoptions (only on the master RE):
+
+    Another way to verify this is to enable bgp traceoptions in the DUT and 
+    verify it gets sent out in the Open message.
+
+--- snip ---
+Mar  8 02:14:41.190668 advertising receiving-speaker only capabilty to
+neighbor 5.5.5.2 (Internal AS 200)
+...
+Mar  8 02:14:41.190787 BGP SEND message type 1 (Open) length 75
+...
+Mar  8 02:14:41.190915 BGP SEND Restart capability, code=64, time=120, flags=
+--- snip ---
+
+* From the above, we see that the DUT doesn't specify any AFIs/SAFIs 
+  as part of the graceful-restart capability in the Open message.
+
+Results:
+    Pass
+
+3.2. Valid GR-helper Scenarios
+
+These are the scenarios where the DUT would offer receiving-speaker
+support when bgp peer(s) restart.
+
+Remote peer is restarted using one of the following mechanisms
+    - rpd restart (if peer is junos: restart routing immediately/kill rpd,
+      resulting in a tcp reset)
+      * if peer is junos, we can rm /usr/sbin/rpd and restart routing
+        immediately as well.
+    - reset tcp connection
+    - peer RE switchover
+
+Note: For tests that involve the peer announing of a subset of routes
+      to the DUT compared to what it had announced before, the DUT
+      immediately purges the stale routes after the peer sends an EOR.
+      If we need to test the stale timer itself, we need to run modified
+      code in the peer such that it never sends an EOR or defers it
+      until the DUT's stale-route-timer expires. Examples of such
+      testcases are 3.2.2, 3.2.3.
+
+
+3.2.1 Restart-time
+
+    Goal: Verify that the DUT performs the procedures of receiving-speaker.
+
+    Test steps:
+        1. Enable nonstop-routing on the DUT
+        2. Configure "restart-time" to a very small value (say 1 second)
+        3. Remote peer is restarted using one of the mechanisms
+
+    Success Criteria:
+        1. Routes learnt from the restarting speaker should be marked stale.
+        2. The peer doesn't establish the connection within the "restart-time"
+           and all Stale routes are purged from rpd, kernel and PFE.
+
+    Results:
+        Pass
+
+3.2.2 Stale-routes-time
+
+    Goal: Verify that the DUT performs the procedures of receiving-speaker.
+
+    Test steps:
+        1. Enable nonstop-routing on the DUT
+        2. Configure "stale-routes-time" to a very small value (say 1 second).
+           This step is optional.
+        3. Peer is restarted using one of the mechanisms and it
+           establishes the session.
+        4. Make the peer not to advertise the routes it had advertised
+           before (eg: deactivate import of static routes)
+
+    Success Criteria:
+        1. Routes learnt from the restarting speaker should be marked stale
+           after step 3.
+        2. After re-establishing the session, the DUT waits for "stale-route-
+           time" seconds or until an EOR is received and purges the Stale 
+           routes since the peer doesn't advertise them again. Verify the 
+           Stale routes are purged from rpd, kernel and PFE.
+
+    Results:
+        Pass
+
+3.2.3 Partial re-announcement
+
+    Goal: Verify that the DUT performs the procedures of receiving-speaker.
+
+    Test steps:
+        1. Enable nonstop-routing on the DUT
+        2. Peer is restarted using one of the mechanisms and it
+           establishes the session.
+        3. Make the peer advertise a subset of routes it had advertised
+           before (eg: delete a static route from the config)
+
+    Success Criteria:
+        1. Routes learnt from the restarting speaker should be marked stale
+           after step 2.
+        2. The re-advertised routes are unstaled. These routes are not
+           re-downloaded to the kernel and PFE.
+        3. The routes that aren't advertised are removed when an EOR
+           is received or after "stale-route time" seconds and purged from rpd,
+            kernel and PFE.
+
+    Results:
+        Pass
+
+3.2.4 Full re-announcement
+
+    Goal: Verify that the DUT performs the procedures of receiving-speaker.
+
+    Test steps:
+        1. Enable nonstop-routing on the DUT
+        2. Peer is restarted using one of the mechanisms and it
+           establishes the session.
+
+    Success Criteria:
+        1. Routes learnt from the restarting speaker should be marked stale
+           after step 2.
+        2. All the stale routes are unstaled. These routes are not
+           re-downloaded to the kernel and PFE.
+
+    Results:
+        Pass
+
+3.3. Valid configuration changes
+
+3.3.1 restart-time
+
+    Goal: Verify that changes to restart-time (under graceful-restart stanza)
+          are allowed and the correct behavior is achieved.
+
+    Test steps:
+        Refer test 3.2.1
+
+    Success Criteria:
+        Refer test 3.2.1
+
+    Results:
+        Pass
+
+3.3.2 stale-routes-time
+
+    Goal: Verify that changes to stale-routes-time (under graceful-restart 
+          stanza) are allowed and the correct behavior is achieved.
+
+    Test steps:
+        Refer test 3.2.2
+
+    Success Criteria:
+        Refer test 3.2.2
+
+    Results:
+        Pass
+
+3.3.3 Disabling receiving-speaker functionality
+
+    Goal: Verify that the DUT does not perform the procedures of 
+          receiving-speaker.
+
+    Test steps:
+        1. Enable nonstop-routing on the DUT
+        2. configure "graceful-restart disable" (under top level, group,
+           neighbor)
+        3. Peer is restarted using one of the mechanisms and it
+           establishes the session.
+
+    Success Criteria:
+        1. Routes learnt from the peer are immediately deleted 
+           from rpd, kernel and PFE.
+
+    Results:
+        Pass
+
+3.3.4 Enabling back receiving-speaker functionality
+
+    Goal: Verify that the DUT starts performing the procedures of 
+          receiving-speaker.
+
+    Test steps:
+        1. Begin test 3.3.3 and follow steps 1-3.
+        4. Delete "graceful-restart" (under top level, group,
+           neighbor) and commit.
+        2. Peer is restarted using one of the mechanisms and it
+           establishes the session.
+
+    Success Criteria:
+        1. Routes learnt from the peer are staled and the GR receiving-speaker
+           procedures are followed.
+
+    Results:
+        Pass
+
+3.4. Invalid GR helper scenarios
+
+The following are the scenarios where the DUT doesen't perform the
+procedures of the receiving-speaker:
+
+3.4.1 Interface down
+
+    Goal: Verify that the DUT does not perform the procedures of 
+          receiving-speaker.
+
+    Test steps:
+        1. Enable nonstop-routing on the DUT
+        2. Let the directly connected eBGP peer come up and announce its routes.
+        3. Make the interface down (eg: through config on the peer's end)
+
+    Success Criteria:
+        1. Routes learnt from the peer are immediately deleted 
+           from rpd, kernel and PFE. Since the link itself has been
+           detected as down we cannot forward traffic from the peer. Hence
+           the routes learnt from the peer are immediately removed.
+
+    Results:
+        Pass
+
+3.4.2 Hold timer expiry
+
+    Goal: Verify that the DUT does not perform the procedures of 
+          receiving-speaker.
+
+    Test steps:
+        1. Enable nonstop-routing on the DUT
+        2. Let an iBGP peer come up and announce its routes.
+        3. Make the interface down (eg: through config on the peer's end)
+           to cause the hold timer on the DUT to expire.
+
+    Success Criteria:
+        1. Routes learnt from the peer are immediately deleted 
+           from rpd, kernel and PFE when the hold timer on the DUT expires.
+
+    Results:
+        Pass
+
+3.4.3 Cease notification
+
+    Goal: Verify that the DUT does not perform the procedures of 
+          receiving-speaker.
+
+    Test steps:
+        1. Enable nonstop-routing on the DUT
+        2. Let the peer come up and announce its routes.
+        3. Deconfigure the peer on the remote end causing it to send
+           a Cease notification to the DUT.
+
+    Success Criteria:
+        1. Routes learnt from the peer are immediately deleted 
+           from rpd, kernel and PFE when the Cease notification is received.
+
+    Results:
+        Pass
+
+3.5 Enable nonstop-routing
+
+    Goal: Verify graceful-restart capability is negotiated when nonstop-
+          routing is configured for the first time.
+
+    Test steps:
+        1. Enable nonstop-routing on the DUT
+        2. Enable gracaeful-restart on the peer(s)
+
+    Success Criteria:
+        Check all outputs from test 3.1.
+
+    Results:
+        Pass
+
+3.6 Deactivate nonstop-routing
+
+    Goal: Verify graceful-restart capability is not-negotiated when nonstop-
+          routing is deactivated.
+
+    Test steps:
+        1. Deactivate nonstop-routing on the DUT
+        2. Enable gracaeful-restart on the peer(s)
+
+    Success Criteria:
+        Check all outputs from test 3.1.
+        1. The DUT should not be announcing graceful-restart receiving-
+           speaker capability in its Open message.
+        2. show bgp neighbor <> should not have graceful-restart specific
+           fields.
+
+    Results:
+        Pass
+
+3.7 Disable graceful-restart on peer
+
+    Goal: Verify graceful-restart capability is not-negotiated when nonstop-
+          routing is configured on the DUT and not on the peer(s).
+
+    Test steps:
+        1. Enable nonstop-routing on the DUT
+        2. Deactivate graceful-restart on the peer(s)
+           * note: if peer is junos, configuring nonstop-routing doesn't
+                   send graceful-restart restarting-peer capabily
+
+    Success Criteria:
+        Check all outputs from test 3.1.
+        1. The DUT should  be announcing graceful-restart receiving-
+           speaker capability in its Open message.
+        2. show bgp neighbor <peer> should not have graceful-restart specific
+           fields.
+        3. show bgp neighbor <DUT> on the peer(s) can be checked as well.
+
+    Results:
+        Pass with cosmetic issue. We display gr enabled in the show command, 
+        but functionally, don't do GR on a peer restart.
+
+3.8 Restaring-speaker capability
+
+    Goal: Verify the DUT does not announce restarting-speaker capability
+          when nonstop-routing is configured.
+
+    Test steps:
+        1. Enable nonstop-routing on the DUT
+        2. two cases:
+            a. Activate graceful-restart on the peer(s)
+            b. Deactivate graceful-restart on the peer(s)
+
+    Success Criteria:
+        1. show bgp neighbor <DUT> on the peer should not have contain
+           graceful-restart specific fields. It still shows eor related
+           fields denoting that the DUT supports graceful restart
+           receiving-peer capabilities
+
+    Results:
+        Pass.
+
+3.9 Graceful-restart post Switchover
+
+    Goal: Verify that the DUT can perform graceful-restart receiving-peer
+          functionality post an RE Switchover for a peer that was established
+          prior to Switchover.
+
+    Test steps:
+        1. Enable nonstop-routing on the DUT
+        2. Activate graceful-restart on the peer(s)
+        3. Bring the peer up.
+        4. Perform a RE Switchover on the DUT
+        5. Restart the peer
+
+    Success Criteria:
+        1. After step 5, DUT still peforms the procedures of the
+           receiving-speaker.
+
+    Results:
+        Pass
+
+3.10 MD5 configuration
+
+    Goal: Verify test 3.9 with MD5 configuration.
+
+    Test steps:
+        Same as test 3.9. The peers have MD5 configured.
+
+    Success Criteria:
+        Same as test 3.9.
+
+    Results:
+        Not tested.
+
+NSR Note
+--------
+There could be protocols that don't support NSR. If such a protocol is
+configured on the DUT, the backup RE deals with it in a case by case basis.
+Even though NSR for a given protocol may not be supported, as long as 
+graceful-restart is supported for the protocol, the DUT will still provide 
+graceful-restart helper-mode functionality for that protocol.
+
+Below are some examples:
+
+- Under protocols bgp, if "family <family-name> any" is configured, the
+  BGP sessions in the backup stay down. This is because multicast NSR
+  isn't yet supported.
+
+- If RSVP is configured in the core, the remote PE routes will show up
+  as hidden on the backup RE. The reason is that the LSP to reach the
+  remote PE isn't present on the backup RE due to lack of NSR support
+  for RSVP.
+
+4.  BOUNDARY TEST CASES
+
+4.1 Multiple restarts
+
+4.1.1 No route-announcement
+
+    Goal: Verify that the DUT performs the procedures of receiving-speaker
+          and correctly handles the case when the peer restarts again
+          while the peer is being helped.
+
+    Test steps:
+        1. Enable nonstop-routing on the DUT
+        2. Peer is restarted using one of the mechanisms and it
+           establishes the session.
+        3. Peer restarts again before announcing any routes.
+
+    Success Criteria:
+        1. Routes learnt from the restarting speaker should be marked stale
+           after step 2.
+        2. After step 3, all Stale routes are purged immediately from rpd, 
+           kernel and PFE.
+
+    Results:
+        Pass
+
+4.1.2 Partial route-announcement
+
+    Goal: Verify that the while perofming the procedures of receiving-speaker
+          the DUT correctly handles the case when the peer restarts again
+          after having announced a subset of routes it had anounced before
+          while the peer is being helped.
+
+    Test steps:
+        1. Enable nonstop-routing on the DUT
+        2. Peer is restarted using one of the mechanisms and it
+           establishes the session.
+        3. Peer announces a subset of routes it had announced before.
+        4. Peer restarts again.
+
+    Success Criteria:
+        1. Routes learnt from the restarting speaker should be marked stale
+           after step 2.
+        2. After step 3, the re-announced routes are Unstaled.
+        3. After step 4, all remaining Stale routes are purged immediately 
+           from rpd, kernel and PFE.
+
+    Results:
+        Not tested due to the success of test 4.1.1. Dependant on regression.
+
+4.2 DUT Switchover while no peer is being helped
+
+    Goal: Verify that the DUT does not initiate the procedures of 
+          receiving-speaker.
+
+    Test steps:
+        1. Enable nonstop-routing on the DUT
+        2. Let the peer come up and announce its routes.
+        3. Initiate a RE switchover in the DUT
+
+    Success Criteria:
+        1. Routes learnt from the peer are not marked Stale and they aren't
+           removed from rpd, kernel and PFE.
+        2. Verify the bgp sessions that were already established don't flap.
+
+    Results:
+        Pass
+
+4.3 DUT Switchover while helping peer
+
+If a RE Switchover occurs on the DUT at the same time the DUT is performing
+the procedures of a receiving-speaker for some neighbor(s), the behavior
+with respect to the continuation of receiving-speaker procedures post
+a RE Switchover is undefined. In other words, there could be traffic loss 
+for the routes that were not yet re-announced by the peer post its restart.
+
+More importantly, such a scenario will not have any bad side-effects
+(eg: peer kept in down state requiring manual intervention to get the
+peer up).  In the worst case, the session would be re-established leading to 
+all the routes being deleted from rpd, kernel and PFE and
+re-learnt/re-installed  again.
+
+4.3.1: No routes announced yet
+
+    Goal: Undefined. No side-effects should occur.
+
+    Test steps:
+        1. Enable nonstop-routing on the DUT
+        2. Let the peer come up and announce its routes.
+        3. Remote peer is restarted using one of the mechanisms.
+        4. Initiate a RE switchover in the DUT. One possible variation is
+           to let the new bgp session establish and then initiate the RE
+           switchover, but make sure no routes are yet announced. One
+           way to simulate this might be using the mechanism described in
+           section 1.2.
+
+    Success Criteria:
+        1. On the Master, routes from the restarting peer should be marked
+           stale.
+        2. On the Backup, all routes are removed from rpd since the bgp
+           session flapped.
+
+    Possible expected behavior:
+        Post Switchover,
+        1. If the bgp session is not up already, it is re-established and 
+           routes are re-learnt/re-installed in rpd, kernel and PFE
+           and traffic resumes.
+        2. all routes learnt from the peer could be deleted from 
+           kernel and PFE resulting in traffic loss.
+
+    Results:
+        Pass
+
+4.3.2: Subset of routes announced
+
+    Goal: Undefined. No side-effects should occur.
+
+    Test steps:
+        1. Enable nonstop-routing on the DUT
+        2. Let the peer come up and announce its routes.
+        3. Remote peer is restarted using one of the mechanisms.
+        4. Let the peer come up and announce a subset of routes
+           it had advertised before. Refer section 1.3 to simulate this
+           behavior.
+
+    Success Criteria:
+        1. On the Master, routes from the restarting peer should be marked
+           stale.
+        2. On the Backup, all routes are removed from rpd since the bgp
+           session flapped.
+        3. On the new Master (post switchover), bgp session with this peer 
+           doesn't flap.
+        4. Routes that have been received post the Switchover
+           aren't removed from rpd, kernel and PFE. Traffic to these
+           destinations (if they have been elected bestpaths) continues to
+           be forwarded.
+
+    Possible expected behavior:
+        1. some/all routes learnt prior Switchover from the peer could be 
+           by the new Master deleted from kernel and PFE resulting in 
+           traffic loss.
+
+    Results:
+        Not tested due to the success of test 4.3.1. Dependant on systest
+        to test this case.
+
+4.4 Multiple peer restart
+
+    Goal: Graceful-restart procedures are performed when more than 1 
+          peer restarts at the same time.
+
+    Test steps:
+        1. Enable nonstop-routing on the DUT
+        2. Configure multiple peers and enable graceful-restart on their side.
+        3. Restart all the peers at the same time.
+
+    Success Criteria:
+        Graceful restart receiving-speaker procedure is performed for
+        all the peers.
+
+    Results:
+        Pass
+
+4.5 Master rpd restart
+
+    Goal: Graceful-restart procedures are not performed when the master
+          rpd in the DUT restarts.
+
+    Test steps:
+        1. Enable nonstop-routing on the DUT
+        2. Configure peer with graceful-restart enabled.
+        3. Perform restart routing immediately in DUT's master RE
+
+    Success Criteria:
+        1. Graceful restart receiving-speaker procedure is not performed
+        2. On a restart, all routes learnt from the peers are removed
+           from the kernel and PFEs.
+        3. The BGP session(s) are re-established afresh.
+
+    Results:
+        Pass
+
+    Notes:
+        It is normal to see the backup bgp sessions in Established
+        state until the bgp session is re-established by the master. 
+        This is by design.
+
+        In order to verify that this is harmless, if a RE switchover is
+        performed on the DUT at the time when the Master's bgp sessions
+        are down, we'll see that the new Master immediately brings down
+        the session, deletes the routes from the kernel/FIB and re-establishes
+        the session.
+
+        Open issues:
+
+        I noticed a stale entry left in the kernel once. Haven't been
+        able to consistently reproduce it yet.
+
+{master}[edit]
+regress@pro9-c1# run show route 199.0.0.0 detail 
+
+inet.0: 55 destinations, 68 routes (54 active, 0 holddown, 1 hidden)
+199.0.0.0/24 (2 entries, 2 announced)
+        *BGP    Preference: 170/-101
+                Next hop type: Indirect
+                Next-hop reference count: 44
+                Source: 5.5.5.2
+                Next hop type: Router, Next hop index: 579
+                Next hop: 11.11.1.2 via so-0/2/1.11, selected
+                Protocol next hop: 11.11.1.2
+                Indirect next hop: 8c1d000 262145
+                State: <Active Int Ext>
+                Local AS:   200 Peer AS:   200
+                Age: 6:00       Metric2: 0 
+                Task: BGP_200.5.5.5.2+179
+                Announcement bits (2): 0-KRT 6-Resolve tree 2 
+                AS path: I
+                Localpref: 100
+                Router ID: 5.5.5.2
+         Kernel Preference: 4294967294
+                Next hop type: Indirect
+                Next-hop reference count: 44
+                Next hop type: Router, Next hop index: 579
+                Next hop: 11.11.1.2 via so-0/2/1.11, selected
+                Protocol next hop: 11.11.1.2
+                Indirect next hop: 8c1d000 262145
+                State: <Delete NoReadvrt>
+                Inactive reason: Unusable path
+                Local AS:   200 
+                Age: 6:00 
+                Task: KRT
+                Announcement bits (1): 4-LDP 
+                AS path: I
+
+
+4.6 Backup rpd restart
+
+    Goal: There's no externally visible impact on a backup rpd restart/
+          backup RE reboot in the DUT.
+
+    Test steps:
+        1. Enable nonstop-routing on the DUT
+        2. Configure peer with graceful-restart enabled.
+        3. Perform restart routing immediately in DUT's backup RE
+
+    Success Criteria:
+        1. There's no external impact with respect to routing.
+        2. bgp sessions continue to stay up, no routes are staled, etc.
+
+    Results:
+        Pass.
+
+4.7 DUT with 1 RE
+
+    Goal: Verify that the functionality works with just 1 RE in the DUT.
+
+    Test steps:
+        1. Enable nonstop-routing on the DUT
+        2. Configure peer with graceful-restart enabled.
+        3. Perform peer restart.
+
+    Success Criteria:
+        1. DUT performs the procedures of the receiving-speaker correctly.
+
+    Results:
+        Not tested.
+
+4.8 Nonstop-routing to graceful-restart transition
+
+    Goal: Verify that this transition works and the bgp sessions are
+          re-established after this configuration change.
+
+    Test steps:
+        1. Enable nonstop-routing on the DUT
+        2. Configure peer with graceful-restart enabled.
+        3. Change DUT configuration from nonstop-routing to graceful-restart.
+
+    Success Criteria:
+        1. bgp sessions should get re-established
+        2. backup rpd exits.
+
+    Results:
+        Pass
+
+4.9 Graceful-restart to nonstop-routing transition
+
+    Goal: Verify that this transition works and the bgp sessions are
+          re-established after this configuration change.
+
+    Test steps:
+        1. Enable graceful-retart on the DUT
+        2. Configure peer with graceful-restart enabled.
+        3. Change DUT configuration from graceful-restart to nonstop-routing.
+
+    Success Criteria:
+        1. bgp sessions should get re-established
+        2. backup rpd starts up and rsyncs.
+
+    Results:
+        Pass
+
+4.10 Multiple peer restarts with a Switchover
+
+    Goal: Peer restarts and starts announcing back its routes when a
+          DUT RE Switchover occurs followed by the same peer restarting again
+          without having sent an EOR after the first restart.
+
+          In this situation, the DUT is expected to delete the routes
+          learnt from this peer immediately. But due to the Switchover
+          involved in the middle, the behavior is undefined.
+        
+    Test steps:
+        1. Enable nonstop-routing on the DUT
+        2. Configure peer with graceful-restart enabled.
+        3  Configure a stale-route-timer to be very less (lesser than the
+           time it takes for the peer to announce all its routes).
+        4. Restart peer
+        5. Perform a DUT Switchover before the peer has sent EOR
+        6. Restart peer again
+
+    Success Criteria:
+        After test 6, all routes from the peer should be deleted immediately.
+        Due to the Switchover involved, the behavior is undefined in
+        accordance with the requirements.
+
+        The possible behavior would be that the new Master stales the routes
+        instead of deleting them immediately.
+
+    Results:
+        Pass
+
+4.11 End of Rib
+
+    Goal: While a peer is restarting, if there's a DUT RE Switchover before
+          the DUT has sent the End of Rib, the new Master has to send
+          the End of Rib after announcing all the routes.
+
+    Test steps:
+        1. Enable nonstop-routing on the DUT
+        2. Enable graceful-restart on the peer.
+        3. Let the bgp session establish and converge.
+        4. Remote peer is restarted using one of the mechanisms.
+        5. After the bgp session gets re-established, but before the DUT
+           has announced all the routes, initiate a RE switchover in the DUT.
+
+    Success Criteria:
+        1. The new Master should send an End of Rib after announcing all
+           the routes.
+
+    Results:
+        Not tested
+
+5.  GRES TEST CASES
+
+n/a. This RLI deals with nonstop-routing and graceful-restart cannot be
+configured on the DUT when nonstop-routing is configured.
+
+6. TX TEST CASES
+
+TX is supported, but there is no platform specific changes associated with
+the RLI. Dependent on systest to verify the feature on TX as well as
+making sure there are no regressions.
+
+7.  REGRESSION TEST CASES
+
+Dependant on CAM/EDVT/systest regression testing.
+
+The following sanity tests will be performed.
+
+7.1 Enable graceful-restart
+
+    Goal: Verify the graceful-restart functionality when graceful-restart
+          is configured on the DUT.
+
+    Test steps:
+        1. Enable graceful-restart on the DUT
+        2. Configure peer with graceful-restart enabled.
+        3. Perform peer restart.
+        4. Perform DUT restart.
+
+    Success Criteria:
+        1. On event 3, verify the DUT performs the procedures of the 
+           receiving-speaker correctly.
+        2. On event 4, verify the DUT performs the procedures of the
+           restarting-speaker correctly.
+
+    Results:
+        Pass
+
+7.2 Nonstop-routing
+
+    Goal: Verify that nonstop-routing functionality isn't broken.
+
+    Test steps:
+        1. Enable nonstop-routing on the DUT
+        2. Configure peer with graceful-restart enabled.
+        3. Perform RE Switchover on the DUT
+
+    Success Criteria:
+        1. Verify that nonstop-routing functionality is performed.
+           In other words, bgp session is maintained across a restart
+           and spurious updates aren't generated.
+
+    Results
+        Pass.
+
+8.  INTEROP TEST CASES
+
+Dependent on Regression/CAM coverage to verify there's no regression while
+interoperating with routers from other vendors.
+
+9.  MIGRATION & COMPATIBILITY TEST CASES
+
+n/a
+
+10.  TEST COVERAGE REMAINING
+
+{Describe all test coverage areas which will be needed on the feature
+which are *not* covered by this document.  Identify test inputs for
+systest or other groups to proceed with.}
+
+11.  DEFECTS REMAINING
+
+{List PRs filed at dev complete for test failures from this plan
+which were not fixed by dev complete.}
+
+Test failures:

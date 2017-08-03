@@ -1,0 +1,873 @@
+$Id: isis_utp.txt,v 1.2 2006/01/18 03:32:28 qv Exp $
+
+S3.02.P05.T02
+{Standard Unit Test Plan Template}
+
+Copyright (C) 2004, Juniper Networks, Inc.
+
+NOTICE: This document contains the proprietary and confidential
+information of Juniper Networks, Inc., and must not be
+distributed outside of the company without the
+permission of Juniper Engineering.
+
+[This document is a template for a standard unit test plan for use in
+Juniper engineering projects.  To use this document just change the
+contents of appropriate sections (marked with {}).  ANYTHING NOT
+MARKED 'AS NECESSARY' MUST BE INCLUDED.  If you do not need to fill
+out a section, leave it blank or mark it n/a -- do not delete it.
+
+1.  INTRODUCTION
+
+This document describes the unit test plan for ISIS non-stop routing
+functionality.
+
+RLI         : 2712
+Tracking PR : 63856
+Functional spec : sw-projects/os/nsr/isis_software_spec.txt
+
+2.  SETUP
+
+                  DUT
+             +-----------+                    +-----------+
+             |           |       so-021       |           |
+             |           |--------------------|           |
+             |           |                    |           |
+             |   pro2-a  |                    |  pro2-b   |
+             |           |                    |           |
+             |           |       fe-010       |           |
+             |           |--------------------|           |
+             +-----------+                    +-----------+
+
+
+The device under test is pro2-a which is a dual-RE m10i.
+
+3. FUNCTIONAL TEST CASES
+
+3.1 System-ID Replication Testing
+
+3.1.1	Basic system-id replication in a routing-instance
+    Goal:  Test that the system-id is replicated from the master to the
+        backup RE in both default as well as non-default routing 
+        instances.
+    Test Steps:
+        1.  On the active RE, configure isis in the master instance as
+            with interface lo0.0 configured under [protocols isis]
+        2.  Assign lo0 interface unit 0 with an ISO address AREA1:SYSID1
+        which is used in deriving the system-id as SYSID1 for the master
+        instance.
+        3. Test that the system-id SYSID1 is replicated over to the
+           backup RE for the master instance.
+        4. Repeat steps 1 to 3 in a non-default routing instance.
+    Success Criteria:  Output for "sh isis statistic" on the backup RE
+        displays system-id as SYSID1.
+    Results:  pass
+
+3.1.2  Replicating system-id change in a routing-instance
+    Goal:  Test that a change in system-id is replicated from the master
+        to the backup RE in both default as well as non-default routing 
+        instances.
+    Test Steps:
+        1. Repeat steps 1 to 3 of test 3.1.1.
+        2. Configuring another iso address AREA1:SYSID2  Run commit.
+        3. Deactivate the ISO address AREA1:SYSID1 configure in step 1.
+        4. Test that the system-id for the master instance has changed
+        to SYSID2 on the master as well as the backup RE.
+        5. Repeat steps 1 to 4 in a non-default routing instance.
+    Success Criteria:  Output for "sh isis statistic" on the backup RE
+        displays system-id as SYSID2.
+    Results:  pass
+
+3.1.3 Replicating system-id delete in a routing-instance
+    Goal:  Test that a change in system-id is replicated from the master
+        to the backup RE in both default as well as non-default routing 
+        instances.
+    Test Steps:
+        1. Repeat steps 1 to 3 of test 3.1.1.
+        2. Delete the ISO address AREA1:SYSID1 configured on lo0.0,
+        3. Test that the system-id is deleted from the master routing
+        instance.
+        4. Repeat steps 1 to 3 in a non-default routing instance.
+    Success Criteria:  Output for "sh isis statistic" on the backup RE
+        shows the sytem-id as all zeroes.
+    Results:  pass
+
+
+3.1.4 System-id replication entry cleanup
+    Goal:  Test that a system-id replication entry is deleted from both
+        the master and the backup RE when ISIS is deactivated in a 
+        routing-instance
+    Test Steps:
+        1. Repeat steps 1 to 3 of test 3.1.1.
+        2. Deactivate "protocols isis" from the default 
+        routing-instance.
+        3. Test that the system-id replication entry is gone from the
+        master as well as the backup RE.
+        4. Repeat steps 1 to 3 in a non-default routing instance.
+    Success Criteria:  "show isis system-id-replication-database"
+        on the backup RE displays no replication entry for the routing-
+        instance in question.
+    Results:  pass
+
+3.1.5 System-id replication and restarting the backup RE.
+    Goal:  Test that when a backup RE is restarted, it relearns all the
+        system-id replication entries from the master RE.
+    Test Steps:
+        1. Repeat steps 1 to 3 of test 3.1.1 for multiple routing-
+        instances
+        2. Restart RPD on the backup RE.
+        3. Test that the backup RE relearns system-id replication
+        entries for all instances from the master.
+    Success Criteria:  "show isis system-id-replication-database"
+        on the master and backup RE result in similar output.
+    Results:  pass
+
+3.1.6 System-id replication and restarting the master RE.
+    Goal:  Test that when a master RE is restarted, the backup deletes
+        its old set of system-id replication entries (learnt prior to
+        the master RE restart) and relearns the new set of system-id
+        replication entries from the master RE (generated post restart).
+    Test Steps:
+        1. Repeat steps 1 to 3 of test 3.1.1 for multiple routing-
+        instances
+        2. Restart RPD on the master RE.
+        3. Test that the backup RE relearns system-id replication
+        entries for all instances from the master.
+    Success Criteria:  "show isis system-id-replication-database"
+        on the master and backup RE result in similar output.
+    Results:  pass
+
+3.1.7 System-id replication and instance creation
+    Goal:  Test the race condition where a system-id replication entry
+        for a newly created routing-instance gets replicated over to the
+        backup RE before the new routing-instance config takes effect on
+        the backup RE.
+    Test Steps:
+        1. On the active RE, configure a new routing instance RI.
+        Configure isis underneath the RI with a lo0 unit 1. Assign lo0.1
+        interface with an ISO address AREA1:SYSID1 which is used in
+        deriving the system-id as SYSID1 for RI. Just commit on the
+        active RE (without using commit synchronize).
+        2. Test that sysid repl entry mapping RI to SYSID1 is sent over
+        to the backup RE and is stored in the sysid repl tree even
+        though it is not being used as the corresponding instance, RI,
+        is not present. 
+        3.Now do a commit sync and ensure that instance RI is created
+        on the backup RE and the corresponding sysid repl entry gets
+        used for assigning RI with system-id SYSID1.
+        4. Next delete the new instance, RI, from the backup RE. Make 
+        sure that the system-id replication entry for RI still exists on
+        the backup RE. Now delete the instance, RI, from active RE as
+        well. Test that the sysid repl entry for RI is removed from both
+        REs.
+
+    Success Criteria: As described in the test steps.
+    Results:  pass
+
+3.1.8 System-id replication and switch-over
+    Goal:  Test the system-id is preserved over a RE switch-over.
+    Test Steps:
+        1. Disable RPD on the backup RE.
+        2. On the active RE, configure routing-instance RI with lo0.1.
+        3. Configure lo0.1 with ISO address AREA1:SYSID2 and commit.
+        Master RE will pick SYSID2 as the system-id. The current system-
+        id selection algo picks the system-id from the first ISO address
+        learnt by RPD from the kernel.
+        4. Configure lo0.1 with ISO address AREA1:SYSID1 and commit.
+        5. Activate RPD on the backup RE. It will learn ISO addresses
+        AREA1:SYSID1 and AREA2:SYSID2 in that order from the kernel.
+        6. Trigger an RE switch-over.
+    Success Criteria: Test that backup RE preserves the system-id to 
+        SYSID2 inspite of learning AREA1:SYSID1 before AREA1:SYSID2.
+    Results:  pass
+
+
+3.1.8 Cleanup of orphan system-id replication entries on RE switch-over
+    Goal:  Test that a system-id replication entry which is not being
+        used by an instance (because the instance is not present on the
+        backup RE) on the backup RE is removed on switch-over.
+    Test Steps:
+        1. On the active RE, configure routing-instance RI with lo0.1.
+        Configure lo0.1 with ISO address AREA1:SYSID1. Run commit 
+        (without the synchronize option) such that the instance is 
+        not configured on the backup RE.
+        2. Test that a sysid repl entry for RI is sent over to the
+        backup RE and is stored in the sysid repl tree even though it is
+        not being used as the corresponding instance, RI, is not present.
+        3.  Now trigger an RE switch-over. 
+    Success Criteria: Ensure that on the newly active RE, the orphan 
+        replication entry for RI is removed since RI is not present on 
+        this RE.
+    Results:  pass
+     
+
+3.2 Adjacency Replication Testing
+
+3.2.1 Basic adjacency replication
+    Goal:  Test replication of adjacency entries on point-to-point
+    and LAN interface.
+    Test Steps:
+        1. On the active RE, configure isis in the master instance 
+        with a LAN and a P2P interface unit such that isis adjs
+        are formed on both units. Test that the adjacencies are 
+        replicated over to the backup RE.
+    Success Criteria: Output for "sh isis adjacency extensive" should be
+        exactly same on both the master and the backup RE.
+    Results:  pass
+
+3.2.2 Adjacency state change replication
+    Goal:  Test that changes in adjacency state are replicated
+    Test Steps:
+        1. Configure isis in the master instance on the DUT with one
+        interface unit such that an isis adj is formed on that unit.
+	2. Deactivate family iso on the adjacency interface unit on DUT.
+	3. Test that adj state change UP->down is replicated.
+	4. Reactivate family iso on the adjacency interface on DUT.
+	5. Test that adj state changes, DOWN->INITIALIZING->UP are
+        replicated over to the backup RE.
+    Success Criteria: Test that backup RE has the same adjacency
+        state as the master RE.
+    Results:  pass
+
+
+3.2.3 Adjacency timeout replication.
+    Goal:  Test replication of adjacency timeout event.
+    Test Steps:
+        1. Configure isis in the master instance on the DUT with one
+        interface unit such that an isis adj is formed on that unit.
+	2. Deactivate the adjacency interface unit on the nbr.
+	3. Test that adj timing out event is replicated to the backup by
+        checking the "Last event on active RE" field in the output of 
+        "sh isis adjacency-replication-database". This field should be
+        set to "Aged out". 
+	4. Wait for the timed out adjacency to be garbage collected.
+	5. Test that the adjacency as well as its replication entry
+        are purged from both the master and the backup RE.
+    Success Criteria: As described in the test Steps.
+    Results:  pass
+
+
+3.2.4 Replication of adjacency deletion on instance deletion.
+    Goal:  Test that adjacencies are deleted from the backup RE when
+        they are removed from the master RE on an instance deletion.
+    Test Steps:
+        1. Repeat step 1 of test 3.2.1
+	2. Delete "protocols isis" statement from under the 
+        routing-instance in question.
+	3. Test that the adjacency as well as its replication entry
+        are purged from both the master and the backup RE.
+    Success Criteria: Output of "sh isis adjacency-replication-database"
+        shows no adj replication entries for the routing-instance in
+	question.
+    Results:  pass
+
+3.2.5 Adjacency replication and restarting the backup RE.
+    Goal:  Test that when a backup RE is restarted, it relearns all the
+        adjacency replication entries from the master RE.
+    Test Steps:
+        1. Repeat step 1 of test 3.2.1 for multiple routing-instances
+        2. Restart RPD on the backup RE.
+        3. Test that the backup RE relearns adjacency replication
+        entries for all instances from the master and recreates
+        corresponding adjacencies.
+    Success Criteria:  "show isis adjacency-replication-database"
+        on the master and backup RE result in similar output.
+    Results:  pass
+
+3.2.6 Adjacency replication and restarting the master RE.
+    Goal:  Test that when a master RE is restarted, the backup deletes
+        its old set of adjacency replication entries (learnt prior to
+        the master RE restart) and relearns the new set of adjacency
+        replication entries from the master RE (generated post restart).
+    Test Steps:
+        1. Repeat step 1 of test 3.2.1 for multiple routing-instances
+        2. Restart RPD on the master RE.
+        3. Test that the backup RE relearns adjacency replication
+        entries for all instances from the master and recreates
+	corresponding adjacencies.
+    Success Criteria:  "show isis adjacency-replication-database"
+        on the master and backup RE result in similar output.
+    Results:  pass
+
+3.2.7 Race conditions while changing interface configuration
+    Goal: To test changes in interface configuration parameters which
+        affect adjacencies on that interface. When an interface config
+        parameter changes affecting the state of an adjacency, the
+        backup RE depends on the master to update the adjacency 
+        replication entry and also on the config change taking affect
+        on the backup RE (through config synchronization). There is
+        a race between which information arrives first.
+    Test Steps:
+	1.For each parameter we will execute the following sub-steps
+        in order. 1) Configure parameter on active RE (absent from
+        backup) 2) Configure the parameter on backup RE as well.
+        3) De configure the parameter on the backup RE (still configured
+        on active RE) 4) De configure the parameter from active RE as
+	well. Changes in following parameters is tested
+            - interface itself - passed
+            - interface levels - passed
+            - interface level passive - passed
+            - area address which allows an L1 adj to come up with a nbr
+            (because this is the only area addr in common) - done thru
+            code hacking as we can't control the replication of an 
+            interface family address - passed
+            - topologies - passed
+            - inet ifa address - which matches with what is passed by 
+            the nbr and is thus used as an ipv4 nexthop - done thru
+            code hacking as we can't control the replication of an 
+            interface family address - passed
+    Success Criteria:  For the first four parameters, depending on the
+            absence or presence of the parameter from the config on the
+            backup RE, the adjacency should be absent or present,
+            respectively, on the backup RE, even though the adjacency
+            replication entry is present. The last 2 parameter will
+            affect SPF and nexthop creation.
+    Results:  pass
+
+3.2.8 Adjacency replication and initial adjacency hold-down
+    Goal: To test that when the back RE comes up, it does initial
+        adjacency hold-down for each ISIS instance.
+    Test Steps:
+        1. Repeat step 1 of test 3.2.1 in multiple routing-instances.
+           such that the RPD on the backup RE is turned off. Wait
+           till all the adjacencies in all routing-instances come up.
+           Turn on isis traceoptions with hello and state flags.
+        2. Bring up RPD on the backup RE.
+        3. Check that the backup RE does initial adjacency hold-down
+           process, i.e. allows only one adjacency to come up, wait
+           for the incoming LSP rate to subside and then bring up
+           remaining adjs.
+        4. Kill RPD on both the master and backup RE.
+        5. Bring up RPD on the master. While it is performing initial
+           adjacency hold-down bring up the backup RE. Test that the first
+           adj which the backup RE decides to bring up is same as the
+           master even though it may receive adj replication entry for
+           another adjacency before it receives the adj replication
+           entry of the adjacency which is in the process of coming up
+           on the master RE.
+    Success Criteria:  
+           Thru trace output and output of "sh isis adjacency" on the
+           backup RE, check that initially only one adj is allowed to
+           come up, then the backup RE waits for the LSP receive rate
+           rate to subside (LSPs are received thru LSDB replication
+           from the master RE). Then all adjacencies are brought up.
+    Results:  pass
+
+
+3.2.9. Adjacency replication and state compression
+    Goal: Test that backup RE handles adjacency state compression
+        inherent in the mirroring subsystem correctly, i.e. if backup
+        RE receives an adj repl entry in UP state while it doesn't
+        have the corresponding adj or the adj is in <= down state,
+        it brings up the adjacency to UP state as long as everything
+        in the hello is appropriate.
+    Test Steps:
+        1. Configure ISIS in the master routing-instance.
+        2. Bring up a new interface on the master routing-instance such
+        that a new adjacency is formed with a nbr on this interface.
+        3. Thru code instrumentation suppress replication of adj
+        as long as its state is less than UP.
+    Success Criteria:
+        When the backup RE receives the adjacency replication entry
+        with state UP, it should bring up the adjacency even though
+        it never received any of the intermediate state transitions.
+    Results:  pass
+
+3.2.10. Parsing circuit # in lan-id field of a LAN IIH
+    Goal: Test that the master RE rejects any iihs on an interface
+        where it is the DR and the iih does not reflect the circuit # in
+        the lan-id field correctly. The test is skipped if the circuit #
+        reflected by iih is trivial or if DUT is restarting or if the
+        DUT is yet to do DR election.
+    Test Steps:
+        1. Simulate incoming packet with wrong circuit # thru code
+        instrumentation
+        2. Simulate incoming packet with circuit # as zero thru
+        code instrumentation.
+        3. Delay DR election thru code instrumentation.
+        4. Configure graceful-restart and restart RPD on DUT.
+    Success Criteria:
+        For step 1, the iih should be rejected. For the remaining
+        steps, the iih should be accepted. This can be checked
+        by turning on traceoptions with flag error, state and hello.
+        One can also check the display of "sh isis adjacency" and
+        see if the hold time is refreshed for the adjacency in
+        question.
+    Results:  pass
+   
+3.2.11 Replicating interface circuit # on the backup RE from the master
+    Goal: Test that the backup RE learns an interface circuit # for an
+        interface on which it is the DR by snooping at the lan-id field
+        in iihs replicated thru adjacency replication entry.
+    Test Steps:
+        1. Configure isis under the master instance with a LAN interface
+        such that the interface is assigned DR priority which is higher
+        than DR Priority of any other isis neighbor on the link.
+        2. Wait for the adjacency to come up on both the master and
+        backup RE.
+    Success Criteria:
+        Check the output of "sh isis interface detail" on the master
+        and backup RE and make sure that the "Circuit id" field
+        has the same value on both.
+    Results:  pass
+
+3.2.12. Adjacency replication and change in iih parameters
+    Goal: Test that the backup RE reacts correctly to the change in one
+        of the several iih parameters sent by the nbr. Test both cases :
+        a) Where due to state compression backup RE doesn't receive the
+        intermediate iih reflecting the adj transition up->down->up,
+        i.e. it just receives an update for the adj repl entry with
+        state as up (same as before) but with the parameter in question
+        changed. This can be simulated thru code instrumentation, i.e.
+        by delaying the queuing of mirror MOD operation on the active
+        RE when the state as less than UP. b) where the up->down->up 
+        transition is correctly reflected from active to backup RPD. 
+    Parameters tested :
+    a) Topology
+    Test Steps:
+        1) Configure isis under the master routing-instance with one
+        interface such that an adjacency is formed on that interface. At
+        this point there is no explicit topology configured, i.e. isis
+        under master routing-instance is only running the default
+        unicast topology. Now add 
+        2) Next enable ipv6-unicast topology in the master isis
+        instance.
+    Success Criteria:
+        Check that a ipv6-unicast routing table is also created by
+        running "sh isis route". In case a) the adjacency should not
+        undergo a state transition on the backup RE. In case b) the
+        adjacency should undergo UP->DOWN->INITIALIZING->UP state
+        transition on the backup RE. 
+    Results:  pass
+    b) SNPA
+    Test Steps:
+        1) Configure isis under the master routing-instance with one
+        LAN interface such that an adjacency is formed on that
+        interface with nbr pro2-b
+        2) Change the SNPA originated by pro2-b in its isis packets
+        by running "set interface fe-0/0/0 mac <new mac>".
+    Success Criteria:
+        The output of "sh isis adjacency detail" displays the new SNPA
+        for the adjacency nbr. In case a) the adjacency should not
+        undergo a state transition on the backup RE. In case b) the
+        adjacency should undergo UP->DOWN->INITIALIZING->UP state
+        transition on the backup RE. 
+    Results:  pass
+    c)  Point-to-point adjacency level change (due to disabling a level
+        on the nbr or changing area of the iso address on the nbr
+        causing an area mismatch)
+    Test Steps:
+        1) Configure isis under the master routing-instance with one
+        P2P interface such that a L3 adjacency is formed on that
+        interface with nbr pro2-b
+        2) Disable level 1 on the adjacency interface on pro2-b
+    Success Criteria:
+        The output of "sh isis adjacency detail" displays that the
+        adjacency level is now 2. In case a) the adjacency should not
+        undergo a state transition on the backup RE. In case b) the
+        adjacency should undergo UP->DOWN->INITIALIZING->UP state
+        transition on the backup RE. 
+    Results:  pass
+    d)  Multiple neighbors on a point-to-point link.
+    Test Steps:
+        1) Configure isis under the master routing-instance with one
+        P2P interface such that a L3 adjacency is formed on that
+        interface with nbr pro2-b
+        2) Change in the system-id on pro2-b.
+    Success Criteria:
+        The output of "sh isis adjacency" displays a new adjacency with
+        the new system-id of pro2-b while the adjacency to the old
+        system-id of pro2-b is marked as DOWN.. In case a) the new
+        adjacency should directly be added in UP state on the backup RE.
+        In case b) the new adjacency should be added first in INITIALIZING
+        state and then  go to UP state.
+    Results:  pass
+    e) Neighbor's extended local circuit-id
+    Test Steps:
+        1) Configure isis under the master routing-instance with one
+        P2P interface such that an adjacency is formed on that
+        interface with nbr pro2-b
+        2) Delete and readd the adjacency interface causing its if-index
+        to change. Since if-index is used as the extended local
+        circuit-id, that should change.
+    Success Criteria:
+        In case a) the adjacency should not undergo a state transition
+        on the backup RE. In case b) the adjacency should undergo
+        UP->DOWN->INITIALIZING->UP state transition on the backup RE. 
+    Results:  pass
+
+3.2.13 Adjacency replication and RE switch-over
+  Test a)
+    Goal: Ensure that backup RE preserves adjacencies learnt thru
+        replication across RE switch-over (without flapping them)
+    Test Steps:
+        1) Configure isis under multiple routing-instances with several
+        interfaces within each instance such that isis adjacencies are
+        formed on all these interfaces.
+        2) Perform RE switch-over.
+    Success Criteria:
+        Output of "show isis adjacency extensive" on the new master
+        should show all the adjacencies without any change in parameters
+        or state.
+    Results:  pass
+  Test b)
+    Goal: Ensure that backup RE cleans up orphaned adjacency replication
+        entries, i.e. those which are not associated with an adjacency.
+    Test Steps:
+        1) Configure isis under routing-instances RI on the master RE
+        but not on the backup RE (i.e. by using commit without synch
+        argument) with multiple interfaces under isis such that isis
+        adjacencies are formed on all these interfaces.
+	2) Check that adjacency replication entries for instance RI
+	are learnt by the backup RE but no corresponding adjacencies
+	created since backup is not configure with instance RI.
+        3) Perform RE switch-over.
+    Success Criteria:
+        Output of "show isis adjacency-replication-database" should not
+        show any entries corresponding to instance RI on the new master,
+	i.e. they should all be removed at switch-over.
+    Results:  pass
+
+3.3 Link-State Database Replication Testing
+
+3.3.1 Basic Link-State Database Replication
+
+  Test a) 
+    Goal: Test replication of local as well as non-local LSPs, both
+        normal as well as pseudo-node LSPs.
+    Test Steps:
+        1) On DUT, configure isis in the master instance as well as a
+        routing-instance RI such that LSPs (normal as well as
+        psuedo-node) are generated as well as non-local LSPs received
+        from ISIS neighbors.
+        2) Test that all the LSPs are replicated over to the backup RE.
+    Success Criteria:
+        Output for "show isis link-state-replication-database" shows
+        replication entries corresponding to all LSPs in the default
+	instance and routing-instance RI on both the master and backup
+        RE. Also the backup RE use these replication entries to populate
+        its LSDBs. Also the backup RE uses LSPs thus replicated for its
+        SPF and the result of the SPF should be identical to that of the
+        master RE. This can be checked by comparing the output of
+        "show isis route <instance>" between the master and backup RE.
+    Results:  pass
+
+  Test b) 
+    Goal: Test that changes in a local (non-local) LSP due to topology
+        changes or regeneration are replicated over to the backup RE.
+    Test Steps:
+        1) On DUT, configure isis in routing-instance RI such that local
+        LSPs are generated as well as non-local LSPs received from
+	neighbors.
+        2) Bring down one of the adjacencies to DUT on an ISIS neighbor.
+        3) Test the changes in the local (non-local) generated LSPs are
+        replicated over to the backup RE.
+        4) Wait for regeneration of a local (non-local) LSP.
+    Success Criteria:
+        Output for "show isis link-state-replication-database" shows
+	updated replication entries corresponding to LSPs which changed
+        on both the master and backup RE. Also the backup RE should
+        have updated the affected LSPs in its LSDB for routing-instance
+        RI. Also the backup RE should have performed SPF using these
+        changed LSPs and its isis routing table should be consistent
+	with that of the master.
+    Results:  pass
+
+  Test c) 
+    Goal: Test purging of a local (non-local) LSP is replicated over to
+        the backup RE.
+    Test Steps:
+        1) On DUT, configure isis in routing-instance RI.
+        2) Configure a LAN interface under ISIS in routing-instance RI
+        such that an adj is formed with neighbor pro2-b. Configure
+	pro2-b (DUT) with DR priority high enough to make it a DR.
+        3) Make sure that a pseudo-node LSP is generated by pro2-b (DUT)
+        and received on DUT (pro2-b) and replicated over to the backup RE.
+        4) Change the DR priority config on pro2-b (DUT) to 0 so that it
+        purges away its pseudo-node LSP and DUT (pro2-b) takes over as DR.
+        5) Ensure that the purged LSP is replicated over to the backup.
+    Success Criteria:
+        Output for "show isis link-state-replication-database" shows a
+        replication entry corresponding to the max-aged pseudo-node LSP
+        from pro2-b (DUT) on the backup RE. Also the actual LSP is
+	updated with lifetime 0 on the backup. Ensure that eventually
+	the pseudo-node and the associated replication entry are both
+        removed from the backup RE as well as master RE.
+    Results:  pass
+
+  Test d) 
+    Goal: Test delete of a local (non-local) LSP is replicated over to
+        the backup RE.
+    Test Steps:
+        1) On DUT, configure isis in routing-instance RI such that local
+        LSPs are generated as well as non-local LSPs received from
+	neighbor pro2-b at both isis levels.
+        2) Disable isis level 1 on DUT.
+    Success Criteria:
+        Output for "show isis link-state-replication-database" shows that
+        replication entries corresponding to all level 1 LSPs are gone
+        from both master and backup RE. Also check that all L1 LSPs are
+        deleted from the LSDB for routing-instance RI on both REs. Also
+        ensure that changes is ISIS routing table due to this are 
+        consistent on both REs.
+    Results:  pass
+
+  Test e) 
+    Goal: Test link-state replication wrt deleting of "protocol isis".
+    Test Steps:
+        1) On DUT, configure isis in routing-instance RI such that local
+        LSPs are generated as well as non-local LSPs received from
+	neighbor pro2-b at both isis levels.
+        2) Deactivate "protocols isis" from under routing-instance RI.
+    Success Criteria:
+        Output for "show isis link-state-replication-database" shows that
+        replication entries corresponding to all routing-instance RI
+        LSPs are gone from both master and backup RE.
+    Results:  pass
+
+3.3.2 LSDB replication and restarting RPD
+    Goal: Test that link-state replication entries are re-learnt on
+        backup RE on restart.
+    Test Steps:
+        1) Repeat test 3.3.1 a).
+        2) Restart RPD on the backup RE.
+    Success Criteria:
+        Output for "show isis link-state-replication-database" shows
+        that all link-state replication entries are re-learnt on the
+	backup RE.
+    Results:  pass
+
+
+3.3.3 LSDB replication and race conditions arising during ISIS config
+       change.
+    Goal: To test the following changes to system-id in routing-instance
+        RI.
+    Test Steps:
+	1.For each parameter we will execute the following sub-steps
+        in order. 1) Configure parameter on active RE (absent from
+        backup) 2) Configure the parameter on backup RE as well.
+        3) De-configure the parameter on the backup RE (still configured
+        on active RE) 4) De-configure the parameter from active RE as
+	well. Changes in following parameters are tested :
+            - instance itself - passed
+            - instance levels - passed
+    Success Criteria:  Depending on the absence or presence of the
+        parameter from the config on the backup RE, appropriate LSPs
+        should be absent or present, respectively, on the backup RE,
+        even though the LSP replication entries are present.
+    Results:  pass
+
+3.3.4 LSDB replication and change in ISIS system-id
+
+  Test a) 
+    Goal: Test the absence of system-id in instance RI on backup
+        followed by assignment of one due to replication from master RE
+        such that local & non-local LSPs are replicated before the
+        system-id is learnt for the first time.
+    Test Steps :
+        1) Repeat test 3.3.1 a)
+        2) Restart RPD on backup RE with an instrumented RPD image which
+        delays processing of received system-id replication entry, i.e.
+        allows receiving and processing of link-state replication entries
+        from instance RI before its system-id replication entry is
+        processed.
+    Success Criteria:
+        On the backup RE, the link-state replication entries for
+        routing-instance RI will not result in creation of LSPs before
+        instance RI is assigned a system-id from the received system-id
+        replication entry, 
+    Results:  pass
+
+  Test b)
+    Goal: Test the absence of system-id in instance RI on backup followed
+        by assignment of one due to replication from master RE such that
+        local & non-local LSPs are replicated after the system-id is
+        assigned to instance RI for the first time
+    Test Steps :
+        1) Repeat test 3.3.1 a)
+        2) Restart RPD on backup RE with an instrumented RPD image which
+        delays processing of link-state replication entry, i.e. allows
+        receiving and processing of link-state replication entries only
+        system-id replication entry is received and processed.
+    Success Criteria:
+        On the backup RE, the link-state replication entries for
+        routing-instance RI should result in successful creation of LSPs
+    Results:  pass
+
+  Test c) 
+    Goal: Test change in system-id in instance RI such that Local LSPs
+        based on the new system-id are replicated before the new
+        system-id is replicated.
+    Test Steps :
+        1) Repeat test 3.3.3 a) such that RPD on backup RE is running
+        with an instrumented RPD image which delays processing of
+        received system-id replication entry, i.e. allows receiving and
+	processing of link-state replication entries corresponding to a
+        new system-id before the replication entry for the new system-id
+        itself is processed.
+        2) Affect a change in a system-id on master RE (this can be
+        done by changing the system-id part of the ISO address
+        used in selecting the system-id).  
+    Success Criteria:
+        On the backup RE, the new link-state replication entries
+        corresponding to local LSP fragments (i.e. ones generated
+        with the new system-id) will still be processed in the old
+        system-id's context, i.e. when running SPF, these LSP
+        fragments will not be considered as local and so will not
+        cause any changes in the isis routing table. Only when
+        the system-id is changed after processing the new system-id
+        replication entry will the changes due to the new LSPs
+        take effect in SPF.
+    Results:  pass
+
+  Test d)
+    Goal: Test change in system-id in instance RI such that Local LSPs
+        based on the new system-id are replicated after the new
+        system-id is replicated.
+    Test Steps :
+        1) Repeat test 3.3.3 a) such that RPD on backup RE is running
+        with an instrumented RPD image which delays processing of
+        received link-state replication entry, i.e. allows receiving and
+	processing of system-id replication entry corresponding to a
+        new system-id before the new link-state replication entries
+        corresponding to the new system-id are processed.
+        2) Affect a change in a system-id on master RE (this can be
+        done by changing the system-id part of the ISO address
+        used in selecting the system-id).  
+    Success Criteria:
+        On the backup RE, the new link-state replication entries
+        corresponding to local LSP fragments (i.e. ones generated
+        with the new system-id) will be processed in the new
+        system-id's context, i.e. when running SPF, these new LSP
+        fragments will be considered as local.
+    Results:  pass
+
+
+  Test e)
+    Goal: Loss of a system-id in instance RI learnt on the backup RE
+        through replication causes all local LSPs on the backup RE
+        to be removed.
+    Test Steps :
+        1) Repeat test 3.3.3 a) without any code instrumentation.
+        2) Affect loss of system-id on master RE (this can be
+        done by deleting all ISO addresses from all interface
+        under routing-instance RI).
+    Success Criteria:
+        On the backup RE, check that output for "sh isis database
+        instance RI" displays no local LSPs, i.e. all local LSPs
+        should have been deleted thru replication entries sent
+        by master RE which deletes all local LSPs on loss of a 
+        system-id.
+    Results:  pass
+
+3.3.5. LSDB replication and changing LSP size.
+
+    Goal: Test increase/decrease in the size of a particular local
+        (non-local) LSP since we changed the way buffer for an LSP
+        is allocated.
+    Test Steps :
+        1) Repeat test 3.3.3 a) without any code instrumentation
+        such that TE is enabled on DUT (pro2-b).
+        2) Disable TE on DUT (pro2-b)
+    Success Criteria:
+        Check that the change in local (non-local) LSA is correctly
+        replicated over to the backup RE.
+    Results:  pass
+
+3.3.6. LSDB replication and RE switch-over
+
+  Test a) 
+    Goal: Ensure that backup RE preserves non-local LSDB entries learnt
+        thru replication across a switch-over.
+    Test Steps :
+        1) Repeat test 3.3.1 a) 
+        2) Cause an RE switch-over
+    Success Criteria:
+        Check that LSPs learnt through replication are preserved on the
+        new master RE.
+    Results:  pass
+
+  Test b)
+    Goal: Ensure that backup RE regenerates local LSDB entries after a
+        switch-over and the size of memory allocated for them is 1492
+	bytes.
+    Test Steps :
+        1) Repeat test 3.3.1 a) 
+        2) Cause an RE switch-over
+    Success Criteria:
+        Ensure that after a delay of 16 seconds, backup RE regenerates
+        all the local LSPs by looking at the output of "sh isis
+        database extensive". Make sure that "Allocated length" field of
+        each local LSDB entry is 1492 bytes and the sequence number
+        has been bumped up.
+    Results:  pass
+
+  Test c)
+    Goal: Orphan LSP replication entries on the backup RE are removed at
+        switch-over.
+    Test Steps :
+        1) On the active RE, configure 2 routing instance, RI1 & RI2.
+        2) On the backup RE, configure just one routing instance, RI1.
+        Configure isis underneath the routing-instances.  Commit on
+        the active RE (without using commit synchronize) and commit on
+        the backup RE (without using commit synch). Test that an lsdb
+        replication entries from RI2 are sent over to the backup RE but
+        not used in creating LSDB entries as the corresponding instance,
+        RI2, is not configured on he backup.
+        3) Now trigger an RE switch-over. Ensure that on the newly active
+        RE, the orphan link-state replication entries for RI2 are
+        removed since RI2 is not present on this RE.
+    Success Criteria:
+        Run "sh isis link-state-replication-database" to check that all
+        link-state replication entries corresponding to instance RI2
+        have been removed.
+    Results:  pass
+    
+
+  Test d)
+    Goal: On switch-over, test that newly active RE delays flooding of
+          any of its local LSAs for 16 seconds, i.e. it waits till it
+          has regenerated all its local LSPs and run SPF.
+    Test Steps.
+        1) Repeat test 3.3.1 a) 
+        2) Turn on isis tracing with flags "nsr-synchronization detail",
+	"lsp-generation detail" and "spf" set.
+        3) Cause an RE switch-over
+    Success Criteria:
+        By looking at the isis trace and output of "sh isis database"
+        on DUT's neighbor, ensure that LSPs are not flooded for 16
+        seconds after switch-over. Ensure that in the meanwhile lsp
+        regeration and SPF are completed by again looking at the isis
+        trace file.
+    Results:  pass
+
+4.  BOUNDARY TEST CASES
+
+n/a
+
+
+5.  REGRESSION TEST CASES
+
+5.1 Adjacency Replication related
+
+a) Test changing the extended loc circuit id of the nbr using
+code instrumentation. - passed
+
+6.  INTEROP TEST CASES
+
+n/a
+
+7.  MIGRATION & COMPATIBILITY TEST CASES
+
+n/a
+
+8.  TEST COVERAGE REMAINING
+
+1. Test that support for restart helper mode is not broken and
+that at switch-over, backup RE continues helping. 
+
+2. Test that on switch-over, the new master RE (i.e. the old backup)
+triggers BFD sessions for all ISIS adjacencies which are up.
+
+9.  DEFECTS REMAINING
+
+n/a

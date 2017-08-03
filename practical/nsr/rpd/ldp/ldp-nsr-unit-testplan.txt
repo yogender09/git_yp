@@ -1,0 +1,1376 @@
+$Id: ldp-nsr-unit-testplan.txt,v 1.1 2007/03/13 01:29:52 shivania Exp $
+
+		LDP Suppport for Non-stop Routing
+		      Unit Test Plan
+
+		     Shivani Aggarwal
+
+
+Copyright (C) 2006, Juniper Networks, Inc.
+
+NOTICE: This document contains the proprietary and confidential
+information of Juniper Networks, Inc., and must not be
+distributed outside of the company without the
+permission of Juniper Engineering.
+
+[This document is a template for a standard unit test plan for use in
+Juniper engineering projects.  To use this document just change the
+contents of appropriate sections (marked with {}).  ANYTHING NOT
+MARKED 'AS NECESSARY' MUST BE INCLUDED.  If you do not need to fill
+out a section, leave it blank or mark it n/a -- do not delete it.
+
+
+I.  INTRODUCTION
+
+This document is the unit test plan for the implementation of LDP support
+for Non-Stop Routing (NSR).
+
+This feature is being tracked via:
+* 8.1 RLI 3168 (PR 65909) and 
+* 8.2 RLI 2721 (PR 73179)
+
+Functional and design specifications:
+cvs/sw-projects/os/nsr/ldp_software_spec.txt
+cvs/sw-projects/os/nsr/ldp-nsr-implementation.txt
+
+
+II. SETUP
+
+
+A. Topology 1:
+--------------
+
+   A  ======== B (DUT)
+
+   2 p2p links between A and B. LDP session between A and B
+   B has the dual RE and is the DUT. B is the primary, and B1 is the standby
+
+
+
+B. Topology 2:
+--------------
+
+   A  --------  B (DUT) ========= C
+
+   1 p2p link between A and B and 2 p2p links between B and C.
+   LDP session between A and B and B and C. B has the dual RE and is the 
+   DUT. B is the primary, and B1 is the standby.
+
+
+C. Topology 3:
+--------------
+
+   A ---------  B  ========= C
+              (DUT)
+		 \
+      	          \
+		   D
+
+LDP sessions configured between A-B, B-C, B-D.
+There are multiple (2) adjacencies between B-C.
+B is the primary, and B1 is the standby
+ 
+
+
+III. FUNCTIONAL TEST CASES
+
+   
+1 Mirroring API:
+=================
+
+
+A. Adjacency Mirror database tests:
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Test Case 1: Adjacencies are mirror'ed to the secondary
+     Test Setup: Using Setup 2
+     Success Criteria:
+	     B1 learns all 3 adjacencies from the primary.
+	     "show ldp replication neighbor"
+	     All 3 adjacencies are active on B1: "show ldp neighbor"
+     Result: PASS
+	     
+Test Case 2: Adjacency remove
+     Test Setup: Continuing from previous test case.
+          Deactivate ldp on interface between A and B on B.
+     Success Criteria:
+	  1. Adjacency between A and B gets removed on B and B1
+	     along with the mirror entry.
+	  2. No other adjacencies are affected.
+     Result: PASS
+	     
+
+Test Case 3: Adjacency add
+     Test Setup: Continuing from previous test case.
+          Activate ldp on interface between A and B on B.
+     Success Criteria:
+	  1. Adjacency between A and B gets added on B and B1
+	     along with the mirror entry.
+	  2. No other adjacencies or sessions are affected.
+     Result: PASS
+
+
+Test Case 4: Adjacency uptime test
+     Test Setup: Using setup 1
+     a. Adjacency up on primary
+     b. Bring up secondary a little later (to create delay)
+     c. Perform switchover. Secondary becomes primary
+     d. Bring up old primary which is now secondary
+     Success Criteria:
+     1. At Step b: Adjacency comes up on secondary.
+	 adjacency uptime is same as on primary
+     2. At Step c: adjacency uptime on new primary should be more 
+	 than as before switchover
+     3. At step d: Adjacency is learnt on new secondary and is activated
+	 adjacency uptime on new secondary is same as on new primary 
+     Result: PASS
+
+
+B. Session Mirror database tests:
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Test Case 1: Operational sessions are mirror'ed to the standby
+     Test Setup: Using Setup 2
+     Success Criteria:
+	     B1 learns the 2 sessions from the primary.
+	     "show ldp replication session"
+     Result: PASS
+
+Test Case 2: Session close on primary deletes the session mirror entry on
+     the standby
+     Test Setup: Continuing from previous test case.
+          "clear ldp session" for session between A and B on B.
+     Success Criteria:
+	  1. Mirror Session entry between A and B gets removed on B1
+	  2. No other sessions are affected.
+     Result: PASS
+
+
+Test Case 3: New operational session is mirror'ed to the standby
+     Test Setup: Continuing from previous test case.
+          Session between A and B comes up again.
+     Success Criteria:
+	  1. Mirror Session entry between A and B gets added on B1
+	  2. No other sessions are affected.
+     Result: PASS
+
+
+Test Case 4: Session uptime:
+     Test Setup: Using setup 1
+     a. Session up on primary
+     b. Bring up secondary a little later (to create delay)
+     c. Perform switchover. Secondary becomes primary
+     d. Bring up old primary which is now secondary
+     Success Criteria:
+     1. At Step b: Session comes up on secondary.
+	 Session uptime is same as on primary
+     2. At Step c: Session uptime on new primary should be more 
+	 than as before switchover
+     3. At step d: Session is learnt on new secondary and is made operational
+	 Session uptime on new secondary is same as on new primary 
+     Result: PASS
+
+
+
+
+2 INITIAL/ONGOING SYNC:
+=============================
+
+A. SESSION SYNC:
+================
+
+Test Case 1: LDP session is sync'ed up [one session]
+	Test Setup: Using setup 1
+              A and B establish ldp session
+	      A and B advertise lo0 FEC to each other.
+	Success Criteria:
+	1. B1 learns about the session up event via the mirroring api 
+           mirror session add. It adds the session to the sync request queue.
+	   "show ldp replication session detail"
+	2. B1 sends session request message to primary.
+	   Enable logs and "show ldp replication session detail"
+	3. Primary responds with session information.
+	   a. TCP socket gets replicated successfully
+	   b. B1 learns about all the next hop addresses advertised
+              and received by B for the session between A and B
+  	   c. B1 learns about all the labels inbound and outbound on B
+              for the session between A and B
+  	4. B1 installs ingress and transit route for A lo0 FEC.
+	5. LDP session shows sync complete on both B and B1:
+	   "show ldp replication session"
+	Result: PASS
+
+
+Test Case 2:  Multiple LDP sessions are sync'ed up
+	Test Setup: Using setup 2
+	     B established LDP session with A and C
+	     B exchanges lo0 FEC label mapping with A and C
+	Success Criteria:
+	1. B1 learns about the session up event via the mirroring api 
+           mirror session add. It adds both the sessions to the sync 
+	   request queue.
+	2. B1 sends session request message to primary for both the 
+	   session one by one.
+	3. Primary responds with session information for each session.
+	   a. TCP socket gets replicated successfully
+	   b. B1 learns about all the next hop addresses advertised and
+	      received by B for both the sessions.
+           c. B1 learns about all the labels inbound and outbound on B
+	      for both the sessions.
+  	4. B1 installs ingress and transit route for A lo0 FEC and C lo0 FEC. 
+	     "show ldp path", "show route protocol ldp"
+	5. LDP session shows sync complete for both sessions on both B and B1: 
+	   "show ldp replication session".
+	Result: PASS
+
+	
+Test Case 3: LDP session is unsync'ed when session goes down on primary
+	Test Setup: Using setup 2
+		"clear ldp session A" on B
+   	Success Criteria:
+	1. B1 learns about the connection close via the mirroring api 
+	   mirror session delete. It should close the session to A. 
+	2. Session to C should remain up.
+	3. ingress and transit route to A should be deleted.
+	4. outlib binding for A's lo0 FEC withdrawn from C. 
+	Result: PASS
+
+
+Test Case 3: LDP session is sync'ed when session comes up again on primary
+	Test Setup: Continuing from previous test case:
+	   Session between A and B comes up again.
+   	Success Criteria:
+        1. B1 learns about the session up event via the mirroring api 
+	   mirror session add. It should add the session to the sync queue.
+	2. Session to A should get re-sync'ed.
+	3. Ingress and transit route to A installed.
+	4. outlib binding for A's lo0 FEC re-advertised to all sessions.
+	5. LDP session shows sync complete on both B and B1: 
+	   "show ldp replication session".
+	Result: PASS
+
+
+Test Case 5: LDP session is unsync'ed when all session adjacencies are lost
+	Test Setup: Using setup 2
+		"clear ldp neighbor <intf-to-A> on B
+	Success Criteria:
+	1. B1 learns about the adjacency down and session down via 
+	   the mirroring api mirror adjacency delete and mirror session
+	   delete. It should close the session to A. 
+	2. Session to C should remain up.
+	3. ingress and transit route to A should be deleted.
+	4. outlib binding for A's lo0 FEC withdrawn from C. 
+	Result: PASS
+
+
+Test Case 6: On secondary, all adjacencies of a session goes down
+	Test Setup: Using setup 2
+	"clear ldp neighbor <intf-to-A> on B1
+	Success Criteria:
+	1. B1 brings down the adjacency and hence the session goes down.
+	   Session TCP socket is closed. Mirror adjacency is dissociated
+	   from the adjacency.
+	2. B1 re-reads the hello present in the mirror adjacency structure 
+	   and tries to re-establish the adjacency. Once the adjacency is 
+	   established, the session is put onto the request sync queue and
+	   re-sync'ed.
+	3. Session to C is undisturbed.
+	Result: PASS
+
+
+Test Case 7: On secondary, session goes down.
+	Test Setup: Using setup 2
+		"clear ldp session A" on B1
+	Success Criteria:
+	1. B1 closes the session to A and clears all the state. The session
+           is now unsync'ed. The session is put it onto the request sync 
+	   queue and finally sync'ed up again.
+	2. Session to C is undisturbed.
+	Result: PASS
+
+
+B. Next hop Address Testing:
+===============================
+
+Test Case 1: All next hop addresses learnt from neighbor are sent to
+	     the standby during initial sync.
+
+     Result: PASS
+
+
+Test Case 2: All next hop addresses sent from neighbor are sent to
+	     the standby during initial sync.
+	
+     Result: PASS
+
+
+Test Case 3: New Next hop address learnt from neighbor during ongoing sync
+	     is learnt by standby over the replicated socket.
+
+     Result: PASS
+
+
+Test Case 4: New Next hop address sent to neighbor during ongoing sync
+	     is learnt by standby over the replicated socket.
+
+     Result: PASS
+
+
+Test Case 5: Next hop address withdrawn by neighbor during ongoing sync
+	     is reflected on standby.
+
+     Result: PASS
+
+
+Test Case 6: Next hop address withdrawn from neighbor during ongoing sync
+	     is reflected on standby.
+
+     Result: PASS
+
+
+
+
+C. LABEL BINDING STATE TESTING:
+==============================
+FEC:  FX
+Label: LX
+Label binding/message: (FX--->LX)
+
+Test Code commands:
+
+To simulate receive on standby of a label message:
+test ldp label-message instance <> session <> lib <inlib/outlib> channel <irs/jsr> msg-type <map/withdraw/release>  label <label> <prefix>
+
+
+a. InLIB Label Binding:
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+LABEL MAP TESTS:
+^^^^^^^^^^^^^^^^^
+
+Test Case 1: Inbound label map receive for a non-existent binding over the IRS
+     Test Setup: 
+	  Using setup 1: restart secondary	
+	  Secondary asks for initial sync data for the session.
+     Success Criteria: 
+	  "show ldp database detail"
+	  1. An ACTIVE binding gets created
+	  2. map counter == 1
+     Result: PASS
+
+
+Test Case 2: Inbound label map receive for a non-existent binding over the JSR
+     Test Setup: Continuing from previous test.
+	  1. Make sure session on B1 is operational and sync complete.
+	  2. Advertise a new label map (FA --> LA) from A to B.
+	     B1 will receive this over the JSR
+     Success Criteria:
+          "show ldp database detail"
+	  1. The ACTIVE binding gets created in the inlib for this session.
+	  2. map counter = 1 
+     Result: PASS
+
+
+Test Case 3: Inbound label map receive for an existent binding over the IRS
+     Test Setup: Using test code:
+	Mark the session in initial sync mode.
+	1. Existent binding in ACTIVE state:
+	    - Receive inbound label map (FA -> LA) over the JSR.	
+	    - Receive inbound label map (FA -> LA) over the IRS.
+	2. Existent binding in RELSEND state:
+	    - Receive inbound label withdraw (FA -> LA) over the JSR.
+	    - Receive inbound label map (FA -> LA) over the IRS.
+	3. Existent binding in NEW state:
+	    - Receive outbound label release (FA -> LA) over the JSR.	
+	    - Receive inbound label map (FA -> LA) over the IRS.
+     Success Criteria:
+	1. The label map over the IRS is ignored.
+	2. The label map over the IRS is ignored.
+	3. Map counter incremented on the binding and the binding 
+           state is set to ACTIVE.
+     Result: TODO
+
+
+Test Case 4: Inbound label map receive for an existent binding over the JSR
+     Test Setup: Using test code:
+	1. Existent binding in ACTIVE state:
+	    - Receive inbound label map (FA ---> LA) over the IRS/JSR.
+	    - Receive inbound label map (FA ---> LA) over the JSR.
+	2. Existent binding in RELSEND state:
+	    - Receive inbound label map (FA ---> LA) over the IRS/JSR.
+	    - Receive inbound label withdraw (FA ---> LA) over the JSR.
+	    - Receive inbound label map (FA ---> LA) over the JSR.
+	3. Existent binding in NEW state:
+	    - Receive outbound label release (FA ---> LA) over the JSR.	
+	    - Receive inbound label map (FA ---> LA) over the JSR.
+     Success Criteria:
+	1. The label map over the IRS is ignored.
+	2. Map counter incremented on the binding and the binding state
+           is set to ACTIVE.
+	3. Map counter incremented on the binding and the binding state
+           is set to ACTIVE.
+     Result: PASS
+
+
+Test Case 5: Inbound label map (non-existent binding) receive for a FEC
+             that has an existing binding 
+     Test Setup: Using test code
+	1. Binding in ACTIVE state:
+	    - Receive inbound label map (FA ---> LA) over the JSR.
+	    - Receive inbound label map (FA ---> LB) over the JSR.
+	2. Binding in RELSEND state:
+	    - Receive inbound label withdraw (FA ---> LA) over the JSR.
+	    - Receive inbound label map (FA ---> LB) over the JSR.
+	3. Binding in NEW state (not possible):
+	    - Receive outbound label release (FA ---> LA) over the JSR.	
+	    - Receive inbound label map (FA ---> LB) over the JSR.
+     Success Criteria:
+	1. Multiple active labels for the same FEC, close session and 
+           resync the session.
+	2. New binding is created and the map counter incremented on 
+           the binding and the binding state is set to ACTIVE.
+	3. We must never get into this situation, close session and 
+           resync the session.
+     Result: 2 PASS (1, 3 pending)
+
+
+LABEL WITHDRAW TESTS:
+^^^^^^^^^^^^^^^^^^^^^^
+		
+Test Case 6: Inbound label withdraw receive over the IRS
+     Test Setup: Using test code:	
+	1. Receive inbound label withdraw (FA -> LA) over the IRS
+     Success Criteria:
+     Result: TODO
+
+
+Test Case 7: Inbound label withdraw receive for a non-existent binding
+     Test Setup: Using test code:	
+	1. Receive inbound label withdraw (FA -> LA) over the JSR in
+           intial sync mode
+	2. Receive inbound label withdraw (FA -> LA) over the JSR 
+           during ongoing sync
+     Success Criteria:
+	1. Binding is created and release counter decremented. 
+           The binding state is set to RELSEND.
+	2. Should never happen. Ignore like the primary - correct behavior?
+     Result: TODO
+
+
+Test Case 8: Inbound label withdraw receive for an existent binding
+        during initial sync mode
+     Test Setup: Using test code:
+	Mark session in initial sync mode:
+	1. Existent binding in ACTIVE state with no release received:
+	    - Receive inbound label map (FA -> LA) over the JSR/IRS 
+	    - Receive inbound label withdraw (FA -> LA) over the JSR
+	2. Existent bBinding in ACTIVE state with release received:
+	    - Receive inbound label map (FA -> LA) over the JSR/IRS 
+	    - Receive outbound label release (FA -> LA) over the JSR	
+	    - Receive inbound label withdraw (FA -> LA) over the JSR
+	3. Existent binding in NEW state during initial sync mode:
+	    -  Mark session in initial sync mode
+	    -  Receive outbound label release (FA ---> LA) over the JSR
+	    -  Receive inbound label withdraw (FA ---> LA) over the JSR
+     Success Criteria:
+	1. Map counter and release counter decremented. 
+	   Binding state set to RELSEND
+	2. Binding state set to RELSEND. 
+	   Map counter and release counter decremented and must be zero. 
+	   Binding should not be released since we want to continue to 
+	   ignore label map messages over the IRS for this binding.
+	3. Decrement release counter. Binding state set to RELSEND. 
+	   Map counter and release counter must now be zero. Binding should
+	   not be released since we want to continue to ignore label map 
+	   messages over the IRS for this binding.
+    Result: TODO
+
+
+
+Test Case 8: Inbound label withdraw receive for an existent binding
+        during initial sync mode
+     Test Setup: Using test code:
+	Mark session in initial sync complete mode.
+	1. Existent binding in ACTIVE state with no release received:
+	    - Receive inbound label map (FA -> LA) over the JSR 
+	    - Receive inbound label withdraw (FA -> LA) over the JSR
+	2. Existent binding in ACTIVE state with release received:
+	    - Receive inbound label map (FA -> LA) over the JSR 
+	    - Receive outbound label release (FA -> LA) over the JSR
+	    - Receive inbound label withdraw (FA -> LA) over the JSR
+	3. Existent binding in RELSEND state:
+	    - Receive inbound label map (FA -> LA) over the JSR 
+	    - Receive inbound label withdraw (FA -> LA) over the JSR
+	    - Receive inbound label withdraw (FA -> LA) over the JSR.
+	4. Existent binding in NEW state:
+	    -  Receive outbound label release (FA ---> LA) over the JSR
+	    -  Receive inbound label withdraw (FA ---> LA) over the JSR	    
+     Success Criteria:
+	1. Map counter and release counter decremented (map_c = 0, rel_c = -1).
+           Binding state set to RELSEND
+	2. Map counter and release counter decremented and must be zero. 
+	   Binding state set to RELSEND and the binding gets released.
+	3. Ignore withdraw message.
+	4. Close the session and resync. During ongoing sync, withdraw
+	   message for a binding must always follow a map message. Hence 
+	   the state of the binding must never be NEW
+     Result: PASS (4 TODO)
+
+
+LABEL RELEASE TESTS:
+^^^^^^^^^^^^^^^^^^^^
+
+Test Case 9: Outbound label release receive over the IRS
+     Test Setup: Using test code command
+	Receive outbound label release (FA ----> LA) over the IRS
+     Success Criteria:
+	Close the session and resync. We must never receive label release
+	over the IRS.
+     Result: TODO
+
+
+
+Test Case 9: Outbound label release receive over the JSR for non-existent
+	     binding
+     Test Setup: Using test code command
+	Receive outbound label release (FA ----> LA) over the JSR
+     Success Criteria:
+	1. Binding gets create and state is to NEW. 
+	2. Release counter incremented. 
+     Result: PASS
+
+
+Test Case 10: Outbound label release receive over the JSR for existent binding
+     Test Setup: Using test code
+	1. Existing binding in ACTIVE state
+	    -  Receive inbound label map (FA ----> LA) over the JSR
+	    -  Receive outbound label release (FA ----> LA) over the JSR
+	2. Existing binding in RELSEND state during initial sync mode
+	    -  Mark session in initial sync mode
+	    -  Receive inbound label map (FA ----> LA) over the JSR
+	    -  Receive inbound label withdraw (FA ----> LA) over the JSR
+	    -  Receive outbound label release (FA ----> LA) over the JSR
+	3. Existing binding in RELSEND state during ongoing sync mode
+	    -  Mark session in ongoing sync mode
+	    -  Receive inbound label map (FA ----> LA) over the JSR
+	    -  Receive inbound label withdraw (FA ----> LA) over the JSR
+	    -  Receive outbound label release (FA ----> LA) over the JSR
+	4. Existing binding in NEW state 
+	    -  Receive outbound label release (FA ----> LA) over the JSR
+	    -  Receive outbound label release (FA ----> LA) over the JSR
+     Success Criteria:
+	1. Release counter is incremented. Binding state ACTIVE.
+	   Map counter and release counter must be 1.
+	2. Release counter is incremented. Binding state RELSEND.
+	   Map counter and release counter must be zero. 
+	3. Release counter is incremented. Binding is released.
+	4. Release counter is incremented. Release counter must be 2.
+	   Binding state NEW.
+     Result: PASS (2 TODO)
+
+
+
+b. OutLIB Label Binding
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+LABEL MAP TESTS:
+^^^^^^^^^^^^^^^^^
+
+Test Case 1: Outbound label map receive over the IRS for non-existent binding
+     Test Setup: Using test code:
+	Receive outbound label map (FA ----> LA) over the IRS
+     Success Criteria:
+	Binding is created and state set to ACTIVE.
+     Result: PASS
+
+
+Test Case 2: Outbound label map receive over the JSR for non-existent binding
+     Test Setup: Using test code:
+	Receive outbound label map (FA ----> LA) over the JSR
+     Success Criteria:
+	Binding is created and state set to ACTIVE.
+     Result: PASS
+
+
+Test Case 3: Outbound label map receive over the IRS for existent binding
+[Note, this is possible only in initial sync mode]
+     Test Setup: Using test code:
+	1. Receive outbound label map for binding in ACTIVE state:
+	    - Receive outbound label map  (FA ----> LA) over the JSR
+	    - Receive outbound label map (FA ---> LA) over the IRS
+	2. Receive outbound label map for binding in RELRCV state:
+	    - Receive outbound label map  (FA ----> LA) over the JSR
+	    - Receive outbound label withdraw (FA ----> LA) over the JSR
+	    - Receive outbound label map (FA ---> LA) over the IRS
+     Success Criteria:
+	1. Ignore label map from IRS
+	2. Ignore label map from IRS
+     Result: TODO
+
+
+Test Case 4: Outbound label map receive over the JSR for existent binding
+     Test Setup: Using test code:
+	1. Existing binding in ACTIVE state:
+	    - Receive outbound label map  (FA ----> LA) over the IRS/JSR
+	    - Receive outbound label map (FA ---> LA) over the JSR
+	2. Existing binding in RELRCV state:
+	    - Receive outbound label map  (FA ----> LA) over the IRS/JSR
+	    - Receive outbound label withdraw (FA ----> LA) over the JSR
+	    - Receive outbound label map (FA ---> LA) over the JSR
+     Success Criteria:
+	1. Binding state remains ACTIVE.
+	2. Binding state set to ACTIVE.
+     Result: PASS
+
+
+Test Case 5: Outbound label map receive over the IRS for non-existent binding
+	     with another binding for this FEC.
+	     [Note, the session must be in initial sync mode]
+     Test Setup: Using test code:
+	1. Pre-existing binding for FEC in ACTIVE state:
+	    - Receive outbound label map (FA ---> LA) over the JSR
+	    - Receive outbound label map (FA ---> LB) over the IRS
+	2. Pre-existing binding in RELRCV state:
+	    - Receive outbound label map (FA ---> LA) over the JSR
+	    - Receive outbound label withdraw (FA ---> LA) over the JSR
+	    - Receive outbound label map (FA ---> LB) over the IRS
+     Success Criteria:
+	1. The primary must have only one ACTIVE binding for each FEC
+	   since we don't support non-merging mode.
+	   This binding must be ignored since we have already received
+	   an ACTIVE binding for this FEC and this must be over the JSR. ****
+	2. Binding is created and state set to ACTIVE. The second binding
+	   stays in RELRCV mode.
+     Result: TODO
+
+
+Test Case 6: Outbound label map receive over the JSR during initial sync mode
+	     for non-existent binding with another binding for this FEC.
+     Test Setup: Using test code:
+	1. Pre-existing binding for FEC in ACTIVE state:
+	    - Receive outbound label map (FA ---> LA) over the JSR
+	    - Receive outbound label map (FA ---> LB) over the JSR
+	2. Pre-existing binding for FEC in RELRCV state:
+	    - Receive outbound label map (FA ---> LA) over the JSR
+	    - Receive outbound label withdraw (FA ---> LA) over the JSR
+	    - Receive outbound label map (FA ---> LB) over the JSR
+     Success Criteria:
+	1. Binding created and state set to ACTIVE. We can assume that we 
+	   have received release for all older bindings. Release the 
+	   pre-existing binding in ACTIVE state. Since there is atleast one
+	   active binding on the FEC, there is no need to keep negative state.
+	   ****
+	2. Binding created and state set to ACTIVE. The pre-existing binding
+	   in RELRCV mode is not removed since we cannot be certain that
+	   we have received a release for this binding.
+     Result: TODO
+
+
+Test Case 7: Outbound label map receive over the JSR during ongoing sync mode
+	     for non-existent binding with another binding for this FEC.
+     Test Setup: Using test code:
+	1. Pre-existing binding for FEC in ACTIVE state:
+	    - Receive outbound label map (FA ---> LA) over the JSR
+	    - Receive outbound label map (FA ---> LB) over the JSR
+	2. Pre-existing binding for FEC in RELRCV state:
+	    - Receive outbound label map (FA ---> LA) over the JSR
+	    - Receive outbound label withdraw (FA ---> LA) over the JSR
+	    - Receive outbound label map (FA ---> LB) over the JSR
+     Success Criteria:
+	1. Binding created and state set to ACTIVE. We can assume that we 
+	   have received release for all older bindings. Release the 
+	   pre-existing binding in ACTIVE state. ****
+	2. Binding created and state set to ACTIVE. The pre-existing binding
+	   in RELRCV mode is not removed since we cannot be certain that
+	   we have received a release for this binding.
+     Result: TODO
+
+
+
+LABEL WITHDRAW TESTS:
+^^^^^^^^^^^^^^^^^^^^^^
+
+Test Case 8: Outbound label withdraw receive over the IRS for non-existing
+	     binding during initial sync mode.
+     Test Setup: using test code
+	  Mark session in initial sync mode
+	  Receive outbound label withdraw (FA ---> LA) over the IRS.
+     Success Criteria:
+	  Binding created in RELRCV state.
+     Result: TODO
+
+
+Test Case 9: Outbound label withdraw receive over the JSR during initial 
+	     sync mode for a non-existent binding.
+     Test Setup: using test code
+	  Mark session in initial sync mode
+	  Receive outbound label withdraw (FA ---> LA) over the JSR.
+     Success Criteria:
+	  Binding created in RELRCV state.
+     Result: TODO
+
+
+Test Case 10: Outbound label withdraw receive over the JSR during ongoing 
+	      sync mode for a non-existent binding.
+     Test Setup: using test code
+	  Mark session in ongoing sync mode
+	  Receive outbound label withdraw (FA ---> LA) over the JSR
+     Success Criteria:
+	  This shouldn't happen. Close the session and resync the session. 
+	  [XXX we can probably just ignore. This is what the primary does]. 
+     Result: TODO
+
+
+Test Case 11: Outbound label withdraw receive over the IRS during initial
+	      sync mode for an existent binding
+     Test Setup: using test code:
+	1. Existing binding in ACTIVE state:
+	    - Receive outbound label map (FA ---> LA) over the JSR
+	    - Receive outbound label withdraw (FA ---> LA) over the IRS
+	2. Existing binding in RELRCV state
+	    - Receive outbound label map (FA ---> LA) over the JSR
+	    - Receive outbound label withdraw (FA ---> LA) over the JSR
+	    - Receive outbound label withdraw (FA ---> LA) over the IRS
+     Success Criteria:
+	1. Ignore withdraw message.
+	2. Ignore withdraw message.
+     Result: TODO
+
+
+Test Case 12: Outbound label withdraw receive over the JSR 
+	      for an existent binding
+     Test Setup: using test code:
+	1. Existing binding in ACTIVE state:
+	    - Receive outbound label map (FA ---> LA) over the IRS
+	    - Receive outbound label withdraw (FA ---> LA) over the JSR
+	2. Existing binding in RELRCV state
+	    - Receive outbound label map (FA ---> LA) over the JSR
+	    - Receive outbound label withdraw (FA ---> LA) over the IRS
+	    - Receive outbound label withdraw (FA ---> LA) over the JSR
+     Success Criteria:
+	1. Put binding in RELRCV state.
+	2. Ignore withdraw message.
+     Result: TODO
+
+
+LABEL RELEASE TESTS:
+^^^^^^^^^^^^^^^^^^^^^
+
+Test Case 13: Inbound label release receive over the JSR
+	      [Note release message will only be received over the JSR]
+     Test Setup: using test code:
+	  1. Receive inbound label release for non-existent binding
+	  2. Receive inbound label release for existent binding
+     Success Criteria:
+	  1. The release is simply ignored. Binding doesn't get created.
+	  2. The release is simply ignored. 
+	     State of the binding doesn't change.
+     Result: PASS
+
+
+
+
+
+
+D. LDP ROUTES TEST CASES:
+===========================
+
+a. Outbound Label Map
+~~~~~~~~~~~~~~~~~~~~~~
+
+All the tests below to be run for each of the following conditions:
+1. Egress routes:
+    A.  where route is not present in the shadow routing table.
+    B.  where route is present in the shadow routing table but no mirror nexus 
+	for the label.
+    C.  where route is present in the shadow routing table and there is
+	a mirror nexus for the label.
+
+2. Non-egress routes:
+    A. where route is not present in the shadow routing table.
+    B. where route is present in the shadow routing table but no next hop
+       label vector.
+    C. where route is present in the shadow routing table and there is a 
+       next hop label vector but there is no mirror nexus for the label.
+    D. where route is present in the shadow routing table, a next hop label 
+       vector exists, and there is a mirror nexus for the label.
+
+
+Test Case 1: Outbound label map receive for a prefix where:
+	     a. this is the first session to have advertised this label map
+	     b. this is the only label advertised for this prefix
+	     c. this is the only prefix associated with this label
+     Test Steps: using test code
+	Receive outbound label map (FA-->LA) for session A.
+     Success Criteria:
+	1. For (1.A, 1.B, 2.A, 2.B, 2.C):
+	   Standby prefix gets created for this prefix.
+	   Standby nexus gets created for the label. 
+	   Standby prefix gets associated with standby nexus.
+	   No route gets installed in the rib.
+	2. For (1.C, 2.D):
+	   Standby prefix gets created for this prefix.
+	   Standby nexus gets created for the label. 
+	   Standby prefix gets associated with standby nexus.  
+	   Ingress and transit route gets installed in the rib.
+     Result: Look at Grid
+
+
+
+Test Case 2: Outbound label map receive for a prefix where:
+	     a. this is the first session to have advertised this label map.
+	     b. this is not the only label advertised on this prefix.
+	     c. this is the only prefix associated with this label.
+     Test Steps: using test code
+	1. Receive outbound label map (FA-->LA) for session A
+	2. Receive outbound label map (FA-->LB) for session B
+     Success Criteria:
+	1. For (1.A, 1.B, 2.A, 2.B, 2.C): 
+	   Standby nexus gets created for new label (LB). 
+	   Standby prefix gets associated with this new label (LB). 
+	   No route gets installed.
+	2. For (1.C, 2.D): 
+	   Standby nexus gets created for new label (LB). 
+	   Standby prefix gets associated with this new label (LB). 
+	   Ingress and transit route gets installed in the rib.
+     Result:  Look at Grid
+
+
+Test Case 3: Outbound label map receive for a prefix where:
+	     a. this is the first session to have advertised this label map
+	     b. this is the only label advertised on this prefix
+	     c. this is not the only prefix associated with this label
+     Test Steps: using test code
+	1. Receive outbound label map (FA-->LA) for session A
+	2. Receive outbound label map (FB-->LA) for session A
+     Success Criteria:
+	1. For (1.A, 1.B, 2.A, 2.B, 2.C): 
+	   Standby prefix gets created for new prefix (FB). 
+	   Standby prefix gets associated with  label (LA).
+	   No other changes occur.
+        2. For (1.C, 2.D): 
+	   Standby prefix gets created for FB and gets associated with label 
+	   LA. 
+	   Ingress route for FB gets installed and transit route gets updated.
+     Result: Look at Grid
+
+
+Test Case 4: Outbound label map receive for a prefix where:
+	     a. this is the first session to have advertised this label map
+	     b. this is not the only label advertised on this prefix
+	     c. this is not the only prefix associated with this label
+     Test Steps: using test code
+	1. Receive outbound label map (FA-->LA) for session A
+	2. Receive outbound label map (FB-->LB) for session B
+	3. Receive outbound label map (FA-->LB) for session B
+     Success Criteria:
+	1. For (1.A, 1.B, 2.A, 2.B, 2.C):
+	   Standby prefix for FB gets associated with  label (LA).
+        2. For (1.C, 2.D):
+	   Standby prefix for FB and gets associated with label LA. 
+	   Ingress route for FB gets updated and transit route gets updated.
+     Result:  Look at Grid
+
+
+
+
+Test Case 5: Outbound label map receive for a prefix where:
+	     a. this is not the only session to have advertised this label map
+     Test Steps: using test code
+	1. Receive outbound label map (FA-->LA) for session A
+	2. Receive outbound label map (FA-->LA) for session B
+     Success Criteria:
+	Reference count on standby_nexus_ref increments
+     Result: Look at Grid
+
+
+
+
+RESULT GRID FOR THE ABOVE TEST CASES:
+
+
++--------+-----------------------+-------------------------------+
+| Test   |          1            |               2               |
+| Cases  |   A   |   B   |   C   |   A   |   B   |   C   |   D   |
++--------+-------+-------+-------+-------+-------+-------+-------+
+|   a.1  |  PASS | PASS  | PASS  | PASS  |  PASS | PASS  |  PASS |
++--------+-------+-------+-------+-------+-------+-------+-------+
+|   a.2  |  PASS |       |       | PASS  |       |       |  PASS |
++--------+-------+-------+-------+-------+-------+-------+-------+
+|   a.3  |  PASS |       |       | PASS  |       |       | PASS  |
++--------+-------+-------+-------+-------+-------+-------+-------+
+|   a.4  |  PASS |       |       | PASS  |       |       | PASS  |
++--------+-------+-------+-------+-------+-------+-------+-------+
+|   a.5  |  PASS | PASS  | PASS  | PASS  |  PASS | PASS  |  PASS |
++--------+-------+-------+-------+-------+-------+-------+-------+
+
+
+
+
+b. Outbound Label Withdraw:
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The following tests need to be run for:
+1. Egress routes:
+    A. Transit route not installed.
+    B. Transit route installed
+2. Non-egress routes:
+    A. ingress and transit route not installed.
+    B. ingress and transit route installed
+
+
+
+Test Case 1: Outbound label withdraw receive for a prefix where:
+	     a. this is the only session that had advertised this label map
+	     b. this is the only label advertised on this prefix.
+	     c. this is the only prefix associated with this label
+     Test Steps: using test code
+	1. Receive outbound label map (FA-->LA) for session A
+	2. Receive outbound label withdraw (FA-->LA) for session A
+     Success Criteria:
+	1. For (1.A, 2.A):
+	   Standby prefix for FA gets removed. 
+	   Standby nexus for label (LA) gets removed.
+	1. For (1.B, 2.B): 
+	   Standby prefix for FA gets removed along with the ingress route. 
+	   Standby nexus for label (LA) gets removed as well as the transit 
+	   route on this label. Mirror nexus gets unattached.
+      Result: Look at Grid
+
+
+
+Test Case 2: Outbound label withdraw receive for a prefix where:
+	     a. this is the only session that had advertised this label map
+	     b. this is not the only label advertised on this prefix
+	     c. this is the only prefix associated with this label
+     Test Steps: using test code
+	1. Receive outbound label map (FA-->LA) for session A
+	2. Receive outbound label map (FA-->LB) for session B
+	3. Receive outbound label withdraw (FA-->LB) for session B
+     Success Criteria:
+	1. For (1.A, 2.A): 
+	   Standby prefix gets disassociated from the label (LB) by 
+	   disassociating the standby_prefix to the standby_nexus. 
+	   Standby nexus for label (LB) gets removed from the database. 
+	2. For (1.B, 2.B): 
+	   Standby prefix gets disassociated from the label (LB) and the 
+	   ingress route for this prefix gets with this label gets removed.
+	   The ingress route with label (LA) is still present. 
+	   Standby nexus for label (LB) gets removed from the database as 
+	   well as the transit route on this label. 
+     Result:  Look at Grid
+
+
+
+Test Case 3: Outbound label withdraw receive for a prefix where:
+	     a. this is the only session that has advertised this label map
+	     b. this is the only label advertised on this prefix
+	     c. this is not the only prefix associated with this label
+     Test Steps: using test code
+	1. Receive outbound label map (FA-->LA) for session A
+	2. Receive outbound label map (FB-->LA) for session A
+	3. Receive outbound label withdraw (FA-->LA) for session A
+     Success Criteria:
+	1. For (1.A, 2.A): 
+	   Standby prefix FA gets disassociated from standby nexus for 
+	   label (LA). However FB remains associated with standby_nexus 
+	   for label (LA). 
+	   Standby prefix FA gets removed from the database. 
+	   The label (LA) is still in the out-label tree of the nexus for 
+	   session A.
+	2. For (1.B, 2.B): 
+	   Standby prefix gets disassociated from label (LA) and the 
+	   ingress route associated with this prefix gets removed as well. 
+	   Standby prefix gets removed from the database. 
+     Result: Look at Grid
+
+
+Test Case 4: Outbound label withdraw receive for a prefix where:
+	     a. this is the only session that has advertised this label map
+	     b. this is not the only label advertised on this prefix
+	     c. this is not the only prefix associated with this label
+     Test Steps: using test code
+	1. Receive outbound label map (FA-->LA) for session A
+	2. Receive outbound label map (FB-->LB) for session B
+	3. Receive outbound label map (FA-->LB) for session B
+	4. Receive outbound label withdraw (FA-->LB) for session B
+     Success Criteria:
+	Standby prefix gets disassociated with this label (LB) by 
+	disassociating the standby_prefix from the standby_nexus. 
+     Result:  Look at Grid
+
+
+Test Case 5: Outbound label withdraw receive for a prefix where:
+	     a. this is not the only session that had been advertised this 
+		label map.
+     Test Steps: using test code
+	1. Receive outbound label map (FA-->LA) for session A
+	2. Receive outbound label map (FA-->LA) for session B
+	2. Receive outbound label withdraw (FA-->LA) for session B
+     Success Criteria:
+	Reference count on standby_nexus_ref decrements 
+     Result:  Look at Grid
+
+
+RESULT GRID FOR THE ABOVE TEST CASES:
+
+
++--------+---------------+---------------+
+| Test   |          1    |       2       |
+| Cases  |   A   |   B   |   A   |   B   |
++--------+-------+-------+-------+-------+
+|   b.1  |  PASS |       |  PASS |  PASS |
++--------+-------+-------+-------+-------+
+|   b.2  |  PASS |       |  PASS |  PASS |
++--------+-------+-------+-------+-------+
+|   b.3  |  PASS |       |  PASS |  PASS |
++--------+-------+-------+-------+-------+
+|   b.4  |  PASS |       |  PASS |  PASS |
++--------+-------+-------+-------+-------+
+|   b.5  |  PASS |       |  PASS |  PASS |
++--------+-------+-------+-------+-------+
+
+
+
+c. Inbound Label Map
+~~~~~~~~~~~~~~~~~~~~~
+
+
+Test Case 1: Inbound label map receive where:
+	     a. route not in shadow routing table
+     Test Steps: using test code command:
+	Receive inbound label map (FA--> LA) for session A
+     Success Criteria:
+	1. Label map is added to in lib of session
+	2. Since no route in the shadow routing table, nothing else changes.
+     Result: PASS
+
+
+Test Case 2: Inbound label map receive where:
+	     a. route in shadow routing table 
+	     b. session is not next hop for the route
+     Test Steps: Using test topology 2:
+	1. learn ospf route for this prefix from A
+	2. using test code, receive inbound label map (FA--> LA) from session C
+     Success Criteria:
+	1. label map is added to in lib of session B
+	2. Since session is not next hop for the route, nothing else changes.
+     Result: PASS
+
+
+Test Case 3: Inbound label map receive where:
+	     a. route in shadow routing table
+	     b. session is next hop for the route
+	     c. no out-label for prefix 
+     Test Steps:
+	Using test topology 2:
+	1. learn ospf route for this prefix from A
+	2. using test code, receive inbound label map (FA--> LA) from session A
+     Success Criteria:
+	1. label map is added to in lib of session B
+	2. Even though session is next hop for the route, nothing else changes
+	   since no out-label has been received for this prefix.
+     Result: PASS
+
+
+Test Case 4: Inbound label map receive where:
+	     a. route in shadow routing table
+	     b. session is next hop for the route
+	     c. out-label for prefix 
+	     d. no mirror nexus for out-label
+     Test Steps: Using test topology 2:
+	1. learn ospf route for this prefix from A
+	2. using test code, receive outbound label map (FA --> LAo) from 
+	   session A
+	3. using test code, receive inbound label map (FA--> LAi) from 
+	   session A
+     Success Criteria:
+	1. Label map is added to in lib of session B
+	2. Even though session is next hop for the route and we have an 
+	   out-label for this prefix, no routes gets installed since mirror
+	   nexus for out-label is not present.
+     Result: PASS
+
+
+Test Case 5: Inbound label map receive where:
+	     a. route in shadow routing table 
+	     b. out-label for prefix
+	     c. mirror nexus for out-label
+	     d. only prefix bound to out-label
+	     e. session is next hop for the route
+	     f. first label map received from session where session
+		is the next hop for the route
+     Test Steps: Using test topology 2:
+	1. learn ospf route for this prefix from A
+	2. using test code, receive outbound label map (FA --> LAo) from 
+	   session A where LAo is a label for which we have already received
+	   a mirror nexus from the primary (show ldp replication path).
+	3. using test code, receive inbound label map (FA--> LAi) from 
+	   session A
+     Success Criteria:
+	1. label map is added to in lib of session C
+	2. ingress route gets installed for prefix and transit route gets
+	   installed for label
+     Result: PASS
+
+
+Test Case 6: Inbound label map receive where:
+	     a. route in shadow routing table 
+	     b. out-label for prefix
+	     c. mirror nexus for out-label
+	     d. session is next hop for the route
+	     e. not the first label map received from session where session
+		is the next hop for the route
+	     f. only prefix bound to out-label
+     Test Steps: Using test topology 2:
+	1. learn ospf route for this prefix from A and C
+	2. using test code, receive outbound label map (FA --> LAo) from 
+	   session A where LAo is a label for which we have already received
+	   a mirror nexus from the primary.
+	3. using test code, receive inbound label map (FA--> LAi) from 
+           session A
+	4. using test code, receive inbound label map (FA-->LCi) from 
+	   session C
+     Success Criteria:
+	1. Label map is added to in lib of session C
+	2. ingress route for prefix gets updated and transit route 
+	   for label gets updated.
+     Result: PASS
+
+
+Test Case 7: Inbound label map receive where:
+	     a. route in shadow routing table 
+	     b. out-label for prefix
+	     c. mirror nexus for out-label
+	     d. session is next hop for the route
+	     e. not the first label map received from session where 
+	        session is the next hop for the route
+	     f. not the only prefix bound to out-label
+     Test Steps: Using test topology 2:
+	1. learn ospf route for prefix F2 from A and C and F1 only from C.
+	2. using test code, receive outbound label map (F1 --> Lo) and 
+	   (F2 --> Lo) from session A where Lo is a label for which we 
+           have already received a mirror nexus from the primary.
+	3. using test code, receive inbound label map (F2--> LA2) from 
+	   session A
+	3. using test code, receive inbound label map (F2--> LC2) from 
+	   session C
+	4. using test code, receive inbound label map (F1--> LC1) from 
+	   session C
+     Success Criteria:
+	1. Label map is added to in lib of session C
+	2. ingress route for F1 gets updated and transit route for 
+	   label gets updated with next hops of F1.
+     Result: PASS
+
+
+
+d. Inbound Label Withdraw
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
+
+Test Case 1: Inbound label withdraw receive where:
+	     a. route not in shadow routing table
+     Test Steps:
+	1. using test code, receive inbound label map (FA--> LA) from
+	   session A
+	2. using test code, receive inbound label withdraw (FA--> LA) 
+	   from session A
+     Success Criteria:
+	1. label binding gets removed from the  InLIB of session
+	2. Since no route in the shadow routing table, nothing else changes.
+     Result: PASS
+
+
+Test Case 2: Inbound label withdraw receive where:
+	     a. route in shadow routing table 
+	     b. session is not next hop for the route
+     Test Steps: Using test topology 2:
+	1. learn ospf route for this prefix from A
+	2. using test code, receive inbound label map (FA--> LA) 
+	   from session C
+	3. using test code, receive inbound label withdraw (FA--> LA) 
+	   from session C
+     Success Criteria:
+	1. label binding gets removed from the  InLIB of session
+	2. Since session is not next hop for the route, nothing else changes.
+     Result: PASS
+
+
+Test Case 3: Inbound label withdraw receive where:
+	     a. route in shadow routing table
+	     b. session is next hop for the route
+	     c. no out-label for prefix 
+     Test Steps: Using test topology 2:
+	1. learn ospf route for this prefix from A
+	2. using test code, receive inbound label map (FA--> LA) from 
+	   session A
+	3. using test code, receive inbound label withdraw (FA--> LA) 
+	   from session A
+     Success Criteria:
+	1. label binding gets removed from the  InLIB of session
+	2. Even though session is next hop for the route, nothing else changes
+	   since no out-label has been received for this prefix.
+     Result: PASS
+
+
+Test Case 4: Inbound label withdraw receive where:
+	     a. route in shadow routing table
+	     b. session is next hop for the route
+	     c. out-label for prefix 
+	     d. no mirror nexus for out-label
+     Test Steps: Using test topology 2:
+	1. learn ospf route for this prefix from A
+	2. using test code, receive outbound label map (FA --> LAo) from
+	   session A
+	3. using test code, receive inbound label map (FA--> LAi) from 
+	   session A
+	4. using test code, receive inbound label withdraw (FA--> LAi) from
+	   session A
+     Success Criteria:
+	1. Label binding gets removed from the  InLIB of session
+	2. Even though session is next hop for the route and we have an 
+	   out-label for this prefix, no routes were installed since mirror 
+	   nexus for out-label is not present. Hence no routes to remove.
+     Result: PASS
+
+
+Test Case 5: Inbound label withdraw receive where:
+	     a. route in shadow routing table 
+	     b. out-label for prefix
+	     c. mirror nexus for out-label
+	     d. session is next hop for the route
+	     e. last label binding on the next hop label vector
+	     f. only prefix bound to out-label
+      Test Steps: Using test topology 2:
+	1. learn ospf route for this prefix from A
+	2. using test code, receive outbound label map (FA --> LAo) from 
+	   session A where LAo is a label for which we have already received
+	   a mirror nexus from the primary.
+	3. using test code, receive inbound label map (FA--> LAi) from 
+	   session A
+	4. using test code, receive inbound label withdraw (FA--> LAi) from
+	   session A
+     Success Criteria:
+	1. label binding gets removed from the  InLIB of session
+	2. ingress route for FEC and transit route for label removed 
+     Result: PASS
+
+
+Test Case 6: Inbound label withdraw receive where:
+	     a. route in shadow routing table 
+	     b. out-label for prefix
+	     c. mirror nexus for out-label
+	     d. session is next hop for the route
+	     e. not the last binding on the next hop label vector
+	     f. only prefix bound to out-label
+     Test Steps: Using test topology 2:
+	1. learn ospf route for this prefix from A and C
+	2. using test code, receive outbound label map (FA --> LAo) for 
+	   session A where LAo is a label for which we have already received
+	   a mirror nexus from the primary.
+	3. using test code, receive inbound label map (FA--> LAi) from 
+	   session A
+	4. using test code, receive inbound label map (FA--> LAi) from 
+	   session C
+	5. using test code, receive inbound label withdraw (FA--> LAi) from
+	   session A
+     Success Criteria:
+	1. label binding gets removed from the  InLIB of session
+	2. ingress route and transit route gets updated with changed 
+	   label vector
+     Result: PASS
+
+
+Test Case 7: Inbound label withdraw receive where:
+	     a. route in shadow routing table 
+	     b. out-label for prefix
+	     c. mirror nexus for out-label
+	     d. session is next hop for the route
+	     e. last on the next hop label vector
+	     f. not the only prefix bound to out-label
+     Test Steps: Using test topology 2:
+	1. learn ospf route for prefix F2 from A and C and F1 only from C.
+	2. using test code, receive outbound label map (F1 --> Lo) and 
+	   (F2 --> Lo) from session A where Lo is a label for which we 
+           have already received a mirror nexus from the primary.
+	3. using test code, receive inbound label map (F2--> LA2) from 
+	   session A
+	3. using test code, receive inbound label map (F1--> LC1) from 
+	   session C
+	4. using test code, receive inbound label map (F2--> LC2) from 
+	   session C
+	5. using test code, receive inbound label withdraw (F1--> LC1) from
+	   session C
+     Success Criteria:
+	1. label binding gets removed from the  InLIB of session C
+	2. ingress route gets removed for F1 gets removed
+	3. transit route gets updated with the next hop label vector of 
+	   prefix F2. 
+     Result: PASS
+
+
+
+
+IV. BOUNDARY TEST CASES
+
+
+V.  REGRESSION TEST CASES
+
+{As necessary.  As with functional tests but for regression tests.
+Include references to regression requests, who is performing them,
+etc.}
+
+The changes required to support nsr required extensive modification
+to LDP.  Overall functionality should be tested.
+
+
+VI.  INTEROP TEST CASES
+
+{As necessary.  As with functional tests but for interoperability.
+Include references to any specs or details regarding the interop
+target.}
+
+Interop testing with Cisco and E-series routers should be performed.
+This is especially important after switchover to make sure that the
+sessions remain up when the neighbor is not a Juniper router.
+
+
+
+VII.  MIGRATION & COMPATIBILITY TEST CASES
+
+{As necessary.  As with functinoal tests but for migration and
+compatibiilty tests (any tests needed to show forwards/backwards
+compatibility, to show existing configs will not break, to verify
+upgrades and downgrades, etc.}
+
+
+
+VIII.  TEST COVERAGE REMAINING
+
+{Describe all test coverage areas which will be needed on the feature
+which are *not* covered by this document.  Identify test inputs for
+systest or other groups to proceed with.}
+
+LDP in Layer 3 VPN scenario
+LDP is Carrier-over-Carrier scenario
+LDP over RSVP (ldp-tunneling)
+LDP with l2circuits 
+ - note that the l2circuits will be dropped after switchover, however, 
+   the session shouldn't drop.
+LDP in Graceful restart helper mode
+
+
+Negative Testing:
+a. DUT receives Unsolicited releases 
+b. DUT receives Wildcard withdraws/releases
+c. Toggling Explicit Null
+d. Deactivate/activate LDP
+e. Restart routing
+f. clear ldp neighbor/session 
+
+
+IX.  DEFECTS REMAINING
+
+{List PRs filed at dev complete for test failures from this plan
+which were not fixed by dev complete.}

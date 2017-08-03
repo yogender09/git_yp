@@ -1,0 +1,863 @@
+$Id: pim-nsr-ut-plan.txt,v 1.5 2007/11/19 05:34:43 ravis Exp $tag:
+                     NSR: PIM stateful replication
+                     Unit-test Plan
+
+                     Ravi Singh <ravis@juniper.net>
+
+S3.02.P05.T02
+{Standard Unit Test Plan Template}
+
+Copyright (C) 2007, Juniper Networks, Inc.
+
+NOTICE: This document contains the proprietary and confidential
+information of Juniper Networks, Inc., and must not be
+distributed outside of the company without the
+permission of Juniper Engineering.
+
+
+1.  INTRODUCTION
+
+This document describes the unit test plan for PIM NSR. This document lists
+the test-cases, their success criteria & the test-results of unit testing
+the various PIM features. THe primary goals are to test:
+    - PIM functionlity continues to work seamless post-switchover.
+    - Retention of relevant replicated state, post-switchover.
+
+Tracks:
+  RLI 2728: PIM stateful replication.
+  PR 94595.
+  Functional spec:  sw-projects/os/nsr/pim-nsr-funcspec.txt
+  Design spec:      sw-projects/os/nsr/pim-nsr-designspec.txt
+
+A related RLI is tracked under:
+  RLI 2727: IGMP stateful replication, PR 94594.
+
+Enabling NSR:
+         set routing-options nonstop-routing 
+         set chassis redundancy graceful-switchover
+         set system commit synchronize
+
+Terminology:
+  ISS:  Initial State Sync. This would be done when the backup rpd is just
+        starting or NSR just got enabled or if PIM just got enabled on the
+        backup rpd already configured for NSR.
+  RESO: RE SwitchOver
+
+
+
+
+
+2.  SETUP
+2.1 Topologies
+
+    Topology A:
+     A 3 router setup. The DUT is a dual RE JNPR router.
+                               _______
+                               | R1   |
+                               |______|
+                                  |
+                      -------------------------
+                          |              |
+                        __|____       ___|__
+                        |  R2 |_______| DUT |
+                        |_____|       |_____|
+
+    Topology B:
+                              |             |
+                              |    Core     | 
+      h0-----R0------R1-------R2------------R3------R4-----R5------h1
+                             (PE1)         (PE2)
+                              |              |
+                              |              |
+
+    Topology C:
+      
+      h0-----R0------R1-------R2-------R3------R4-----R5------h1
+                                       (RP)
+      
+
+
+3. FUNCTIONAL TEST CASES
+
+3.0 Basic administrative testing:
+1. Switch to NSR config from non-NSR config:
+   GOAL: Testing the data structures (Memory usage):
+   STEPS: 
+          - Enable NSR.
+          - Enable PIM.
+          - Do the same test by reversing the ordering of the above steps.
+          - Disable PIM NSR, by trying combinations of ordering of:
+                    + Disabling NSR.
+                    + Disabling PIM.
+   CRITERIA:
+          - Function vectors on the backup should contain the appropriate
+            values: tested using gdb.
+          - When PIM NSR is enabled, RDB data-structure be initialized.: as 
+            seen  through gdb. This should not have been initialized before NSR
+            is enabled (Memory usage).
+          - When NSR is disabled with PIM still enabled, the RDB data-structs
+            should be freed: check through gdb.
+          - When PIM is disabled while NSR is still enabled, the RDB
+            data-structs should be freed: check through gdb.
+          - SUMMARY: the RDB data-structs should get created only when BOTH
+            PIM & NSR (globally) are enabled. When either of these gets 
+            disabled, the RDB data structs should be freed.
+   RESULT:
+        PASS.
+2. Initial state replication:
+   GOAL: Testing the data structures (Memory usage):
+   STEPS: 
+          - Enable NSR.
+          - Enable PIM.
+          - Do the same test by reversing the ordering of the above steps.
+   CRITERIA:
+          - PIM should generate RDB state for pre-existing PIM control state.
+          - PIM should then replicate this RDB state to the backup.
+          - Test the above with appropriately placed breakpoints in gdb.
+
+
+
+
+
+3.1 Neighbor state maintenance:
+1. Sending PIM hellos:
+   GOAL: Only the master is sending the PIM hllos.
+   STEPS:
+      - Enable NSR.
+      - Enable PIM.
+      - Do the same test by reversing the ordering of the above steps.   
+   CRITERIA:
+        Master must send PIM hellos. Use a sniffer to validate this.
+        Backup must not send any PIM hellos. Use a sniffer to validate this.
+   RESULT:
+        PASS.
+2. Neighbor list:
+   GOAL: Neighbor state replication is working.
+   STEPS:
+      - Enable NSR.
+      - Enable PIM.
+      - Do the same test by reversing the ordering of the above steps.   
+   CRITERIA:
+        For those ifls that exist on both the REs, the list of PIM neighbors 
+        must be the same on both the REs.
+        The various neighbor parameters
+            - Various hello options - holdtime, LAN prune delay, generation-ID
+        must be the same on both the REs.
+   RESULT
+        PASS.
+3. Self-neighbor:
+   GOAL: Self-neighbor state should be the same on both the REs.
+   STEPS:
+      - Enable NSR.
+      - Enable PIM.
+      - Do the same test by reversing the ordering of the above steps.         
+   CRITERIA:
+      For each self-neighbor, the backup RE must display the same generation-ID
+      as the master is displaying.
+   RESULT:
+      PASS.
+4. Timing out the neighbors:
+   GOAL: Only the master should timeout the neighbor & the backup should not
+   independently time it out.
+   STEPS:
+        - Enable NSR.
+        - Enable PIM.
+        - Do the same test by reversing the ordering of the previous steps.
+   CRITERIA:
+        The backup must continue to maintain the neighbor state as long as the
+        master has the neighor in its nbr-list on that interface.
+   CRITERIA:
+        A given neighbor that is present on the master continues to be present
+        on the backup as long as it is there on the master.
+        The backup does not display a time-remaining value for the neighbor.
+   RESULT
+        PASS.
+5. Neighbor deletion:
+   GOAL: Neighbor timing-out being communicated to backup timely.
+   STEPS:
+        - Enable NSR.
+        - Enable PIM.
+        - Do the same test by reversing the ordering of the previous steps.
+        - Disable PIM on the neighbor.
+   CRITERIA:
+        - After the master has timed-out the neighbor, the backup should
+          also not show the neighbor in its neighbor-list.
+   RESULT:
+        - PASS.
+6. Neighbor updation:
+   GOAL: Master is replicating state changes for a given neighbor.
+   STEPS:
+        - Enable NSR.
+        - Enable PIM.
+        - Do the same test by reversing the ordering of the previous steps.
+        - Change neighbor properties on the neighbor:
+                 + Hello interval.
+                 + Generation-ID: restart routing on the neighbor.
+   CRITERIA:
+        - After the master has updated the neighbor properties (as seen in the
+          output of "show pim neighbors detail") the backup should also
+          display the same values.
+   RESULT:
+        PASS.
+7. RE switchover testing: Multiple switchovers
+   GOAL: No state loss due to multiple switchovers.
+   STEPS:
+        - Enable NSR.
+        - Enable PIM.
+        - Do the same test by reversing the ordering of the previous steps.
+        - Do the RE switchover multiple times alternating between the REs.
+   CRITERIA:
+        - After the neighbor (for the adjacent router) has come up, do a
+          swithchover.
+        - The neighbor list on the new master should be the same as before
+          after switchover.
+        - The generationIDs for ALL the neighbors (including self-nbrs) should 
+          remain the same after the switchover.
+        - The new master must visibly (in the output of "show pim neigbors
+          detail" start the nbr-timeout timer & then stop it once it becomes
+          the backup after the switchover.
+  RESULT:
+        PASS.
+8. DR election:
+   GOAL: Testing DR election.
+   STEPS:
+        - Enable NSR.
+        - Enable PIM.
+        - Do the same test by reversing the ordering of the previous steps.
+        - Do the RE switchover multiple times alternating between the REs.
+   CRITERIA:
+        - On each PIM enabled interface, both REs should have the same DR.
+        - The elected DR should remain the same after the switchover.
+   RESULT:
+        PASS.
+9. Config mismatches:
+        - IP addresses on the ifl are different:
+        mirror_is_connected- .
+10. IPv4 neighbors should not get mixed up with the IPv6 neighbors in the RDB.
+    GOAL: Testing sanity of data structs.
+    STEPS:
+        - Enable NSR.
+        - Enable PIM.
+        - Do the same test by reversing the ordering of the previous steps.
+    CRITERIA:
+        - All of the tests for neighbor tests for IPv4 (as listed in this
+          section) should also pass for the IPv6 neighbors.
+        - GDB output: the IPv6 neighbors' replicated state should be
+          separately stored than the IPv4 neighbors' state.
+    RESULT:
+        PASS
+11. IPv6: same link-local IP for self-neighbors:
+    GOAL: The self-neighbor's identitity on the link will not change after a
+    switchover.
+    STEPS:
+        - Enable NSR.
+        - Enable PIM.
+        - Do the same test by reversing the ordering of the previous steps.
+    CRITERIA:
+        - The link-local address for the self-neighbor (this is computed on
+          each RE by the kernel) should be the same on both the REs, before &
+          after the switchovers.
+    RESULT:
+        PASS.
+12. Backup restart:
+    GOAL: The master shall be smart enough to realise that the backup lost
+    state after getting it once (from the master) and that the master needs to
+    re-send it.
+    
+    STEPS:
+        - Enable NSR.
+        - Enable PIM.
+        - Do the same test by reversing the ordering of the previous steps.
+        - Check that the neighbor list is the same on both the REs.
+        - Now reboot the backup RE.
+    CRITERIA:
+        - When the backup RE comes back from the reboot, it must (in a small
+          time-frame) get the same neighbor-list as the master. (This is to
+          test that the master will provide an "initial state replication")
+          even after the backup rpd (/kernel) crashes (crahes & reboots).
+    RESULT:
+        PASS.
+13. Initial state replication:
+    GOAL: The master provides initial state replication to the backup.
+    STEPS:
+        - Wait for a PIM neighbor X to send a Hello.
+        - Soon after than enable NSR.
+        - Enable PIM.
+        - Do the same test by reversing the ordering of the previous steps.
+        - Check that the neighbor list is the same on both the REs.
+        - Now reboot the backup RE.
+   CRITERIA:
+        - The PIM neighor X should show up on the backup before X sends its
+          next hello.
+   RESULT:
+        PASS.
+14. Config mismatch testing: Resolve/Unresolve:
+    GOAL: Backup will store NBR state even for instances that are configured on
+    the master but are not configured on the backup.
+
+    STEPS:
+        - Wait for a PIM neighbor X to send a Hello.
+        - Soon after than enable NSR.
+        - Enable PIM.
+        - Do the same test by reversing the ordering of the previous steps.
+        - Check that the neighbor list is the same on both the REs.
+        - Now reboot the backup RE.
+   CRITERIA:
+        - The PIM neighor X should show up on the backup before X sends its
+          next hello.
+   RESULT:
+        PASS.
+15. IPv6 neighbors: make sure that both the REs have the same link-local
+    addresses for the self-nbrs.
+
+
+
+
+
+3.2 RPSet state
+1. BSR/CRP
+  - Init RPset: when the backup rpd comes up, the master should provide it
+    RP state learnt from BSR.
+  - RPSet updation:
+	+ Addition: changes in RPSet learnt from BSR, on the master, should
+                    be propagated to the backup.
+	+ Deletion. changes in RPSet learnt from BSR, on the master, should
+                    be propagated to the backup.
+
+  - Protocol participation:
+	+ Master: sends control packets. Backup: does not
+  - Dynamic ifl updation:
+	+ Get created/updated/deleted
+	  appropriately as per config. Only the master should create these,
+          The backup should not.
+  - ConfigMismatches: see separate section below on config mismatches.
+  - Backup->Master transition:
+	+ Unresolved RDB entry handling: these should get deleted.
+  	+ Resolved RPSet info learnt from master must continue to be available
+          at the new-master.
+        + The new master should start to pariticipate in the protocol.
+
+2. AutoRP:
+  - Same tests as above for BSR/CRP.
+
+3. RPIF:
+   - Backup: The RPIF created by the master should get adoped by the backup.
+     Test this out in both of the following cases:
+     a. NSR is enabled & committed after PIM is enabled.
+     b. PIM is configured & committed before NSR is activated.
+
+
+
+
+
+3.4 Dense mode SG state
+Each of the following testcases (for a given SG) will be tested under both of
+the following cases:
+    - Traffic for the SG already flowing before ISS.
+    - Traffic for the SG starts to flow post-ISS & pre-RESO.
+
+Dense SG state testing will be done by verifying the following two things:
+ - Output of "show pim joins"
+ - Output of "show multicast routes"
+ - Output of "show route table inet.1 all extensive" 
+   or "show route table <inst>.inet.1 all exntesive"
+
+Success criteria for each testcase will verify relevant state at each of the 
+following stages:
+    - ISS done (No easy way of knowing from the CLI when ISS is done).
+    - Triggered event-case should either update verifiable state on the backup
+      or post-RESO the verifiable state should get updated due to the RESO.
+    - Post-RESO state.
+
+1. Local receiver
+2. Neighbor UP
+   Neighbor DOWN
+3. Data flow:
+   Starts
+   Times-out(Mroute for this SG times-out due to data inactivity):
+4. Prune received
+   Prune sent
+   Prune expires
+5. Join received
+   Join sent
+6. Graft received
+   Graft sent
+7. GraftAck received
+   GraftAck sent
+8. RPF'(S) changes:
+9. SG
+     Creation:
+     Deletion:
+10. Assert state:
+
+
+
+
+
+3.3 SSM SG state
+ - InitState Creation:
+      + Are relevant SGs getting created?
+      + Is Join/Prune state getting replicated right?
+
+ - Pre-RESO:
+      + Join/Prune state should continue to get updated on the backup based on
+        changes on the master.
+      + Route/SG creation.
+      + Route/SG updations.
+      + Route/SG timing-out.
+ - At RESO,
+
+
+
+
+
+3.5 Sparse mode SG state
+Each of the following testcases (for a given SG) will be tested under both of
+the following cases:
+    - Traffic for the SG already flowing before ISS.
+    - Traffic for the SG starts to flow post-ISS & pre-RESO.
+
+Sparse SG state testing will be done by verifying the following two things:
+ - Output of "show pim joins"
+ - Output of "show multicast routes"
+ - Output of "show route table inet.1 all extensive" 
+   or "show route table <inst>.inet.1 all exntesive"
+
+Success criteria for each event-case (Per config-state, per event, test-case 
+execution) will verify relevant state at each of the following stages:
+    - ISS done.    
+    - Triggered event-case should either update verifiable state on the backup
+      or post-RESO the verifiable state should get updated due to the RESO.
+    - Post-RESO state.
+
+1. Register state machine:
+1.1     SrcDR
+1.2     RP
+1.3     SrcDR & RP:
+1.4     RP & Recvr's DR:
+1.5     SrcDR & Recvr's DR:
+1.6     Src DR, RP and recvr's DR:
+
+2. (*,G) & (S,G) state:
+1.1     Src DR
+1.2     Recvr's DR
+1.3     RP
+1.4     Src DR & RP:
+1.5     Recvr's DR & RP:
+1.6     Src DR & Recvr's DR:
+1.7     Src DR, RP and recvr's DR:
+
+
+ - InitState Creation:
+     + JP replication.
+     + Register state replication.
+ - Pre-RESO:
+     + JP replication.
+     + Register state replication.
+ - RESO:
+     + Unresolved JP RDB state should get deleted.
+ 
+ Testing the various state machines.
+
+
+
+
+
+3.6 Rosen MVPN state
+ - Backup MUST not create any mt ifls:
+	+ Sniff rtsockmon.
+	+ Use gdb to investigate.
+ - Master MUST create mt ifls:
+	+ As per config, the mt ifls MUST get
+	  created.
+ - Backup must treat mt ifls created by master
+   for config that backup has, as having been
+   already created:
+	+ Gdb: look at pim_vpn_info on backup
+	  to ensure that ifl_idx, dev_idx &
+	  FLAGS are appropriately updated after
+	  the master has created the mt ifls.
+
+ - Mt ifls that the master created and that are
+   not needed on the backup MUST get deleted at
+   RESO:
+	+ Relevant instance not configured on
+	  backup.
+	+ VPN-group-address is different.
+ - MDT: Config-relevant MDTs MUST continue to
+	get used by on the new master post-RESO.
+ - Config mismatches:
+     + Primary loopbackIP mismatches: new-master
+       MUST change its MT ifl's src address.
+     + Properly configured instance does not 
+       exist on backup. It comes up later, the
+       backup should be able to properly update
+       the mt ifls created by the master as its
+       own for this instance.
+ - Subunit number space management:
+ - Existing MDTs: MDT state refresh:
+     + Ingress PE: At RESO, new master must
+       continue to send send MDT-Join TLVs for
+       the same (c-S,c-G) <-> p-G mapping.
+     + Egress PE: At RESO, new master must
+       continue sending the SG joins for the
+       (IngressPE-lo0.Main, p-G).
+
+1. Restart routing on Master:
+    - Mt ifls should recreated appropriately.
+2. Restart routing on Backup:
+    - Mt ifls should get recreated appropriately.
+3. Switchover:
+    - New-master MUST NOT delete the config-valid mt ifls.
+
+
+
+
+
+3.7 MC module testing:
+1. Backup mroutes:
+   - Mroutes that get created on the master should also get created on the
+     backup.
+   - Should get deleted after the master has deleted these.
+2. Route addition/deletion/updation is reflected in the backup:
+
+
+
+
+
+3.8 Generic Mirroring testing:
+1. NSR enabled
+       - RDBs should get created.
+2. NSR disabled
+       - RDBs should get deleted.
+3. Mirroring Connection taken down (with rpds still running):
+       - Master:
+           + Master rpd should mark ALL of its RDBs unmirrored.
+           + These should get mirrored again when the connection goes up.
+       - Backup
+           + RDBs should get deleted. When the connection comes back up,the
+             master should re-mirror the RDBs to the backup.
+4. ISS:
+     - Will ISS be done each time that the master sees the connection go up?
+     - How about the case when the connection goes down after ISS is completed?
+       Will the ISS be done again?
+5. Race conditions between mirror-connection going UP/DOWN & PIM-NSR getting
+   configured/unconfigured. PIM-NSR can get configured in 2 different orders:
+   PIM is configured before NSR is enabled. NSR is already enabled before PIM
+   is enabled.
+       - Cover ALL 8 cases.
+6. Race condition: Ordering between NSR being enabled  & mirror connection
+   coming up.
+7. Case when the Mirror connection is already up before NSR is enabled for PIM.
+8. RESO:
+      - New-Master: ALL unrsolved RDBs should get deleted.
+      - New-Master: MUST mirror all its RDBs.
+      - Race condition between CONN_DOWN & RESO SIGHUP: when commit is done
+        on backup, the CONN_DOWN will likely be seen before the mastership
+        change (at kernel level) by the backup (the new-master).
+
+
+
+
+
+3.9 Config mismatch testing:
+Hack the DDL code & induce config mismatches between the 2 REs and test out
+for the following config mismatches:
+1 Global (non-PIM) config
+        - Primary interface IP is different, for a given ifl.
+        - List of secondary IPs, on a given ifl, is different.
+        - Interface not belonging to the same instance on the 2 REs.
+        - Loopback config:
+            - Loopback interface of a given instance is different across the
+              2 REs.
+            - Primary IP address is different.
+2 PIM config (on a per-instance basis):
+        - Per-interface PIM config:
+           + Interface not configured for PIM.
+           + Mode is different.
+           + Version is different.
+           + Hello-interval is different.
+           + DR priority is different.
+           + Neighbor-policy is different.
+        - Per-instance config
+           + RIB-group is different.
+           + Dense-groups list is different.
+           + SPT-threshold is different.
+           + Policies:
+              - Sparse join import policy is different.
+           + VPN-group-address (per-VPN) is different.
+           + MDT config is different:
+               - Group-ranges.
+               - Thresholds.
+               - Tunnel-limit.
+           + Timer values are different:
+               - Assert timeout.
+           + RP config is different:
+               - DR-register-policy is different.
+               - RP-register-policy is different.
+               - Configured RP discovery mechanism can be different.
+                 eg. Auto-RP vs BSR.
+               - Parameters for the same RP-discovery mechanim can be different
+                   + Local RP setting is different:
+                      - Address to use for the RP can be different.
+                      - Local RP group-ranges are different.
+                      - Hold-time & priority can be different.
+                      - Anycast-RP config:
+                          + Anycast-RP-set constituents are different.
+                          + Local-address for the local-RP is different.
+                   + Static RP:
+                      - PIM version different.
+                      - Group-ranges different.
+                   + Auto-RP:
+                      - Mapping/Discovery/Mapping-agent-election params can be
+                        different.
+                      - Dense groups to announce/reject are different.
+                   + BSR:
+                      - BSR priority is different.
+                      - Import-policy is different.
+                      - Export-policy is different.
+
+
+
+
+
+3.10 Free-form testing:
+     1. Configure/unconfigure NSR, restart neighbors.
+     2. Steady-state testing:
+          - CLI outputs:
+               - Passing traffic through:
+          - PIM state machines testing:
+     3. RESO testing:
+          - CLI outputs.
+          - Passing traffic through:
+
+
+
+
+
+4.  BOUNDARY TEST CASES
+
+
+
+
+
+5.  REGRESSION TEST CASES
+
+This section lists the regression testing done for PIM NSR. This was done to
+test the impact of PIM NSR changes on single-RE PIM functionality.
+
+Sreedhevi Sankar regressed jinstall-9.0I20071031_0138_ravis-domestic-signed.tgz which contained my NSR changes
+
+------------------------------------------------------------
+Runs ->  (Some overlap)                           TOTAL
+------------------------------------------------------------
+PASS:  41   7   13   2   1   3   1   13   1   3     85
+FAIL:  16   2    1   0   0   1   0    1   0   6     27
+OTHER:  1   1    1   0   0   0   0    2   0   2      7
+CORES:  2   0    0   0   0   0   0    0   0   0      2
+---------------------------------------------------------
+       60  10   15   2   1   4   1   16   1  11    119
+---------------------------------------------------------
+
+Analysis of failures:
+---------------------
+(Based on following failure data for above runs wrt comparisons from 
+       http://www-systest.juniper.net/entity/suite/index.mhtml   for
+       recent 9.0 & 9.1 runs)
+
+--  Last run in clean 9.0 failed.:                             10
+##  Last run in a clean 9.1 failed.                             5
+??  No (reliable) data for 9.0 available.                       6
+:?  Script questionable due to recent PASS/FAIL                 1
+    data in multiple runs in a very short duration.             
+**  DUP-run-failure in this data.                               4
+$$  Needs investigation. Passing in recent 9.0 runs.            5
+                                                              -----
+        (4 Scripts categorized in multiple categories above)   31
+                                                              -----
+
+--------------------------------------------------------
+Failing Script              Run data from systest page
+--------------------------------------------------------
+Run1 (16)
+mcast-vpn.pl                (-- 07-09-30 06:33)      
+bsr.pl                      (## 07-10-27 02:15/$$)   
+J55-rli1170-mcastfwrd.pl    (-- 07-09-29 23:56 )
+J61-rli1648-pgm.pl          (-- 07-09-30 00:19)  
+J64-rli2333-pim-graceful.pl     :?             
+J64-rli2502-msdp-src-lmt.pl (-- 07-09-30 02:22)
+isis_mcast.pl               (## 07-10-27 02:49)              
+pim-lan.pl                  (-- 07-09-30 04:41)         
+mcast-gres.pl               (-- 07-09-30 04:03 ##07-10-27 00:49)
+mcastvpn_pd_in_vrf.pl             ??              
+mcastvpn_pe_group_overlap.pl (-- 07-09-30 08:34)  
+mcastvpn_scaling_vpns.pl    ??                    
+mcast-vpn-basic-ssb-switchover.pl      ??         
+mcast-vpn-data-mdt.pl                  (-- FAIL 07-08-26 07:38)    
+mcast-vpn-three.pl                     (??)                       
+msdp_mib.pl                            ($$)                       
+
+Run2: (Fails: 2 - 2 DUPS = 0 FAIL)
+mcast-vpn.pl                 **                    
+mcast-vpn-data-mdt.pl        **                    
+
+Run3 (Fails 1)
+pim-prune-batch.pl          (??)                         
+
+Run6 (Fails 1)
+JTDVMRP.pl                  ($$/##)                    
+
+Run8 (Fails 1)
+pim_bfd.pl                  (-- 07-10-01 05:00)       
+
+Run10 (Fails: 6 - 2 DUPs = 4 FAILs)
+mcast-vpn-interprovider.pl    ??                  
+msdp.pl                       ##/$$                 
+msdp_mib.pl                   **                    
+J64-rli2502-msdp-src-lmt.pl   **                    
+mcast_assert_pr57504.pl       (-- 07-09-30 18:18)   
+mcast-cos.pl                  $$                   
+
+-------------------------------------------------------
+
+
+SUMMARY:
+=======
+
+Based on systest runs, 5 scripts need investigation. 
+
+2 cores need resolution:
+
+Please be aware that analysis of the passing scripts was not done. So,
+depending on if a given passing script was repeated, it might show up in the
+passing data multiple times.
+
+
+RESOLUTION OF ABOVE ISSUES:
+--------------------------
+
+Based on systest runs, 5 scripts needed investigation. 
+To investigate, I ran these 5 scripts on 
+~ravis/Regressions/jinstall-9.0I20071103_1415_ravis-domestic-signed.tgz
+
+           bsr.pl               Passed in my 9.0 with above image. Ignore
+                                systest failure on my 10/31 image.
+           msdp_mib.pl          Failing in clean 9.1 (systest). Ignore.
+           JTDVMRP.pl           Failing in clean 9.1 (systest). Ignore.
+           msdp.pl:             PASSED in my private 9.0 run with above image.
+                                Ignore systest failure on my image from 10/31.
+           mcast-cos.pl         No conclusive resolution. My run with above
+                                image came back with a PARAMS_FAIL. Giving up
+                                on this script.
+
+With the above analysis, all of the regression failures have been dealt with.
+
+
+2 cores needed resolution: These were investigated (see info below) & found
+to be non-NSR issues that have already been fixed by PRs 254233 & 257319.
+The private image provided to Sree was built on the 9.0 tree of 10/22 or 10/23.
+The 2 above cores were fixed on 10/29/07 in 9.0 & 9.1.
+
+
+
+
+The backtraces for the 2 cores were:
+
+Program terminated with signal 6, Abort trap.
+/usr/lib/libisc.so.2: No such file or directory.
+#0  0x889ee87b in ?? ()
+(gdb) bt
+#0  0x889ee87b in ?? ()
+#1  0x889ed619 in ?? ()
+#2  0x889c9e5f in ?? ()
+#3  0x81e6217 in radix_delete (root=0x8a4edc8, delete=0x8b010d8) at src/juniper/usr.sbin/rpd/common/radix.c:825
+#4  0x817ddde in rt_radix_aux_delete (rtth=0x8ac7000, rn=0x8b010d8) at src/juniper/usr.sbin/rpd/rt/rt_radix.c:835
+#5  0x8370bbc in pim_rpif_dealloc (rp=0x8abf0cc) at src/juniper/usr.sbin/rpd/rt/rt_table_api_private.h:2087
+#6  0x8370faa in pim_rpif_clean (rp=0x8abf0cc) at src/juniper/usr.sbin/rpd/pim/pim_rp.c:1236
+#7  0x837133d in pim_rp_remove (ip=0x8b05800, rp=0x8abf0cc) at src/juniper/usr.sbin/rpd/pim/pim_rp.c:1371
+#8  0x8372602 in pim_rp_flush_all (ip=0x8b05800, root=0x8b040c0) at src/juniper/usr.sbin/rpd/pim/pim_rp.c:2190
+#9  0x834b1a5 in pim_instance_free (ip=0x8b05800) at src/juniper/usr.sbin/rpd/pim/pim_init.c:363
+#10 0x834b9de in pim_terminate (tp=0x8b412e8) at src/juniper/usr.sbin/rpd/pim/pim_init.c:708
+#11 0x834c3d4 in pim_init () at src/juniper/usr.sbin/rpd/pim/pim_init.c:1197
+#12 0x80f4e6f in task_module_inits () at src/juniper/usr.sbin/rpd/os/task.c:1438
+#13 0x80f5e30 in task_reconfigure () at src/juniper/usr.sbin/rpd/os/task.c:1712
+#14 0x80f990b in task_signal_kevent (signo=1, numevents=1) at src/juniper/usr.sbin/rpd/os/task.c:2702
+#15 0x81023b5 in task_process_events (level=0, eventlist=0x8a4c000, nevents=1) at src/juniper/usr.sbin/rpd/os/task_io.c:3391
+#16 0x80fbbd5 in main (argc=2, argv=0xbfbedef4) at src/juniper/usr.sbin/rpd/os/task.c:4194
+(gdb) pim_nsr_enabled
+
+-------------------------------------------------------------------------------
+
+Core was generated by `rpd'.
+Program terminated with signal 6, Abort trap.
+/usr/lib/libisc.so.2: No such file or directory.
+#0  0x889ee87b in ?? ()
+(gdb) bt
+#0  0x889ee87b in ?? ()
+#1  0x889ed619 in ?? ()
+#2  0x889c9e5f in ?? ()
+#3  0x81e6217 in radix_delete (root=0x8a4ee40, delete=0x8b6e05c) at src/juniper/usr.sbin/rpd/common/radix.c:825
+#4  0x817ddde in rt_radix_aux_delete (rtth=0x8b7b000, rn=0x8b6e05c) at src/juniper/usr.sbin/rpd/rt/rt_radix.c:835
+#5  0x8376848 in rpf_free_rpf_node (ip=0x8b05800, rpf=0x8b6e05c) at src/juniper/usr.sbin/rpd/rt/rt_table_api_private.h:2087
+#6  0x837837d in pim_rpf_sgnode_remove (ip=0x8b05800, sg=0x8b76000) at src/juniper/usr.sbin/rpd/pim/pim_rpf.c:3288
+#7  0x8397e55 in pim_sgnode_remove (ip=0x8b05800, sg=0x8b76000) at src/juniper/usr.sbin/rpd/pim/pim_sg_db.c:531
+#8  0x8379774 in sfsm_remove_sgnode (ev_c=0x8a9a398, ip=0x8b05800, sg=0x8b76000) at src/juniper/usr.sbin/rpd/pim/pim_sfsm.c:518
+#9  0x837cb62 in pim_sfsm_handle_sg_event (ev_c=0x8affe88, ev_id=PIM_FSM_REMOVE_ALL_SGNODES, ip=0x8b05800, sg=0x8b76000, 
+    ev_params=0x0, flag=0, ret_val=0x0) at src/juniper/usr.sbin/rpd/pim/pim_sfsm.c:2356
+#10 0x83984b3 in pim_flush_sgnode_subtree (ip=0x8b05800, mcaf=MCAST_AF_IPV4, grp=0x0, plen=0)
+    at src/juniper/usr.sbin/rpd/pim/pim_sg_db.c:870
+#11 0x83984eb in pim_sgdb_instance_remove (ip=0x8b05800) at src/juniper/usr.sbin/rpd/pim/pim_sg_db.c:894
+#12 0x834b612 in pim_cleanup_instance (ip=0x8b05800) at src/juniper/usr.sbin/rpd/pim/pim_init.c:543
+#13 0x834b9d6 in pim_terminate (tp=0x8b412e8) at src/juniper/usr.sbin/rpd/pim/pim_init.c:707
+#14 0x834c3d4 in pim_init () at src/juniper/usr.sbin/rpd/pim/pim_init.c:1197
+#15 0x80f4e6f in task_module_inits () at src/juniper/usr.sbin/rpd/os/task.c:1438
+#16 0x80f5e30 in task_reconfigure () at src/juniper/usr.sbin/rpd/os/task.c:1712
+#17 0x80f990b in task_signal_kevent (signo=1, numevents=1) at src/juniper/usr.sbin/rpd/os/task.c:2702
+#18 0x81023b5 in task_process_events (level=0, eventlist=0x8a4c000, nevents=1) at src/juniper/usr.sbin/rpd/os/task_io.c:3391
+#19 0x80fbbd5 in main (argc=2, argv=0xbfbedef4) at src/juniper/usr.sbin/rpd/os/task.c:4194
+
+
+
+
+
+6.  INTEROP TEST CASES
+
+
+{As necessary.  As with functional tests but for interoperability.
+Include references to any specs or details regarding the interop
+target.}
+
+
+
+7.  MIGRATION & COMPATIBILITY TEST CASES
+
+{As necessary.  As with functinoal tests but for migration and
+compatibiilty tests (any tests needed to show forwards/backwards
+compatibility, to show existing configs will not break, to verify
+upgrades and downgrades, etc.}
+
+
+
+
+8.  TEST COVERAGE REMAINING
+PIM is a large protocol. There are many different state machines involved. 
+Testing each of those individually is HUGE effort. The various state machines
+have lots of timing issues. Thus it is just not possible to test all the PIM
+state machines in their entirety given constraints of time, and resources.
+
+Added complexity of NSR issues further make the testing of the various 
+PIM state machines VERY VERY COMPLEX.
+
+Hence, test-case coverage will be done on a best-effort basis within the
+constraints of availble time and effects of extraneous issues including but not
+limited to:
+  - Stability of the branch (Other components of JunOS crashing and being
+    buggy hinder efforts to increase test-case coverage).
+  - Process overheads in getting the code completed/tested/reviewed.
+  - Resource issues: testbeds becoming inoperational due to various reasons.
+
+
+
+
+
+9.  DEFECTS REMAINING

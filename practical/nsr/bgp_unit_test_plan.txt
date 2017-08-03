@@ -1,0 +1,229 @@
+$Id: bgp_unit_test_plan.txt,v 1.1 2005/12/08 01:52:11 roque Exp $
+
+S3.02.P05.T02
+BGP non-stop routing (RLI 2711)
+
+Copyright (C) 2004, Juniper Networks, Inc.
+
+NOTICE: This document contains the proprietary and confidential
+information of Juniper Networks, Inc., and must not be
+distributed outside of the company without the
+permission of Juniper Engineering.
+
+1.  INTRODUCTION
+
+RLI 2711 introduces non-stop routing functionality for BGP. The goal
+of the functionality is to be able to switch-over across REs without
+that being a noticable event to a network peer. It relies on socket
+replication in order to be able to maintain the state of TCP sessions
+across a switch-over. And it relies on GRES to replicate forwarding
+knowledge such as interfaces, forwarding table entries, etc...
+
+BGP NSR functionality replicates the master RE's Rib-In and Rib-Out
+databases on the backup. The contents of these databases are used at
+switchover, when the newly elected master recomputes the best path for
+all prefixes in all routing tables.
+
+When the rpd process on the backup RE starts up, BGP establishes a
+session to the master rpd using the "internal routing service"
+instance. This session is used to synchronize the existing BGP state
+in the primary.
+
+Rib-Out contents are reconstructed by the backup RE from a copy of the
+outgoing messages sent from the master to a network peer. This
+requires a reverse procedure of the processing the master is doing and
+is dependent on the set of features that are enabled on both the peer
+from which the route was received as well as the peer to which the
+route is advertised.
+
+In terms of implementation one can distinguish the following major
+areas of functionality introduced in this RLI:
+ o Initial synchronization code (master).
+ o Initial synchronization client (backup).
+ o Outgoing message to Rib-out entry decoding (backup).
+ o Switch-over event handling (backup).
+ o Incremental update of neighbors post switch-over (master).
+
+NSR can be impacted by any combination of features and requires
+validation of the full matrix of features supported by BGP. It is not
+possible for this unit test plan to cover all possible interactions
+with existing functionality. It will limit itself to exercising each
+of the major functionality blocks listed above.
+
+2.  SETUP
+
+Testbed: pro6
+
+Redundant system: pro6-d1 (m10i)
+
+R1: pro-olive34
+R2: pro-olive35
+R3: pro-olive38
+R4: pro-olive39
+R5: pro-olive33
+R6: pro-olive36
+
+
+				+--------+
+	       -- fe-0/0/0.0 -- | vlan 1 | [ R1 R3 R5 ]
+				+--------+
+    +--------+ -- fe-0/0/1.0 -- | vlan 2 | [ R1 R2 ]
+    |   uut  |			+--------+
+    +--------+ -- fe-0/0/2.0 -- | vlan 3 | [ R2 R4 R6 ]
+				+--------+
+	       -- fe-0/0/3.0 -- | vlan 4 | [ R5 R6 ]
+				+--------+
+	       
+3. FUNCTIONAL TEST CASES
+
+1. Sanity check
+
+topology:
+
+r3 - AS 65001
+r5 - AS 65002
+
+					ibgp
+				r1
+			    /
+	r3 - ebgp - +-----+ --  r2
+		    | uut |
+        r5 - ebgp - +-----+ --  r4
+			    \
+			        r6
+
+
+   Initial setup.
+
+   Static routing configured as backup for IGP, from uut to ibgp
+   peers. Each external router (R3, R5) advertises 10 routes each in
+   non-overlapping ranges. Each ibgp peer advertises 10 overlapping
+   routes.
+
+ 1.1 Initial bringup
+
+ Establish all BGP sessions with master. After network is stable
+ enable non-stop routing in uut. Compare the contents of the Rib-in
+ and Rib-out using "show route [receive|advertising]-protocol bgp".
+
+ Backup rpd should see keepalives on both incoming and outgoing
+ sockets. "show bgp neighbor" displays last time traffic was send or
+ received on a session.
+
+ 1.2 as-path attributes
+
+ The aspath attribute kept in the Rib-Out is a modified version of the
+ route entry as-path whenever the following procedures take place:
+  o Stripping of confed segments to ebgp;
+  o Stippping of cluster-list to ebgp;
+  o Route is received on a session with local-as setting and
+ advertised on one without.
+  o Private ases are stipped.
+  o as-override is enabled.
+ This processing is executed on the master RPD.
+
+ On the secondary, it is necessary to look at the elements on the
+ wire and attempt to reconstruct Rib-Out entries. Specially entries
+ with prepend an local-ases may be difficult to reconstruct. Note that
+ the as-path transformation on the master makes the information kept
+ on the Rib-Out close to what is sent on the wire.
+
+ Test 2. Move r3 session to local-as 109.
+
+ Test 3. Move r5 session to local-as 701.
+
+ Test 4. Add as-path prepend export policy on external sessions.
+	This is performed after the changes for 2 previous tests are rolled
+	back.
+
+ 1.3 Rib-out next-hop
+
+ Another aspect of the message to Rib-out decoding processing is to
+ set the correct next-hop attribute. We should examine the following issues:
+  - next-hop self on ibgp for external routes.
+  - 3rd party next-hops on ebgp.
+
+ Test 5. Add nhs policy on ibgp sessions.
+
+[Break these down by functional area as in the functional spec, use
+cases, etc.]
+
+a, b, ... ) {You MUST describe each test}
+   Goal:  {What does this test hope to show}
+   Test Specific Setup: {As necessary. Any setup not covered by
+	section 2, above.}
+   Test Steps:
+	1.
+	2.
+	...
+	n.
+   Success Criteria:  {Expected results}
+   Result:  {You MUST document results ("pass" is acceptable if results
+	    matched expected results}
+
+{Examples:  these are examples to show the level of detail necessary.
+They are hypothetical nonsense tests run on the Foo Bar Routing Protocol
+(FBRP)):
+
+1.  FBRP bringup
+    Goal:  FBRP comes up correctly
+    Test Steps:
+        1.  Enable FBRP on router 1
+        2.  Enable FBRP on router 2
+    Success Criteria:  "show services frp status" shows router 1
+        when run on router 2 and vice versa
+    Results:  pass
+
+2.  Multihop FBRP failover
+    Goal:  FBRP fails from path to path when an intermediate node
+    	unexpectedly fails
+    Test Specific Setup:  Set up nodes 1, 2, 3, and 4 with 1 and 4
+        each connected to connected to 2 and 3, like this:        
+
+         /- 2 -\
+        1       4
+         \- 3 -/
+
+        Configure FBRP between 1 and 4 to use the 3 as the primary path.
+
+    Test Steps:
+    	1.  disconnect the cable between routers 1 and 3
+    Success Criteria:  "show services frp status" shows router 4,
+    	connected via router 2
+    Results:  "show services frp status" does not show router 4 (failure)
+}
+
+4.  BOUNDARY TEST CASES
+
+{As necessary.  As with functional tests but for boundary/negative
+tests.}
+
+5.  REGRESSION TEST CASES
+
+{As necessary.  As with functional tests but for regression tests.
+Include references to regression requests, who is performing them,
+etc.}
+
+6.  INTEROP TEST CASES
+
+{As necessary.  As with functional tests but for interoperability.
+Include references to any specs or details regarding the interop
+target.}
+
+7.  MIGRATION & COMPATIBILITY TEST CASES
+
+{As necessary.  As with functinoal tests but for migration and
+compatibiilty tests (any tests needed to show forwards/backwards
+compatibility, to show existing configs will not break, to verify
+upgrades and downgrades, etc.}
+
+8.  TEST COVERAGE REMAINING
+
+{Describe all test coverage areas which will be needed on the feature
+which are *not* covered by this document.  Identify test inputs for
+systest or other groups to proceed with.}
+
+9.  DEFECTS REMAINING
+
+{List PRs filed at dev complete for test failures from this plan
+which were not fixed by dev complete.}

@@ -1,0 +1,143 @@
+$Id: project_plan.txt,v 1.2 2008/01/04 23:51:08 dleroy Exp $
+
+S3.02.P05.T03
+{Standard Project Plan Template}
+
+Copyright (C) 2007, Juniper Networks, Inc.
+
+NOTICE: This document contains the proprietary and confidential
+information of Juniper Networks, Inc., and must not be
+distributed outside of the company without the
+permission of Juniper Engineering.
+
+--- THIS IS A WIDE DOCUMENT.  SET WINDOW WIDTH TO AT LEAST 120 CHARACTERS ---
+
+1.  INTRODUCTION
+
+Nonstop routing (NSR) enables a routing platform with redundant
+Routing Engines to switch from a primary Routing Engine to a backup
+Routing Engine without alerting peer nodes that a change has
+occurred. Nonstop routing uses the same infrastructure as graceful
+Routing Engine switchover to preserve interface and kernel
+information. Nonstop routing also preserves routing information and
+protocol sessions by running the routing protocol process (rpd) on
+both Routing Engines. In addition, nonstop routing preserves TCP
+connections maintained in the kernel. 
+
+
+MRD and PDD can be found on the NPI project page:
+https://deepthought.juniper.net/app/do/showView?tableName=npi&record_number=326
+
+Functional Spec:
+http://cvs.juniper.net/cgi-bin/viewcvs.cgi/sw-projects/os/nsr/
+
+List of current NSR RLI's can be found in deepthought by querying with
+synopsis starting with "NSR:"
+
+
+2.  ASSUMPTIONS
+
+Kernel Socket and TCP replication for NSR assumes GRES (Graceful RE
+Switchover) is fully functional and working.
+
+The primary and backup RE's have identicial configurations. This is
+enforced at the configuration level by the 'commit synchronize' stanza.
+
+3.  RESOURCES
+
+userid       work area                             time                               other committments
+------------------------------------------------------------------------------------------------------------
+
+wlin         L2 Circuit				  50% in 9.2                          support RLI 3163 in 9.2
+
+wlin         LDP-VPLS				  50% in 9.2 and 60% time 9.3         support RLI 2724 in 9.2
+                                                                                      also general VPLS/L2 circuit 
+                                                                                      maintanence 40%
+
+srik         BGP graceful restart helper          70% in 9.2, 40%  time 9.3           30% support RLI 6289, 6292 in 9.2
+                                                                                      timeframe
+
+srik	     BGP performance			  100% in 9.4						      
+
+rex          L3VPN using LDP                      50% in 9.2, 30% time in 9.3         BGP maintenance, xxx
+
+ravis        PIM/MLD Phase2                       100% in 9.2 through 9.4             support RLI 2727, 2728
+
+amit         RSVP Transit                         75% in 9.2, 100% 9.3, 9.4           RSVP maintenance, scoping of 
+										      remaining RSVP NSR work.
+
+avneesh      RSVP Transit                         75% in 9.2  100% 9.3, 9.4           RSVP maintenance, scoping of 
+										      remainig RSVP NSR work.
+
+rkandula     BFD via LDP			  100% in 9.3, 50% time 9.4           support RLI 4357 in 9.3
+
+lbazinet     kernel performance                   100% in 9.2, 50% in 9.3             kernel bug fixing
+
+nsheth	     MSDP				  100% in 9.4			      Multi Topology OSPF     
+
+
+wlin allocations confirmed by [zzhang 12/10/07]
+srik allocations by [dleroy 12/10/07]
+ravis allocations by [dleroy 12/10/07]
+lbazinet allocation by [alireza 12/11/07]
+rkandula allocations by [dleroy 1/4/08
+avneesh allocations by [dleroy 1/4/08]
+amit allocations by [dleroy 1/4/08]
+
+
+
+3.1 SYSTEM RESOURCES
+{List any hardware, software or test equipment needed for the project,
+and dates by which it is needed.  Note if any equipment must be
+procured, and explicitly flag any budget needed.}
+
+4.  TASK BREAKDOWN
+
+task						responsible	 work	 plan	revise	actual	dependencies
+----------------------------------------------  --------------  ------  ------  ------  ------  --------------------
+{
+task is the name of the task
+responsible is the task owner(s)
+work is an effort estimate - the amount of time to complete assuming
+       normal conditions (having to go to meetings, answer an average
+       load of ramdom questions, etc. - not working on two features
+       simultaneously or handling an excess of bugs)
+plan is the original planned delivery date
+revise is the revised planned delivery date (update as the plan changes)
+actual is the actual date of delivery (add when the delivery happens)
+dependencies is any dependencies on other people's work or external deliveries
+
+if necessary, break this section into phases
+}
+
+5.  NON ENGINEERING MILESTONES AND DEPNDENCIES
+milestone					responsible	 plan	revise	actual	dependencies
+----------------------------------------------  --------------  ------  ------  ------  --------------------
+{
+milestone is the name of the delivery, decision, milestone, etc.
+responsible is the person who owns tracking it
+plan is the original planned delivery date
+revise is the revised planned delivery date (update as the plan changes)
+actual is the actual date of delivery (add when the delivery happens)
+dependencies is any dependencies on other people's work or external deliveries
+
+If necessary, break this section into phases.
+
+Reference any related plans (e.g. hardware, systest, customer testing,
+supplier, or joint-venture development schedules) here and call out
+their dependencies.
+
+Identify any external dependencies (e.g. partner acceptance testing, etc.) here.
+}
+
+6.  RISKS
+
+(1) NSR is a design from scratch and corner cases/issues discovered may take longer than expected
+
+(2) NSR depends on GRES fully functional, any GRES issues can impact NSR
+
+(3) Scaling and performance cycle will unearthen bottlenecks that are tough to predict
+
+7.  POST-PROJECT ANALYSIS
+{If the project has a post-mortem after completion, list any issues
+raised and/or actions taken as a result.}

@@ -1,0 +1,1173 @@
+$Id: pim-nsr-6259-11800-funcspec.txt,v 1.9 2011/01/25 14:39:23 aasthana Exp $
+
+                  NSR: PIM stateful replication
+                     Phase II  and Phase III
+                    Functional Specification
+
+                  Vikram Nagarajan <vikramna@juniper.net>
+                  Abhishek Asthana <aasthana@juniper.net>
+
+Copyright (C) 2009, Juniper Networks, Inc.
+
+NOTICE: This document contains proprietary and confidential
+information of Juniper Networks, Inc. and must not be distributed
+outside of the company without the permission of Juniper Networks
+engineering.
+
+1.  INTRODUCTION
+
+This functional spec is a continuation of the parent spec.
+http://cvs.juniper.net/cgi-bin/viewcvs.cgi/sw-projects/os/nsr/pim-nsr-funcspec.txt?view=markup
+The above spec will be referred as parent spec in this document.
+
+This spec will obsolete the parent spec over time. The features claimed
+to be supported/unsupported for PIM NSR will be posted and updated in 
+this spec regularly. Until the time this spec is fully complete and active, 
+we shall have the parent spec available for reference. Once this spec is 
+reviewed, approved, completed and operational the details in parent spec 
+will be merged and the parent spec itself will be phased out.  
+
+
+This functional spec addresses the requirements of two RLIs 6259 and 11800.
+
+RLI 2728 catered to PIM NSR Phase-I targeted for JUNOS 9.3.
+RLI 6259 caters to PIM NSR Phase-II targeted for JUNOS 10.5
+RLI 11800 caters to PIM NSR Phase-III targeted for a later JUNOS 10.6/10.7. 
+
+1.1: Need for Phase-II and Phase-III releases
+
+High Availability as a feature and concept is highly evolving and each  
+feature has to be individually identified for replication or recreation. 
+It is best to take one piece after the other to satisfactory completion 
+(certified by systest) instead of doing NSR for all features at one go. 
+
+In that sense, RLI 2728 has many features developed for PIM NSR. The 
+infrastructure needed for PIM replication has been put in place against 
+RLI 2728.  Subsequent releases will make use of the infrastructure and 
+identify areas where NSR can be strengthened so that we can move more 
+towards the goal of almost no packet-loss at switchover. 
+
+Also, PIM in itself is a complex and evolving protocol. So, it is best 
+to have the NSR for basic PIM firm in place so that we can build NSR for 
+other PIM related features like Rosen and MVPN on this foundation. 
+
+1.2: References
+
+The following are related specs to this RLI 6259:
+
+RLI Page:
+    https://deepthought.juniper.net/app/do/showView?tableName=RLI&record_number=6259
+PR Page:
+    https://gnats.juniper.net/web/default/238121-1
+
+Related RLIs
+
+https://deepthought.juniper.net/app/do/showView?tableName=RLI&record_number=2728 (Phase-1)
+https://deepthought.juniper.net/app/do/showView?tableName=RLI&record_number=6259 (Phase-2)
+https://deepthought.juniper.net/app/do/showView?tableName=RLI&record_number=11800 (Phase-3)
+https://deepthought.juniper.net/app/do/showView?tableName=RLI&record_number=9022 (IPv6)
+
+Other Related specs and docs
+
+http://cvs.juniper.net/cgi-bin/viewcvs.cgi/sw-projects/os/nsr/pim-nsr-funcspec.txt?view=markup
+http://cvs.juniper.net/cgi-bin/viewcvs.cgi/sw-projects/os/nsr/pim-nsr-v6-funcspec.txt?view=markup
+http://cvs.juniper.net/cgi-bin/viewcvs.cgi/sw-projects/os/nsr/pim-nsr-designspec.txt?view=markup
+http://cvs.juniper.net/cgi-bin/viewcvs.cgi/sw-projects/os/nsr/pim_igmp_nsr.txt?view=markup
+http://cvs.juniper.net/cgi-bin/viewcvs.cgi/sw-projects/os/nsr/pim-nsr-unsupported-features-upgrade-path.txt?view=markup
+http://cvs.juniper.net/cgi-bin/viewcvs.cgi/sw-projects/os/nsr/NSR-PIM_in_9%203_7-Nov08.doc?rev=1.1&sortby=author&view=log
+
+http://cvs.juniper.net/cgi-bin/viewcvs.cgi/sw-projects/os/nsr/mirror-subsystem-api.txt?view=markup
+http://cvs.juniper.net/cgi-bin/viewcvs.cgi/sw-projects/os/nsr/mirroring_api.txt?view=markup
+http://cvs.juniper.net/cgi-bin/viewcvs.cgi/sw-projects/os/nsr/nsr-infrastructure.txt?view=markup
+
+http://cvs.juniper.net/cgi-bin/viewcvs.cgi/sw-projects/os/nsr/pim-nsr-ut-plan.txt?view=markup
+http://cvs.juniper.net/cgi-bin/viewcvs.cgi/sw-projects/os/nsr/pim-nsr-v6-ut-plan.txt?view=markup
+
+
+1.3 PIM Features that are NSR-ready prior to this RLI effort:
+
+1.3.1:
+The features that have been developed, unit-tested and certified by systest 
+for PIM NSR include the below items:
+
+    (i) PIM NSR on a non-RP Router: State Synchronization for IPv4 only
+            (a) RP-Set Mechanisms 
+                    static RP, autoRP, BSR 
+                    (Pls note, there is no embedded RP for IPv4 on standalone)
+            (b) PIM Join state 
+            (c) PIM Forwarding cache state 
+            (d) PIM Neighbor state 
+            (e) PIM Interfaces : pe/pd 
+            (f) Sparse Mode and Dense Mode 
+            (g) SSM  
+            (h) Register State on DR 
+
+    (ii) PIM NSR on a non-RP Router: Packet Loss criteria for IPv4 only
+             {a} For existing flows, 
+                          there should be no or very minimal loss
+             {b} For new flows during/after failover, 
+                          there should be no or minimal loss
+
+1.3.2:
+The features that have been developed, unit-tested  but yet to be 
+certified by systest for PIM NSR include the below items. These will be 
+tested and certified by Systest as part of RLI 9022 in 10.3 timeframe. 
+
+    (i) PIM NSR on a non-RP Router: State Synchronization for IPv6 and (IPv4 & IPv6)
+            (a) RP-Set Mechanisms 
+                    static RP, EmbeddedRP, BSR 
+                    (Pls note, there is no autoRP for IPv6 on standalone)
+            (b) PIM Join state 
+            (c) PIM Forwarding cache state 
+            (d) PIM Neighbor state 
+            (e) PIM Interfaces : pe/pd 
+            (f) Sparse Mode and Dense Mode 
+            (g) SSM  
+            (h) Register State on DR 
+
+    (ii) PIM NSR on a non-RP Router: Packet Loss criteria for IPv6 and (IPv4 & IPv6)
+             {a} For existing flows, 
+                          there should be no or very minimal loss
+             {b} For new flows during/after failover, 
+                          there should be no or minimal loss
+          
+1.3.3
+PIM Features that are _not_ NSR-ready prior to this RLI effort:
+        Not developed, not unit-tested and not certfied by systest
+        Also, not allowed to configure with PIM NSR
+        
+    (i)   PIM NSR on a RP Router: 
+    (ii)  PIM Join Load Balance feature  
+    (iii) Rosen and NGMVPN 
+    (iv)  Any other sizeable feature that was added later than 9.3 
+
+      The above three are incompatible with PIM NSR. That is, configuring 
+these features with PIM NSR will result in CLI commit error. If NSR is still 
+desired for other routing features with the above in config, there is a provision 
+to disable PIM NSR alone using the following CLI.  
+#set protocols pim nonstop-routing disable.
+      Implicitly, the goal of the different planned phases of PIM NSR is to 
+eventually do away with the knob so that, all PIM features work well with NSR. 
+         
+     The reason for disabling these features with PIM NSR is the end-user 
+might be tempted to think and expect that PIM NSR works fine with these features 
+and start using it. In some scenarios, it might work while in others, it can fail. 
+Until the scenarios are well thought out and tested/certified, these are disabled 
+in CLI stage itself to provide for a stabilized PIM NSR. 
+
+1.3.4
+PIM Features that are allowed to be configured but cannot be claimed as 
+100% NSR
+        Not developed, not unit-tested and not certfied by systest
+        Allowed to be configured with PIM NSR
+
+     (i) Policy related features:
+            nbr-policy
+            join-policy
+            BSR policies
+            Scope policies
+            RPF check policies
+     (ii)  IGMP/MLD Exclude support
+     (iii) Upstream Assert Synchronization
+     (iv)  IGMP snooping 
+     (v)   Flow-Maps 
+     (vi)  ISSU 
+
+     The above is a list of PIM Features which haven't gotten full attention for 
+PIM NSR.  Sometimes, the inherent protocol helps in converging which helps in 
+avoiding losses during/after failover.  Sometimes, the features haven't been 
+used extensively in NSR setups to identify the issues. 
+
+    For the above reasons, we permit PIM NSR to be configured with these features 
+but, don't guarantee 100 percent NSR. In due course of time (say, Phase-III), 
+we will test/verify/investigate/scope/certify these features and strive to make 
+these to be compliant with PIM NSR.  
+
+2. Functionality
+
+2.1 Goals
+
+2.1.1 Targeted for this release 10.5 RLI 6259
+
+    (i)   PIM NSR for Local-RP (static, BSR, autoRP, embedded)
+    (ii)  RP-Set Info Synch 
+    (iii) Anycast RP-Set info sync(v4 and v6)
+    (iv)  PIM Anycast RP Register State Info Sync (v4 and v6)
+    (v)   Flow-maps 
+    (vi)  PIM NSR with both IPv4 and IPv6 configured 
+    (vii) In-Support Software Upgrade (ISSU) support for PIM NSR 
+    (viii)Conceptual walk-through of different states and corner-cases
+
+2.1.2 Targeted for later release 10.6 RLI 11800
+
+    (i)   NSR for PIM Join Load Balance (Will shoot for 10.5 if feasible).
+    (ii)  Policies 
+    (iii) Upstream Assert Synchronization 
+    (iv)  Few other knobs
+    (v)   Any other missing/broken features for PIM NSR  
+
+2.2. Non-Goals
+
+    (i)   MSDP NSR is not planned along with this effort. 
+            It is tracked with a different RLI 2729. 
+    (ii)  IGMP/MLD Exclude support
+    (ii)  IGMP Snooping
+    (iii) Rosen MVPN 
+    (iv)  NGEN MVPN 
+    (v)   PIM NSR on Logical Routers 
+
+
+2.3 Features description
+
+    (i)   PIM NSR for Local-RP (static, BSR, autoRP, embedded)
+    Providing NSR support for PIM on a RP router is the prime requirement of 
+this RLI. The various modules/targets for this are listed below. With this RLI,
+the CLI check that restricts PIM NSR to be configured with local-RP will be 
+removed. 
+
+    (ii)   RP-Set Info Synch 
+              (a) Local-rp (for v4 and v6)
+              (b) BSR (for v4 and v6)
+              (c) AutoRP (v4 only) 
+              (d) Embedded RP (v6 only) 
+          With the above, the RP-set information (learnt from config and 
+learnt dynamically) on a RP router should be replicated to the backup. 
+After failover, the new master should be able to continue with the appropriately 
+learnt RP-set information without inconsistencies.
+ 
+    (iii)  Anycast RP-Set info sync(v4 and v6)
+          Anycast PIM is configured under local-rp config stanza. So, the Anycast RP
+information should be replicated to the backup. 
+ 
+    (iii) PIM Register State Info Sync (v4 and v6)
+          Consider the below setup:
+
+           Src+---------+DR+-----+R1+-----+R2+-----+RP+-----+R3+---Recv 
+
+          When Source sends traffic first, the DR sends out a Register msg to 
+RP as unicast. Since, RP does not have any Joins then, it sends out a 
+Register Stop to the DR. Following this, the DR sends a NULL Register every 
+one minute to keep the RP informed about the availability of the source. 
+Both the DR and RP run Register state timers for this purpose. 
+DR by default as 60 seconds and RP by default as 300 seconds.  
+
+        This state is to be replicated to the backup. If not, when there is a 
+failover on the RP and downstream Joins come in, the backup will not have 
+any knowledge of the source. This will be the case, until, the DR sends out 
+the next NULL register. So, the Recv will be starved until this time which can 
+vary theoretically from 2 to 60 seconds.  If the Register state gets replicated, 
+the backup RP will pick up the Join immediately since it has the state and thus 
+knows about the source and traffic loss is avoided.
+
+        Syncing the Register state is imperative because, this dynamic information 
+will never reach the backup otherwise.  Also, synching this Register state is the 
+base for synching the Anycast Register state and MSDP Source Active state in 
+later releases. 
+
+
+    (iv)  PIM Anycast RP Register State Info Sync (v4 and v6)
+         The above mentioned in (iii) holds good for Anycast RP Register state:
+Here, instead of the Register state from the DR, the local-RP with anycast RP 
+config has to maintain the Register state from the peer RP. This is needed to 
+replicate so that after failover, if Joins come downstream, we will be able to 
+send joins and receive traffic right away without traffic loss.
+
+         Also, if the RP (configured with anycast RP-set) receives a Register 
+from a DR, this register has to be sent to the other RPs in the anycast RP-set 
+and appropritate states and timers will be maintained. This information too is 
+to be replicated to the backup so that NULL Registers are send to the other RPs 
+in the anycast RP-set on time. 
+
+
+                                             
+
+       Src-1+------------+R1+--------+RP-A+----------+RP-B+-----Src-2
+                         /              |                  \
+                        /               |                   \
+                       /                |                    \
+                      /                 |                     \
+              Rcv-2+                    |                      +Rcv-3 
+                                        |                    
+                             Src-3+---+RP-C+--------+Rcv-1    
+
+          
+
+    (v) NSR support for Flow-Maps 
+
+Forwarding Cache:-  
+Forwarding cache is used to administratively manage time for which a multicast
+forwarding entry should remain in cache after traffic stops to flow. 
+(this config is like a global config applied to all the multicast entries in
+forwading cache)
+
+Flow Map:- 
+Flow Map uses policies to filter and apply rules on some forwarding cache entries.
+
+MC and PIM Entries:- 
+MC maintains forwarding cache entries, maintains a timer based on timestamp. 
+This timestamp gets reset every 60secs, when mc stats are updated. (more 
+#pkts are received) Above value is used by PIM. PIM does not maintain any separate 
+mechanism (timers) for these entries.
+
+Current Behavior:- 
+If there is a configuration of Flow Map with timeout of 3 minutes
++--------------------------+-----------------------------+----------------------------+
+|       Scenarios          |           Master            |          Slave             |      
++--------------------------+-----------------------------+----------------------------+ 
+|                          |                             |                            |       
+|   Traffic Flowing        |   Running Timer for         |   Starts with timeout of   |       
+|   do Switchover          |   Maximum period(180)       |   Maximum period after     |       
+|                          |                             |   switchover (180)         |       
+|                          |                             |                            |       
++--------------------------+-----------------------------+----------------------------+
+|                          |                             |                            |       
+|   Traffic Flow Stopped   |  Counting Down the timeout  |   Starts with timeout of   |       
+|   do Switchover within   |  for the mc entry           |   Maximum Period after     |       
+|   few seconds            |  (say remaining is 160)     |   switchover (180)         |       
+|                          |                             |                            |       
++--------------------------+-----------------------------+----------------------------+ 
+|                          |                             |                            |       
+|   Traffic Flow Stopped   |  Counting Down the timeout  |   Starts with timeout of   |       
+|   do Switchover after    |  for the mc entry           |   Maximum Period after     |       
+|   long time but before   |  (say remaining is 10)      |   switchover (180)         |       
+|   master clears mc entry |                             |                            |       
++--------------------------+-----------------------------+----------------------------+ 
+
+Caveat:-
+Whatever be the current timeout value at master backup starts with the configured value.
+This will lead to scenario of retaining the mc entry for a little longer duration incase 
+of traffic stop switchover.
+
+Implementation does not support syncing of this timout value between master and backup.
+MC Timeout value (periodic reset) is dependednt on the traffic received (packet count), 
+which can not be handled at backup.
+
+Because the current implementation of mc cache entry reset is based on number of packet 
+received (traffic flowing) its not possible to have a sync of the value on backup.
+
+Some approaches to achieve the functionality:-
+Note:- All the approaches are for the case when traffic flow has stopped and switchover 
+happens. In case traffic is still flowing backup will always start with maximum configured 
+value.
+
+Approach 1:-
+Let the current implementation continue, after switchover start the backup with the 
+configured value. 
+Advantage:- This approach will make sure that the mc cache entry is not wiped immediately 
+after switchover. 
+Disadvantage:- Entry will remain for some extra time and will eventually get cleared.
+
+Approach 2:-
+Let backup have its own calculation mechanism running, counting down from configured value 
+to 0. After switchover if the value is 120Secs or more use this value rather than using the 
+maximum configured value. If the remaining time is less than 120sec take configured value. 
+(value 120 is a random value used as an example). This value can be configured using a CLI.
+Advantage:- This approach will make sure that after switchover mc entry is maintained atleast 
+for more than 120secs. MC entry will not hang for a very long time.
+Disadvantage:- Maintaining MC entry will not be exactly same as the one in master.
+
+Approach 3:- 
+Have a infrastructure placed in mc which will periodically mirror this timeout value 
+to backup.
+Advantage:- This will ensure that the values are perfectly in sync.
+Disadvantage:- Entire mirroring mechanism for mc need to be written, there
+will be lot of code changes, there will be periodic backing up of info, will lead 
+to heavy loads on master for not much advantage.
+
+Approach 4:-
+Use mirroring infrastructure provided by PIM to periodically ding the updation
+of mc entries on backup.
+Advantage:- This will ensure that the values are perfectly in sync. PIM mirroring 
+infrastructure code will be utilized.
+Disadvantage:- We will be coupling PIM code with mc code, PIM will be updating  mc data 
+structures, there will be periodic backing up of info, will lead to heavy loads on master 
+for not much advantage.
+
+
+    (vi)  PIM NSR with both IPv4 and IPv6 configured 
+            PIM NSR for IPv6 will be certified by systest in 10.3 for RLI 9022.
+Post RLI 9022, all the supported features in RLIs 6259 
+and RLI 2728 (Phase-1) will be certified for IPv4 and IPv6. Currently, there are
+some issues (rpd crashes) when both IPv4 and IPv6 are co-existent. 
+PRs will be opened for these issues and will be fixed as part of this RLI effort. 
+
+    (vii) In-Support Software Upgrade (ISSU) support for PIM NSR 
+            ISSU support for PIM will be taken up as part of this RLI. 
+Rosen and MVPN are not supported for NSR and ISSU. All the other PIM supported 
+features until RLI 6259 will be supported and validated for ISSU. 
+           
+    (viii)Conceptual walk-through of different states and corner-cases
+            There are certain scenarios where the state replications cannot be 
+verified by CLI output or packet-loss categories. Such cases have to be well-thought 
+out and appropriate replication functionality will be put in place as part of 
+this RLI effort. 
+
+    (ix) PIM Join Load Balance Support for NSR
+
+          Topology:
+                   +---+               +---+ 
+S1, S2             |   |----a----------|   |
+  S3+------+R1+----+ R2+----b----------+ R3+----------+R4+-------+R5+
+S4, S5,            |   |----c----------|   |
+                   +---+               +---+
+             R2 and R3 are connected with three ECMP links (a, b, c). R3 is DUT.
+
+
+Existing behaviors and facts (Prior to this RLI changes):
+--------------------------------------------------------------
+    (i) When no form of PFE load balance (ie., per-packet-load-balance)is enabled, 
+the unicast route selected on the master is the same as the unicast route 
+selected on the backup. This is because, the unicast route gets replicated 
+to backup using krt_gw_sync_selection().   
+
+    (ii) When PFE per-packet load balance is enabled, the unicast route is 
+not replicated to the backup due to limitations and semantics of route-replication. 
+This will cause the unicast route for the same source to be different 
+on the master and the backup.  
+
+    (iii) When PIM join-load-balance knob is enabled, for non-NSR case, 
+all the RPF neighbors are considered and for a particular SG, the upstream is chosen 
+on a least-loaded basis. When all links are equally least loaded, any one of the links 
+could be chosen for a particular SG. 
+
+    (iv) When PIM join-load-balance knob is enabled, for NSR case, 
+all the RPF neighbors are considered and for a particular SG, the upstream is chosen 
+on a least-loaded basis. When all links are equally least loaded, any one of the links 
+could be chosen for a particular SG. Hence, the master and the backup could land up 
+using different upstream interface for the same SG pair. 
+
+
+Effects of mismatch between SG's upstream on master and backup:
+--------------------------------------------------------------
+    This is the sequence of how an SG and mroute gets installed. SG gets created on 
+the master which results in mroute getting created on master. This mroute is replicated 
+to the backup using kernel (ksyncd). Also, the SG gets mirrored to the backup using 
+mirror replication api. (MAPI). Today, the determination of upstream (RPF) is independent 
+in master and backup. So, the SG and mroute of master could point to 'a'. 
+The mroute of backup could point to 'a' due to ksyncd replication. But SG on backup could 
+point to 'b' due to least-loaded selection among ECMP paths.  With this state, 
+if a failover happens, on the new master, there is a mismatch 
+between SG and mroute's upstream which will cause some traffic loss until it gets resolved. 
+For NSR, near-zero traffic loss for existing flows is a requirement and 
+the mismatch could break this.  
+
+    The above problem exists even when per-packet load balance alone is enabled. 
+The unicast is not replicated and SG and mroute on new master could land up with 
+different upstreams similar to above.  
+
+Different Approaches to fix the above issue:
+--------------------------------------------------------------
+    Multiple approaches were considered to address this mismatch and traffic loss. 
+
+i) Sending triggered Join and after failover, resolve the mroutes on the new master: 
+    The average traffic loss with this fix is 30 seconds(Worst: 61, Best: 25). 
+Loss is due to mismatch between SG's upstream and mroute's upstream's new master until 
+they are resolved. Code changes are minimal and will not have impact on existing behavior. 
+There will still be traffic loss. So, this fix falls short in this requirement. 
+      
+(ii) Using a Hash based algorithm for Join suppression. 
+    The average traffic loss is 0 seconds.  This approach changes the behavior of 
+non-NSR behavior. This can be mitigated by providing a new CLI under PIM for 
+performing hash based approach. Both master and backup will pick the SG upstream 
+based on hash calculation of S and G. The limitation is, the join-balancing 
+could be slightly polarized.
+
+(iii) Replicating the SG's upstream interface. 
+    No traffic loss is seen with this approach. This approach is the correct way. 
+By way of this, all the SG's upstream i/f and mroute's upstream i/f on the master 
+will be same as that of the backup. By virtue of this, after failovers, 
+there will no mismatch and no loss in traffic for existing flows.
+
+The third approach will be chosen for implementing the load-balance NSR functionality.
+
+Caveat: If zero-loss is expected with per-packet load balance, it is recommended that
+PIM join-load balance is also configured. 
+
+Note: NSR support for PIM Join Load Balance is done for PIM-SM. Implementation
+will not sync upstream i/f for PIM-DM. Existing implememtation will hold good
+for PIM-DM. 
+In PIM-DM there are no Joins to be sent Upstream to receive traffic, when
+source becomes active traffic is sent on all the downstream interfaces. 
+
+    For a more detailed analysis of this, please refer to the below PR's audit-trail. 
+        https://gnats.juniper.net/web/default/454924
+
+    (x) Upstream Assert Synchronization (Part of RLI 11800)
+
+    Consider the following topology for Assert State.
+
+              Src+-------------+R1
+                               /  \
+                              /    \
+                             /      \
+                            R2      R3
+                         1.1.1.1   1.1.1.2
+                            |        | 
+                            |        | 
+                            |        | 
+                         +--+--------+--+--- (LAN)
+                         |              | 
+                         |              | 
+                         |              | 
+                     1.1.1.3         1.1.1.4
+                         R4            R5
+                         |              | 
+                         |              | 
+                        Rcv1           Rcv2  
+
+     (a) The Routers R2, R3, R4 and R5 are DUTs. They are all enabled with NSR. 
+     (b) Rcv1 and Rcv2 are sending joins (SSM, for better clarity) for same group say, 228.1.1.1. 
+     (c) Unicast: R4 chooses R2 as the route for Src and R5 chooses R3 as route for Src.  
+     (d) R4 sends the Join to R2 and R5 sends it to R3.  
+     (e) Src sends traffic for the group 228.1.1.1
+
+    When traffic comes in from both R2 and R3, Assert War occurs on the LAN between 
+R2 and R3. R3 wins the Assert War due to higher Assert metric (Higher IP). 
+R2 loses the Assert War. R2 stops forwarding the traffic downstream. 
+As per RFC, now, both R4 and R5 send their PIM Joins to R3, the assert winner. 
+This is the usual Assert mechanism. As of today, (ie., prior to this RLI effort), 
+Assert state is not replicated to the backup. 
+
+    What happens when failover occurs as of today (without RLI changes) on the  
+     (a) R3, the assert winner
+     (b) R2, the assert loser
+     (c) R4 and R5, downstream router 
+
+     (a) R3, the assert winner
+          On R3, after failover, the new master does not know that 
+it is the assert winner. R3 is in the NO_INFO state. On receiving traffic, R3 sends
+out the packet on the LAN without realizing that it is the assert winner. The other routers
+R2 (loser), R4 and R5(downstream routers) know that R3 is the assert winner. 
+This state continues until the assert state times out on R2, the assert loser. 
+After assert timeout, R2 sends out an Assert message which is overridden by R3 
+which effectively results in Assert War. After the war, R3 realizes that it is 
+the assert winner and R2 continues to be the assert loser.   
+           In this scenario, replicating the assert state will cause the new master
+to retain the Assert winner state and will send out periodic assert messages
+thereby avoiding an assert war.  
+
+     (b) R2, the assert loser
+         There won't be any Joins for that group because, the downstream routers 
+R4 and R5 would be sending joins to the winner R3. So, there won't be any effect 
+after the failover. If they are any joins during failover for that SG, 
+after failover, they won't have any effect as their assert state is in NO_INFO and
+SGs will time out eventually.  
+
+     (c) R4 and R5, downstream router 
+      On R4, the downstream router: The backup RE does not know the 
+upstream assert winner. Hence, in R4 backup, the upstream will 
+still point to R2 (unicast selected upstream). Here, after failover, 
+a Join will be sent towards R2. R2 will send traffic downstream. 
+An Assert War will occur again. After the assert war, R3 will win 
+the assert and R4 will have its upstream point to R3. If the backup RE 
+had been in sync with the Assert state, it will send to the appropriate 
+upstream router (R3) thus avoiding an Assert War.   
+      In this scenario, if pim-join-load-balance knob is enabled, the upstream
+neighbors will be synchronised and the backup will also point to the assert
+winner. This will avoid an assert war after failover. The same mechanism of 
+replicating the upstream neighbors can be used to solve this problem in
+downstream routers of a LAN. 
+
+    There could be some corner cases when the new master is not 
+updated with the correct assert information.
+
+     It is better that the assert states are replicated to the backup. 
+This will ensure that, right after failover, the new master continues 
+with the Assert state thus avoiding an assert war. An Assert War will 
+occur for each SG. So, if there are a lot of SG, there could be some issues. 
+
+    Workaround: Alternatively, as of today, we can set the assert-timeout 
+value to be very low (as low as 5: default is 60) in the upstream routers. 
+This way, an assert message from winner will be sent every 5 seconds and 
+all the routers will be in updated state quickly after failover. This is not 
+a good choice because of lot of updates that occur even during no switchover 
+(again for each SG).  This can at best be used as a workaround until the 
+RLI changes are checked in. 
+
+    (xi) BSR Policies
+
+     Consider the below topology. 
+
+
+                               
+                 local-RP              
+         R0+-------R1+---------R2
+       BSR=50       \        /
+                     \      /
+                      \    /
+                       \  /       local-RP
+                        R3----------R4-------R5
+                       DUT                  BSR=30                
+
+         
+
+     On R3, Configure policy so as to reject incoming Bootstrap messages 
+from R1 and R2. Also, configure policy to reject outgoing Bootstrap messages 
+to R4. This will lead R3 to elect R5 as the BSR and R4 as the RP. 
+Routers R1 and R2 will elect R0 as the BSR and R1 as the local RP. 
+Basically, R0,R1, R2 are in one domain and R3, R4 and R5 are in another.
+
+     All R1, R2, R3 and R4 are NSR enabled. The backup should be in sync 
+with the Bootstrap information and Candidate-RP information. After failover, 
+the routers should hold the correct BSR and C-RP information. 
+ 
+     This will work today in NSR because, the master applies the filter 
+first and then does packet processing if it passes filter. Only after 
+that NSR processing is called. So, the backup is always in sync 
+with Master. However this will need validation and testing to confirm that
+there are no issues.
+
+     Please check CLI section for example config and command outputs.
+
+    (xii)Neighbor policy
+
+        In the below topology, 
+
+                    R0    R1      R2      R3
+                    +     +       +       +
+                    |     |       |       |
+                    |     |       |       |
+                    |     |       |       |
+                    --------------------------(LAN)
+
+
+       We can configure R0 to avoid processing neighbors R1 and R2 and 
+accept only R3 using neighbor policy. With NSR configured R0, the same 
+information should be replicated to the backup. ie., R0 backup rpd 
+should not have R1 and R2. It should have only R3 as neighbor. 
+
+     Please check CLI section for example config and command outputs.
+
+    (xiii)Scope policy
+
+    The config commands given in the CLI section create a scope-policy 
+to accept auto-rp groups and reject other groups in 224.0.1.0/24. 
+The backup should also have the same scope-policy applied. 
+After failover, the policy should take effect on the new master. 
+The backup rpd also reads the config and creates the scope-policy entries. 
+     Please check CLI section for example config and command outputs.
+
+    The set of configs in CLI should block 224.0.1.1 group in forwarding 
+and have pim join showing as 'administratively scoped'. The same information 
+should be replicated to the backup. Presently, there are some issues with 
+scope-policy in non-NSR. (PRs 513700 and 518360). The expected behavior is that
+backup should also block the traffic downstream according to policy. 
+
+    (xiv)rpf-check policy
+
+    The config commands given in the CLI section create a rpf-check policy 
+to avoid RPF checks on the upstream interface. Kindly note that disabling 
+RPF-check could lead to hard-to-debug multicast routing loops. With NSR, 
+the policy is parsed by backup and it has its multicast route with 
+rpf-check disabled. 
+    Please check CLI section for config and command output. 
+   
+
+2.4 CLI
+
+
+2.4.1 CLI Config
+
+    (i) Local-RP will be allowed to be configured with PIM NSR from RLI 6259. 
+    (ii) Join-load-balance knob will be allowed to be configured with PIM NSR from RLI 6259. 
+
+    (iii) BSR policies Import/Export
+set protocols pim rp bootstrap family inet import mypim-importer
+set protocols pim rp bootstrap family inet export mypim-exporter
+
+set policy-options policy-statement mypim-exporter to interface ge-0/1/0.0
+set policy-options policy-statement mypim-exporter then reject
+set policy-options policy-statement mypim-importer from interface ge-0/2/3.0
+set policy-options policy-statement mypim-importer from interface so-0/0/0.0
+set policy-options policy-statement mypim-importer then reject
+
+
+    (iv) Neighbor Policies Config
+set policy-options prefix-list nbrGroup1 100.1.1.10/32
+set policy-options prefix-list nbrGroup1 100.1.1.20/32
+set policy-options policy-statement mypim-nbr-policy from prefix-list nbrGroup1
+set policy-options policy-statement mypim-nbr-policy then reject
+set protocols pim interface fe-1/3/3.0 neighbor-policy mypim-nbr-policy
+
+    (v) Scope-policy Config
+
+set routing-options multicast scope-policy allow-auto-rp
+set policy-options policy-statement allow-auto-rp term allow-auto from interface fe-1/3/3.0
+set policy-options policy-statement allow-auto-rp term allow-auto from route-filter 224.0.1.39/32 exact
+set policy-options policy-statement allow-auto-rp term allow-auto from route-filter 224.0.1.40/32 exact
+set policy-options policy-statement allow-auto-rp term allow-auto then accept
+set policy-options policy-statement allow-auto-rp term reject-others from route-filter 224.0.1.0/24 orlonger
+set policy-options policy-statement allow-auto-rp term reject-others then reject
+
+    (v) rpf-check-policy config
+
+set routing-options multicast rpf-check-policy disable-rpf
+set policy-options policy-statement disable-rpf term no-rpf from route-filter 224.0.0.0/8 orlonger
+set policy-options policy-statement disable-rpf term no-rpf from source-address-filter 1.1.1.2/32 exact
+set policy-options policy-statement disable-rpf term no-rpf then reject
+
+2.4.2 CLI Commands
+    
+    (i) All the RP-set mechanisms will have similar output for the below command 
+on both master and backup RE, thus confirming that they are in sync and 
+backup is ready to take up right after failover.
+     cli> show pim rps 
+
+    (ii) With Register state replication in place, the following command will 
+display similar output in both master and backup REs.  This will apply for 
+Anycast Register State mechanisms as well.
+     cli>show pim rps extensive 
+
+    (iii) Assert State (RLI 11800) 
+      With code changes for Assert sync in place, the following commands will 
+display similar output in both master and backup thus confirming that they are in
+sync and backup is ready to take up right after failover.
+
+     The below will show the details of the SGs, their Assert states, 
+the winner and timeout values on the upstream routers. 
+
+     cli>show pim neighbors detail 
+ Address: 100.1.1.2, IPv4, PIM v2, Mode: Sparse, sg Join Count: 0tsg Join Count: 0
+        Hello Option Holdtime: 65535 seconds
+        Hello Option DR Priority: 70
+        Hello Option Generation ID: 1310694948
+        Hello Option LAN Prune Delay: delay 500 ms override 2000 ms
+    Asserts: Group           Source          State   Neighbor        Timeout
+             228.1.1.10      1.1.1.2         Elected 100.1.1.2             0
+             228.1.1.9       1.1.1.2         Elected 100.1.1.2             2
+             228.1.1.8       1.1.1.2         Elected 100.1.1.2             2
+             228.1.1.7       1.1.1.2         Elected 100.1.1.2             2
+...
+
+     The below will show the assert winner details on the downstream routers.
+     
+     cli>show pim join extensive 
+     Group: 228.1.1.3
+     Source: 1.1.1.2
+     Flags: sparse,spt
+     Upstream interface: fe-1/3/3.0
+     Upstream neighbor: 100.1.1.2 (assert winner) <==========
+     Upstream state: Join to Source
+
+
+    (iv) RPF-check disabling CLI output on master and backup.
+
+{master}[edit]
+regress@pro-bng-mc2-c1# run show multicast route
+Family: INET
+
+Group: 224.0.1.1
+    Source: 1.1.1.2/32
+    Upstream interface: ge-0/1/0.0 (rpf check disabled)
+    Downstream interface list:
+        fe-1/3/3.0
+
+Family: INET6
+
+{backup}[edit]
+regress@pro-bng-mc2-c# run show multicast route
+Family: INET
+
+Group: 224.0.1.1
+    Source: 1.1.1.2/32
+    Upstream interface: ge-0/1/0.0 (rpf check disabled)
+    Downstream interface list:
+        fe-1/3/3.0
+
+
+
+2.4.3 JUNOScript
+    -NA-
+
+2.4.4 J-Web Quick Configuration and Monitor Screen
+    -NA-
+
+2.4.5 SNMP
+    -NA-
+
+2.4.6 Syslog - ERRMSG
+    -NA-
+
+2.5 Assumptions
+    -NA-
+
+2.6 Constraints and limitations
+    -NA-
+
+2.7 Dependencies and interactions with other components in the system
+    -NA-
+
+2.8 Examples or interaction descriptions
+    -NA-
+
+2.9 Free software considerations:
+    -NA-
+
+
+3. PATENT OPPORTUNITIES
+    -NA-
+
+4. CAVEATS
+    -NA-
+
+
+5.  OTHER REQUIREMENTS
+    -NA-
+
+
+6.  IMPLEMENTATION DETAILS
+
+    This section provides a brief overview about the approach that will be taken
+to replicate required state for PIM NSR.
+
+6.a Register State Replication
+
+    When considering the approaches for mirroring Register state, it is best to 
+identify what is to be replicated. The Register state on the RP router 
+is basically an information about the availability of the Source in the upstream 
+and a timer associated with it. When there is no downstream Joins on the RP and 
+the DR sends a Register (due to source sending traffic), the RP sends a 
+Register stop and starts a timer. This state is referred here as the 
+Register state on the RP. 
+
+    Since the register state is maintained in pim_rp->pim_rpif->rpif_register_tree, 
+it makes sense to replicate this information along with the existing RP rdb 
+rather than have separate rdbs for Register state. The Register state tree is 
+maintained per PIM RP interface (pim_rpif).   
+
+    The Register state can be mirrored based on an approach similar to how BSR 
+information is replicated. The jist is given below for BSR. 
+
+    (i) A BSR packet is received on the master in pim_recv_bootstrap() function.
+    (ii) All packet sanities are done. Data structures are populated on the master 
+    (iii) Towards the end of the function, pim_rp_nsr_recv_processing() function is called.
+    {iv) pim_rp_nsr_recv_processing() builds an RDB for BSR using below
+              pim_rp_rdb_key_build()
+              pim_rp_add_rdb()
+              pim_rp_create_rdb()
+              pim_rp_update_rdb()
+    (v) Then this RDB is inserted into the patricia tree.
+    (v) pim_rp_nsr_recv_processing() then mirrors it to the backup using 
+              pim_rp_add_mirror()
+              pim_rp_update_mirror()
+    (vi) This is encoded and sent across to backup using
+              pim_mirror_rp_encode()
+              pim_mirror_rp_encode_tlv()
+
+    On the backup, when the mirrored packet with the RP related data structure information is received, 
+
+     (i) The mirrored packet is decoded using the below and an RDB is formed on the backup
+              pim_mirror_rp_decode()
+              pim_mirror_rp_decode_op()
+              pim_mirror_rp_decode_tlv()
+
+     (ii) The RDB on the backup is processed using 
+              pim_mirror_process_rp_msg()
+
+     (iii) If the mechtype is BSR, the pim_recv_bootstrap function is called (similar to master being called) with appropriate parameters filled from the mirroed RDB. 
+              pim_recv_bootstrap()
+     (iv) From here on, the backup populates its BSR data structures and runs a state machine and timers on its own.
+
+    Similar to the above, Register Messages will be replicated to the backup. 
+The entry point was pim_recv_register_common similar to pim_recv_bootstrap. 
+A prototype was done for this. A separate MSG type was added as REGISTER similar 
+to BSR and the packet itself was replicated along with the pim_recv_register_common 
+parameter values filled in the RDB. The RDB is encoded in master and decoded 
+in the backup. On the backup, from the received RDB, the pim_recv_register_common() 
+function is called which duly takes care of populating data structures 
+and state machines in the backup. 
+
+    The prototype worked well and the Register data structures were duly 
+populated in the backup. Also, the failover testing also passed. 
+ie., Section 4-(iii) passed.  However, the changes need a lot of refinement 
+to become fully working. A few crashes and issues were seen on failovers, though.  
+
+ 
+    6.b Anycast RP Register State 
+
+    The above mechanism could be extended for this too. When we receive a 
+Register message, it could be from DR or another RP (anycast RP) or from MSDP. 
+All these handling is present in pim_recv_register_common(). If we are able to 
+replicate this packet to the backup, we get to populate the Anycast RP datastructures 
+related to Register state. Tried my prototype changes in an Anycast RP setup and 
+found that it worked functionally well (with a few crashes/issues). 
+ 
+    Essentially, the above mechanism of replication for Register state could be 
+used for Anycast RP Register state too.
+
+    6.c Join Load Balance
+
+With this RLI, PIM NSR will be supported for Join-load-balance knob. 
+
+In the current implementation, master rpd and backup rpd independently use 
+'least-loaded interface' selection algorithm to select SG's Upstream. 
+There is no mechanism to replicate the upstream information. Due to this, 
+with equal cost multi paths Master and Backup rpd may select different upstream 
+interfaces for same SG.
+
+With this state, if a failover happens, on new master, there will be mismatch 
+between SG and mroute's upstream which will cause traffic loss for some groups 
+until it gets resolved. For NSR, near-zero traffic loss for existing flows is a 
+requirement and the mismatch could break this.
+
+Following implementation follows the approach to replicate the Master Selected 
+Upstream Interface to Backup rpd. As a result, SG's and mroute's upstream on 
+master will be the same as SG's and mroute's upstream on backup. 
+
+If pim join-load-balance knob is turned on, along with Source and Group information, 
+Master replicates selected Upstream interface index for its each SG to the Backup RE 
+in its JP mirror rdb structure.  Backup RE will be allowed to select Upstream Interface 
+for its SG based on least loaded selection mechanism, but this will be updated 
+with the replicated upstream interface received from the RDB. 
+
+Today, SGs are sent to the backup in the following order. 
+ie., Group, the list of Sources for that group followed by next Source-Groups list 
+
+   +--+--+--+--+--+--+--+--+--+--+--+--+
+   |  |  |  |  |  |  |  |  |  |  |  |  |
+   |G1|S1|S2|S3|G2|S1|S5|G3|S7|S8|G4|S9|
+   |  |  |  |  |  |  |  |  |  |  |  |  |
+   +--+--+--+--+--+--+--+--+--+--+--+--+
+
+The upstream interface information (ifindex) and nbr address is added after each group.
+
+   +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+   |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
+   |G1|S1|i1|n1|S2|i2|n2|G2|S3|i3|n3|S4|i4|n4|G3|S5|i5|n5|G4|S6|i6|n6|
+   |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
+   +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+
+
+Unicast Route Change:-
+Incase of unicast route change, master will Modify (MIRROR_OP_MOD) the existing 
+mirror rdb and will send it to Backup RE. 
+
+Assumptions:- 
+Interface indices on Master and Backup RE are the same.
+
+    6.d Assert State Synchronization Implementation Detail
+
+
+    (i) On downstream routers, the upstream neighbor information can be replicated
+based on the code changes that have bene done for pim join-load-balance NSR feature.
+With this, the joins on the master and the backup of the downstream routers will 
+point to the assert winner. In addition, we will also replicate the assert state
+so that the backup will store the assert winner information in its neighbor states.
+
+    (ii) The following is the design details for replicating Assert state to the backup. 
+    Each of the SG Assert state needs to be replicated to the backup. The assert
+state datastructure has the following information.
+        (a) nbr   
+        (b) source   
+        (c) group   
+        (d) preference   
+        (e) metric   
+    An RDB can be formed with these information and can be replicated for 
+each of the Assert messages. The backup rpd should also come to know of the assert
+messages that the master sends. Before sending the assert packet out, we can send
+the assert RDB to the backup so that the backup sets up the state machine and elects
+the appropriate winner.
+
+   A new RDB type is to be registered for assert states like neighbor, rp and joins. 
+This will require changes to 
+   (i)  pim_nsr.h (existing file) 
+            RDB structure definition for assert state
+
+   (ii)  pim_mirror.c  (existing file) 
+            mirror_registry_entry
+            pim_mirror_unmirror_rp_rdbs()
+            pim_mirror_register_clients()
+            pim_nsr_rdb_assert_build()
+            pim_nsr_job_rdb_creation()
+            pim_nsr_rdb_assert_all_delete()
+            etc.,
+
+   (iii)  pim_rdb.c  (existing file) 
+            pim_rdb_mem_block_init()
+            pim_rdb_ctx_trees_init()
+            pim_rdb_ctx_trees_delete()
+            pim_rdb_ctx_threads_init()
+            pim_rdb_terminate()
+            pim_rdb_init()
+            pim_rdb_exit()
+            pim_rdb_is_resolved()
+            pim_mem_free_old_and_copy_new()
+            etc.,
+
+   (iv)  pim_rdb_resolve.c  (existing file) 
+            pim_resolve_assert_rdb()
+            pim_nsr_mirror_rslv_event_handler()
+            pim_rdb_is_resolved()
+            pim_rdb_is_resolved()
+            pim_rdb_is_resolved()
+            etc.,
+
+    (iv) pim_mirror_assert.c (New file) (Mirroring: Encode, decode, lock, unlock of the RDBs) 
+            pim_assert_encode_tlv(); 
+            pim_mirror_assert_decode_tlv()
+            pim_mirror_process_assert_msg()
+            pim_mirror_assert_decode_op()
+            pim_mirror_assert_lock()
+            pim_mirror_assert_lock()
+            pim_mirror_assert_encode()
+            pim_mirror_assert_decode()
+            etc.,
+
+    (v) pim_rdb_assert.c (New file) (Creation, deletion of assert RDBs)
+            pim_assert_rdb_entry_alloc()
+            pim_assert_rdb_entry_free()
+            pim_assert_rdb_key_build()
+            pim_assert_find_rdb()
+            pim_assert_del_rdb()
+            pim_assert_create_rdb()
+            pim_assert_add_rdb()
+            pim_assert_add_rdb_from_mirror()
+            pim_assert_update_rdb()
+            pim_assert_rdb_timeout_processing()
+            pim_assert_delete_mech_rdbs()
+            pim_assert_nsr_recv_processing()
+            pim_assert_add_mirror()
+            pim_assert_update_mirror()
+            pim_assert_delete_mirror()
+            etc.,
+
+     When the appropriate asserts are received on the backup, they are processed and the
+state machines are built on the backup rpd as well. This will maintain consistent state
+on the master and backup and also prevent redundant assert wars.
+
+7.  PERFORMANCE
+
+Since PIM NSR relies on explicitly replicating some PIM control state from
+the master RE to the backup, the master RE shall have some performance
+impact on account of having to do extra work in replicating the state.
+
+While there is no quantitative way to estimate the extra impact, the impact
+would be most apparent in cases where configuration is being changed at a time
+when lots of PIM control state has got updated/add/deleted on the master RE
+during a very short interval of time - this could be due to PIM control state
+churn on the network due to various PIM events (For more details, please
+refer the PIM RFCs).
+
+Joins/Prune Scaling Numbers:
+For the scaling numbers of Joins/Prune performance test has been performed on 
+the following Topology.
+
+Topology:
+                                -----
+                                |R1 |
+                                |RP |
+                                -----
+                              /       \
+                             /         \
+                            /           \
+                           /             \
+                          /               \
+            -----     -----                -----    -----
+            |RT1|     |R0 |                |R2 |    |RT2|
+            |Src|-----|   |----------------|   |----|Rcv|
+            -----     -----                -----    -----
+
+Configuration:
+- Configure R1 as local RP and R0,R2 have static-RP
+- Configure RT2 to send Joins 15k (*,G) into the network.
+- Configure RT1 to send traffic to all the Groups (*,G) sent by RT2.
+- Traffic flows via rp-tree initially and switched to sp-tree.
+
+Testing Scenarios:
+a. R2 is DUT(static-RP)
+  After Initial Sync on DUT(RE0/RE1) we have 15k (*,G) and 15K (S,G) entries.
+  Perform the NSR switchover from RE0->RE1 on DUT.
+      On RE1(New Master): no. of joins - 15,000 (*,G) and 15,000 (S,G)
+      On RE0(New Backup): no. of joins - 15,000 (*,G) and 15,000 (S,G)
+
+b. R1 is DUT(local-RP)
+  To have traffic takes or follows the rp-tree path "ONLY", disabled the
+  link between R0 - R2, so that we have 15k (*,G) and 15K (S,G) entries on DUT/R1.
+  After Initial Sync on DUT(RE0/RE1) we have 15k (*,G) and 15K (S,G) entries.
+  Perform the NSR switchover from RE0->RE1 on DUT.
+      On RE1(New Master): no. of joins - 15,000 (*,G) and 15,000 (S,G)
+      On RE0(New Backup): no. of joins - 15,000 (*,G) and 15,000 (S,G)
+
+Its observered that Systems performance/behaviour is not affected with a load
+of 15K (*,G) and 15K (S,G) Joins.
+
+7.1.  Performance Related Resources
+    -NA-
+
+7.2.  Target Performance
+    -NA-
+
+8.  COMPATIBILITY ISSUES
+
+For PIM NSR to work, both REs should support PIM NSR. If one of the REs does
+not support PIM NSR, then the feature shall be as good as disabled.
+
+Upgrade path for customer running PIM-related features pre-9.3 that are
+ unsupported with PIM-NSR in 9.3:
+http://cvs.juniper.net/cgi-bin/viewcvs.cgi/sw-projects/os/nsr/pim-nsr-unsupported-features-upgrade-path.txt?view=markup
+
+
+9.  SECURITY ISSUES
+    -NA-
+
+
+10.  PLATFORMS SUPPORTED
+
+11. Graceful RE Switchover (GRES), Hobson or ISSU Impact 
+
+PIM graceful restart support (which is a part of the GRES offering) is
+documented in PIM-GR-RST.
+
+An application note is created which advises the customers in effecting
+a smooth transition of ISSU process with PIM NSR.
+
+
+12.  NSR Impact
+    This RLI is a NSR related RLI. So, no separate impact. 
+
+13. Aggregated Ethernet/SONET Support
+    -NA-
+
+14.  SDK Impact
+    -NA-
+
+14.1 SDK Customer Usage
+    -NA-
+
+15. Services / JSF (JUNOS Services Framework) Impact
+    -NA-
+
+16. MULTI-CHASSIS SUPPORT
+    -NA-
+
+17. 64-BIT SUPPORT
+    -NA-
+
+18.  NOTES
+    -NA-
+
+
+19.  GLOSSARY
+IGMP    Internet Group Management Protocol
+MSDP    Multicast Source Discovery Protocol
+NSR     Non Stop Routing
+PIM     Protocol Independent Multicast
+RE      Routing Engine
+
+
+[NSR]         Non-Stop Routing (NSR) - Functional specification
+              sw-projects/os/nsr/software_spec_3083.txt
+[IGMP-NSR]    NSR: IGMP stateful replication - Functional Specification
+              sw-projects/os/nsr/igmp-nsr-funcspec.txt
+[PIM-GR-RST]  Functional Specification - Graceful Restart for PIM
+              sw-projects/routing/multicast/graceful-restart/func-spec
+[PIM-NSR]     NSR: PIM stateful replication - Functional Specification
+              sw-projects/os/nsr/pim-nsr-funcspec.txt
+[PIM-NSR-DS]  NSR: PIM stateful replication - Design Specification
+              sw-projects/os/nsr/pim-nsr-designspec.txt
+[PIM-DM]      Protocol Independent Multicast - Dense Mode (PIM-DM):
+              Protocol Specification (Revised). RFC3973
+[PIM-SM]      Protocol Independent Multicast - Sparse 
+              Mode (PIM-SM): Protocol Specification (Revised). RFC4601.
+
+20.  REVIEW COMMENTS

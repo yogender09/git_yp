@@ -1,0 +1,1462 @@
+                  mLDP NSR Unit Test Plan 
+
+              Santosh Esale (sesale@juniper.net)
+
+
+
+Copyright (C) 2010, Juniper Networks, Inc.
+
+
+NOTICE: This document contains the proprietary and confidential
+information of Juniper Networks, Inc., and must not be
+distributed outside of the company without the
+permission of Juniper Engineering.
+
+
+1.  INTRODUCTION
+
+This document describes unit tests for mLDP NSR.
+
+1.1 RLI List
+
+RLI : 14681 
+Description: NSR:mLDP
+Target: 13.3 
+
+Functional Specification:
+http://cvs.juniper.net/cgi-bin/viewcvs.cgi/sw-projects/os/nsr/rpd/mldp/mldp-nsr-functional-spec.txt
+
+Design Specification:
+http://cvs.juniper.net/cgi-bin/viewcvs.cgi/sw-projects/os/nsr/rpd/mldp/mldp-nsr-design-spec.txt
+Tracking PR: 704071
+
+1.2 References
+
+[1] RLI 3168, 2721: LDP Support for Non-stop Routing Unit Test Plan
+    <http://cvs.juniper.net/cgi-bin/viewcvs.cgi/sw-projects/os/nsr/rpd/ldp/ldp-nsr-unit-testplan.txt>
+
+[2] 17013 : RSVP and LDP NSR for Sangria Unit Test Plan 
+    <http://cvs.juniper.net/cgi-bin/viewcvs.cgi/sw-projects/platform/sangria/rpd/rsvp-ldp-sangria-nsr-unit-test-plan.txt>
+
+
+2.  SCOPE
+
+  a. Functional coverage 
+   
+  Function areas covered by this unit test plan are as below: 
+
+  1) Initial Sync
+
+     - Transit and egress P2MP LSPs self-id is replicated to standby RE via 
+       mirroring subsystem.
+     - Ingress P2MP LSP Self-id and P2MP tunnel name is replicated to Standby RE 
+       via mirroring subsystem.
+     - incoming and outgoing label for LDP P2MP LSP is replicated to Standby RE 
+       via IRS (Internal Routing socket).
+
+  2) Ongoing Sync
+ 
+     - Ongoing state of LDP P2MP LSP is synced to standby RE via JSR (Junos Socket 
+       Replication).
+
+  3) KRT flood nexthop Sync
+
+     - Flood nexthop NSR is achieved by maintaining two list of branches on Standby 
+       RE. First list contains all the branches learnt via Ksyncd/RTSOCK messages 
+       and other created by LDP on backup RE after learning self-ids, tunnel name 
+       and labels via Initial and Ongoing sync.
+     - Once all the necessary Sync information is available for a P2MP LSP on 
+       standby RE, Re-construct a flood nexthop for P2MP LSP. 
+     - If required P2MP LSP attributes are all in Sync, then the flood nexthop 
+       and its branches constructed on standby RE would be same as learnt from Master 
+       RE.
+
+  4) Switchover 
+
+     - After switchover, evaluate flood nexthop created by LDP P2MP LSPs. If the mLDP
+       created branches are same as kernel learnt branches, the NSR for a flood nexthop
+       is successful else delete the additional kernel branches and add mLDP created 
+       branches to floodnh/MCNH and send the change operation to kernel. 
+     - If nexus information is not in Sync, re-allocate self-id and re-construct the 
+       flood nexthop again.
+     - If P2MP tunnel information is not in Sync, re-allocate seld-id and tunnel name 
+       and re-construct the flood nexthop again.   
+     - If Make Before break algorithm is not complete on old master RE, start the 
+       algorithm from the stage were master left off.
+     - Setup dynamic RSVP LSP for link-protection as necessary.
+
+
+3.  SETUP
+
+ All the setup, configurations and scripts information will be available at 
+ http://cvs.juniper.net/cgi-bin/viewcvs.cgi/sw-projects/os/nsr/rpd/mldp/unit-tests
+
+3.1 Topologies
+
+3.1.1
+
+3.1.1 Topology 1 
+                            
+          R1-------------R2=============R3-----------R5----------R6
+                         |
+                         |
+                         |
+                         |
+                         R4
+
+                mLDP NSR Test Topology 1
+
+3.1.2 Topology 2 
+
+          +-------------R2---------------R4-----------+
+          |             |                |            |             
+          |             |                |            | 
+          |             |                |            | 
+Ingress/  R1            |                |            R6 Ingress/Egress
+Egress    |             |                |            |
+          |             |                |            |
+          +-------------R3 ------------- R5-----------+ 
+                     Transits          Transits
+               
+              mLDP NSR Test Topology 2 
+
+P2MP LSP 1: P2MP root-addr 10.255.107.230, lsp-id 16777217
+Ingress   : R1
+Egress    : R6
+
+P2MP LSP 2: P2MP root-addr 10.255.107.232, lsp-id 1
+Ingress   : R6
+Egress    : R2, R3.
+
+P2MP LSP 3: P2MP root-addr 10.255.107.232, lsp-id 16777217
+Ingress   : R6
+Egress    : R1
+
+       
+4. FUNCTIONAL TEST CASES
+
+4.1 LDP P2MP NSR Basic tests
+
+Topology-1 is used for all the test cases in this section.
+
+4.1.1 
+
+Goal: Adjacency and session mirror database replication tests. initial session 
+       sync tests.
+
+Topology: topology 1
+
+Test Steps :
+     - Execute all the 7 test cases from Reference 1, section 2 (A). 
+     - Execute all the 6 the test cases from Reference 1, section 2 (B).
+
+Success Criteria:
+   - Verify that all the above test cases are passed.
+   
+Results: PASS          
+           
+
+4.2 P2MP Mirror Database Tests
+
+Topology-2 is used for all the test cases in this section.
+
+
+4.2.1 
+
+Goal: P2MP LSP path is replicated to standby RE via mirroring sub system.
+
+Test Steps:
+     - Continue with the initial configuration.
+
+Success Criteria:
+     - Verify that P2MP LSP path is replicated to backup RE via mirroring subsystem.
+
+Results: PASS  
+
+
+4.2.2
+
+Goal: Replicated P2MP LSP path is received by standby RE via mirroring sub system.
+
+Test Steps:
+     - Continue with the configuration from 4.2.1.
+
+Success Criteria:
+     - Verify that replicated P2MP LSP path is received by backup RE via mirroring 
+       subsystem.
+
+Results: PASS  
+
+
+4.2.3
+
+Goal: Ingress P2MP LSP tunnel is replicated to backup RE via mirroring sub-system.
+
+Test Steps:
+     - Continue with the configuration from 4.2.2.
+
+Success Criteria:
+     - Verify that P2MP LSP tunnel is replicated to backup RE via mirroring subsystem.
+
+Results: PASS 
+
+
+4.2.4
+
+Goal: Replicated P2MP LSP tunnel is received by standby RE via mirroring subsystem.
+
+Test Steps:
+     - Continue with the configuration from 4.2.3.
+
+Success Criteria:
+     - Verify that replicated P2MP LSP tunnel is received by backup RE via mirroring 
+       subsystem.
+
+Results: PASS  
+
+
+4.2.5 
+
+Goal: P2MP LSP tunnel is re-created on backup RE after receiving replicated P2MP 
+      tunnel from master RE.
+
+Test Steps:
+     - Continue with the configuration from 4.2.4.
+
+Success Criteria:
+     - Verify that P2MP LSP tunnel is re-created on backup RE.
+
+Results: PASS 
+
+
+4.2.6
+
+Goal: Verify Vanilla LDP mirror database statistics on Master RE.
+
+Test Steps:
+     - Continue with the configuration from 4.2.5.
+
+Success Criteria:
+     - Verify that mirror database statistics are accurate on master RE.
+
+	regress@pro10-e# run show ldp replication statistics    
+	Type             Inits       Adds         Modifications   Deletes
+	Neighbor         0           5            9               0
+	Session          0           3            0               0
+	Path             0           6            0               0
+	Trace route      0           0            0               0
+
+Results: PASS 
+
+
+4.2.7
+
+Goal: Verify Vanilla LDP mirror database statistics on Standby RE.
+
+Test Steps:
+     - Continue with the configuration from 4.2.6.
+
+Success Criteria:
+     - Verify that mirror database statistics are accurate on standby RE.
+
+	regress@pro10-e1# run show ldp replication statistics    
+	Type             Inits       Adds         Modifications   Deletes
+	Neighbor         3           5            0               0
+	Session          0           3            0               0
+	Path             1           5            0               0
+	Trace route      0           0            0               0
+
+Results: PASS 
+
+
+4.2.8
+
+Goal: Verify LDP P2MP mirror database statistics on Master RE.
+
+Test Steps:
+     - Continue with the configuration from 4.2.7.
+
+Success Criteria:
+     - Verify that P2MP mirror database statistics are accurate on master RE.
+	regress@pro10-c> show ldp replication p2mp statistics    
+	Type             Inits        Adds         Modifications     Deletes
+	P2MP tunnel      0            2            0                 0
+	P2MP path        0            1            0                 0
+
+
+Results: PASS 
+
+
+4.2.9
+
+Goal: Verify LDP P2MP mirror database statistics on Standby RE.
+
+Test Steps:
+     - Continue with the configuration from 4.2.8.
+
+Success Criteria:
+     - Verify that mirror database statistics are accurate on standby RE.
+	regress@pro10-c1> show ldp replication p2mp statistics    
+	Type             Inits        Adds         Modifications     Deletes
+	P2MP tunnel      1            1            0                 0
+	P2MP path        0            1            0                 0
+
+Results: PASS 
+
+
+4.3 P2MP LSP Label Database Tests
+
+Topology-2 is used for all the test cases in this section.
+
+
+4.3.1
+
+Goal: Inbound label mapping message for a non-existent binding over IRS
+
+Test Steps:
+     - Continue with the configuration from 4.2.9
+     - Reboot backup RE so that inbound label mapping message is received 
+       over IRS during initial sync.
+
+Success Criteria:
+
+     - Verify that inLIB binding is created for this P2MP LSP.
+     - Verify that map counter is is via 'show ldp database detail'
+       command.
+
+Results: PASS 
+
+
+4.3.2
+
+Goal: Inbound label mapping message for a non-existent binding over JSR.
+
+Test Steps:
+     - Continue with the configuration from 4.3.1
+     - Reboot the ingress so that P2MP LSP label is withdraw and then 
+       label map is received again by Master and Standby over JSR.
+
+Success Criteria:
+
+     - Verify that inLIB binding is created for the new P2MP LSP.
+     - Verify that map counter is 1 via 'show ldp database detail'
+       command.
+
+Results: PASS 
+
+
+4.3.3
+
+Goal: Inbound label withdraw for a existent binding over JSR
+
+Test Steps:
+     - Continue with the configuration from 4.3.2
+     - Deactivate NG-MVPN on ingress LSR so that P2MP LSP label 
+       is withdrawn.
+
+Success Criteria:
+
+     - Verify that Standby receives a Label withdraw for the P2MP LSP
+       via JSR.
+     _ verify that InLib binding for this P2MP LSP is deleted and 
+       Label release is sent to upstream LSR.
+
+Results: PASS 
+
+
+4.3.4
+
+Goal: Outbound label mapping message for a non-existent binding over IRS
+
+Test Steps:
+     - Continue with the configuration from 4.3.3
+     - Reboot backup RE so that outbound label mapping message is received 
+       over IRS during initial sync.
+
+Success Criteria:
+
+     - Verify that OutLib binding is created for this P2MP LSP.
+     - Verify that the binding is in active state.
+
+Results: PASS 
+
+
+4.3.5
+
+Goal: Outbound label mapping message for a non-existent binding over JSR.
+
+Test Steps:
+     - Continue with the configuration from 4.3.4
+     - Activate/Deactivate NG-MVPN on egress so that outbound label is withdrawn 
+       and then a new label mapping message is sent to peer. Standby RE will 
+       receive this new outbound label mapping message via JSR.
+
+Success Criteria:
+
+     - Verify that OutLib binding is created for this P2MP LSP.
+     - Verify that the binding is in active state.
+
+Results: PASS  
+
+
+4.3.6
+
+Goal: Outbound label withdraw for a existent binding over JSR
+
+Test Steps:
+     - Continue with the configuration from 4.3.5.
+     - Deactivate NG-MVPN on ingress LSR so that P2MP LSP label 
+       is withdrawn.
+
+Success Criteria:
+
+     - Verify that Standby receives a Label withdraw for the P2MP LSP
+       via JSR.
+     - verify that OutLib binding for this P2MP LSP is added to to expiry queue.
+     - Verify that Label release is sent to Upstream immediately.
+     - Verify that after 60 seconds Outlib expiry job runs and deletes the binding.
+
+Results: PASS 
+
+
+4.4  P2MP LSP Ingress NSR
+
+Topology-2 is used for all the test cases in this section.
+
+4.4.1 
+
+Goal: Verify that static route with P2MP LSP flood nexthop is same as Master RE.
+
+Topology: topology 2
+
+Test Steps:
+     - Continue with the initial configuration.
+      
+Success Criteria:
+     - All verifications are done on R6 which is a Ingress router for P2MP LSP 2.
+     - Verify Static route with flood nexthop on master RE.
+     - Verify that P2MP LSP tunnel is replicated to backup RE.
+     - Verify that replicated P2MP LSP tunnel is received by Standby RE.
+     - Verify that Mirrored P2MP Tunnel is used to resurrect P2MP tunnel on 
+       Standby RE.
+     - Verify that mirror p2mp tunnel is linked to P2MP tunnel on Standby RE.
+     - Verify the KRT flood nexthop created by Standby RE. The flood nexthop
+       should have 2 sets of branches, first learnt from kernel and second created
+       by LDP on backup RE.
+     - Verify that both the sets of branches are matching.
+
+Results: PASS 
+
+
+4.4.2 
+
+Goal: Verify P2MP lsp Ingress NSR.
+
+Topology: topology 2
+
+Test Steps:
+     - Continue with the configuration from test 4.4.1. 
+     - Do a first RE Switchover on Master RE.
+     - Do second RE switchover on new master RE after synchronization status of RPD
+       task is complete i.e Standby RE is in sync with master RE.
+
+
+Success Criteria:
+     - After RE switchover, Verify that there is no change to static route with P2MP LSP
+       flood nexthop.
+     - Verify that the old master (new Standby RE) comes up and syncs with master RE.
+     - After second RE switchover, verify that there is no change to static route with 
+       flood nexthop.
+
+Results: PASS 
+
+
+4.4.3 
+
+Goal: Verify Ingress NSR with one more RE switchover
+
+Topology: topology 2
+
+Test Steps:
+     - Continue with the configuration from test 4.4.2. 
+     - Do second RE switchover on new master RE after synchronization status of RPD
+       task is complete i.e Standby RE is in sync with master RE.
+
+
+Success Criteria:
+     - After RE switchover, Verify that there is no change to static route with P2MP 
+       LSP 2 flood nexthop. 
+     - Verify that the old master (new Standby RE) comes up and syncs with master RE.
+
+Results: PASS 
+
+
+4.5  P2MP LSP Transit NSR
+
+Topology-2 is used for all the test cases in this section.
+
+4.5.1 
+
+Goal: Verify that P2MP lsp transit route on Standby RE is same as Master RE.
+
+Topology: topology 2
+
+Test Steps:
+     - Continue with the initial configuration. 
+
+
+Success Criteria:
+     - All verifications are done on R4 which is a transit router for P2MP LSP 1.
+     - Verify MPLS transit route on R4 for P2MP LSP 1.
+     - Verify that P2MP LSP path is replicated to backup RE.
+     - Verify that P2MP LSP path replicated path is received by backup RE.
+     - Verify that mirror path is linked to P2MP path on Standby RE.
+     - Verify the KRT flood nexthop created by backup RE. The flood nexthop
+       should have 2 sets of branches, first learnt from kernel and second created
+       by LDP on backup RE.
+     - Verify that both the sets of branches are matching.
+
+Results: PASS 
+
+
+4.5.2 
+
+Goal: Verify P2MP lsp transit NSR.
+
+Topology: topology 2
+
+Test Steps:
+     - Continue with the configuration from test 4.5.1 
+     - Start the traffic from R1 to R6.
+     - Do a first RE Switchover on Master RE.
+     - Do second RE switchover on new master RE after synchronization status of RPD
+       task is complete i.e Standby RE is in sync with master RE.
+
+
+Success Criteria:
+     - After RE switchover, Verify that there is no change to P2MP LSP transit route.
+     - Verify that there is not traffic loss.
+     - Verify that the old master (new Standby RE) comes up and syncs with master RE.
+     - After second RE switchover, verify that there is no change to P2MP LSP 1 
+       transit route.
+     - Verify that there is not traffic loss after second RE switchover.
+
+Results: PASS 
+
+
+4.5.3 
+
+Goal: Verify Transit NSR with one more RE switchover
+
+Topology: topology 2
+
+Test Steps:
+     - Continue with the configuration from test 4.5.2. 
+     - Do second RE switchover on new master RE after synchronization status of RPD
+       task is complete i.e Standby RE is in sync with master RE.
+
+
+Success Criteria:
+     - After RE switchover, Verify that there is no change to P2MP LSP transit route.
+     - Verify that there is not traffic loss.
+     - Verify that the old master (new Standby RE) comes up and syncs with master RE.
+
+Results: PASS 
+
+
+4.5.4 
+
+Goal: Static P2MP LSP Transit NSR - Verify transit route on Standby RE is same as 
+      Master RE.
+
+Topology: topology 2
+
+Test Steps:
+     - Continue with the initial configuration. 
+     - All verifications are done on R4 which is a transit router for P2MP LSP 2.
+     - R4 is also a PHP for static P2MP LSP 2.
+
+Success Criteria:     
+     - Verify MPLS transit and its clone route for P2MP LSP 2 on R4.
+     - Verify that P2MP LSP path is replicated to backup RE.
+     - Verify that P2MP LSP path replicated path is received by backup RE.
+     - Verify that mirror path is linked to P2MP path on Standby RE.
+     - Verify the KRT flood nexthop is created by backup RE for both transit route 
+       and its clone route. The flood nexthop should have 2 sets of branches, first learnt 
+       from kernel and second created by LDP on backup RE.
+     - Verify that both sets of branches are matching for the flood nexthop.
+
+Results: PASS 
+
+
+4.5.5 
+
+Goal: Static P2MP LSP Transit NSR - Verify NSR.
+
+Topology: topology 2
+
+Test Steps:
+     - Continue with the configuration from test 4.5.4 
+     - Start P2MP LSP ping from R6.
+     - Do a first RE Switchover on Master RE.
+     - Do second RE switchover on new master RE after synchronization status of RPD
+       task is complete i.e Standby RE is in sync with master RE.
+
+
+Success Criteria:
+     - After RE switchover, Verify that there is no change to P2MP LSP transit and its 
+       clone route.
+     - Verify that there is no ping packet loss.
+     - Verify that the old master (new Standby RE) comes up and syncs with master RE.
+     - After second RE switchover, verify that there is no change to P2MP LSP 2 
+       transit and its clone route.
+     - Verify that there is not traffic loss after second RE switchover.
+
+Results: PASS 
+
+
+4.5.6
+
+Goal: Static P2MP LSP Transit NSR - Verify Transit NSR with one more RE switchover.
+
+Topology: topology 2
+
+Test Steps:
+     - Continue with the configuration from test 4.5.5. 
+     - Do second RE switchover on new master RE after synchronization status of RPD
+       task is complete i.e Standby RE is in sync with master RE.
+
+
+Success Criteria:
+     - After RE switchover, Verify that there is no change to P2MP LSP transit and 
+       its clone route.
+     - Verify that there is not traffic loss.
+     - Verify that the old master (new Standby RE) comes up and syncs with master RE.
+
+Results: PASS 
+
+
+4.6  P2MP LSP Egress NSR
+
+Topology-2 is used for all the test cases in this section.
+
+
+4.6.1 
+
+Goal: Verify that static P2MP LSP 2 label is replicated to Standby RE.
+
+Topology: topology 2
+
+Test Steps:
+     - Continue with the initial configuration.
+      
+Success Criteria:
+     - All verifications are done on R6 which is a Ingress router for P2MP LSP 2.
+     - Verify that P2MP LSP path is replicated to backup RE.
+     - Verify that replicated P2MP LSP path is received by Standby RE.
+     - Verify that mirror p2mp path is linked to P2MP path on Standby RE.
+     - Verify that P2MP path for LDP P2MP LSP 2 is same as Master RE.
+
+Results: PASS 
+
+
+4.6.2 
+
+Goal: Verify static P2MP LSP Egress NSR.
+
+Topology: topology 2
+
+Test Steps:
+     - Continue with the configuration from test 4.6.1.
+     - Do a first RE Switchover on Master RE.
+     - Do second RE switchover on new master RE after synchronization status of RPD
+       task is complete i.e Standby RE is in sync with master RE.
+      
+Success Criteria:
+     - After RE switchover, Verify that there is no change to static P2MP LSP 
+       route label.
+     - Verify that the old master (new Standby RE) comes up and syncs with master RE.
+     - After second RE switchover, verify that there is no change to static P2MP LSP 
+       label.
+     
+
+Results: PASS 
+
+
+4.6.3 
+
+Goal: Verify Egress NSR with one more RE switchover
+
+Topology: topology 2
+
+Test Steps:
+     - Continue with the configuration from test 4.6.2. 
+     - Do second RE switchover on new master RE after synchronization status of RPD
+       task is complete i.e Standby RE is in sync with master RE.
+
+
+Success Criteria:
+     - After RE switchover, Verify that there is no change to static P2MP LSP 
+       egress Label.
+     - Verify that the old master (new Standby RE) comes up and syncs with master RE.
+
+Results: PASS 
+
+
+4.7  KRT flood nexthop Tests
+
+Topology-2 is used for all the test cases in this section.
+
+4.7.1  
+
+Goal: Verify that KRT flood nexthop is replicated to Standby RE.
+
+Test Steps:
+     - Continue with the configuration from 4.6.3. 
+
+
+Success Criteria:
+     - Verify that KRT flood nexthop is replicated to backup RE via Ksyncd.
+     - Verify that LDP key is sent to kernel as opaque info along with flood nexthop 
+       on master RE.
+     - Verify that opaque info is received on standby RE and LDP key is constructed
+       out of it for the flood nexthop. 
+
+Results: PASS
+
+
+4.7.2  
+
+Goal: Verify that LDP on standby RE is able to find KRT flood nexthop for a P2MP LSP 
+      using the replicated key on Standby RE.
+
+Test Steps:
+     - Continue with the configuration from 4.7.1. 
+
+
+Success Criteria:
+     - After LDP initial Sync is complete, Verify that LDP is able to construct the 
+       flood nexthop key for a P2MP LSP to find the replicated KRT flood nexthop in 
+       kernel.
+     - Verify that KRT flood nexthop for a P2MP LSP has two set of branches, one learnt
+       from kernel and other added by LDP on standby RE. This will guarantee that flood 
+       nexthop NSR would be successful after RE switchover.
+
+Results: PASS
+
+
+4.8  Link Protection with LFA and Make Before Break (MBB) Tests
+
+Topology-2 is used for all the test cases in this section.
+
+4.8.1
+
+Goal: Standby RE programs P2MP LSP transit route with LFA nexthop.
+
+Test Steps:
+     - Continue with the initial configuration.
+     - Enable IGP link protection on all routers.
+     - Enable LDP link protection on all routers.
+
+Success Criteria:
+         - Verify that LFA nexthop is available for R4 avoiding the link 
+            between R2 and R4.
+         - Verify that LFA nexthop is available for R6 avoiding the link 
+            between R4 and R6.
+         - Verify that link protection with LFA is active for session between R2-R4 
+           and R4-R6.
+         - Verify that LFA nexthop is used as a backup nexthop for P2MP LSP Transit 
+           route.
+         - Verify that P2MP path is replicated to Standby RE.
+         - Verify that Standby REs transit route is same as Master RE and flood 
+           nexthop includes LFA nexthop.
+
+Results: PASS 
+
+
+4.8.2
+
+Goal: Make Before Break on Standby RE after link down.
+
+Test Steps:
+     - Continue with the configurations from test case 4.8.1.
+     - Start a traffic from BSD machine connected to R1 (Ingress)
+       and receive on BSD machine connected to R6 (Egress)
+     - Bring down the link between R2 and R4.
+
+Success Criteria:
+     - Verify that MBB happens on R4.
+     - verify that Standby RE on R4 also performs make before break
+       snooping Master REs outbound/inbound messages.
+     - Verify that the new P2MP LSP segment is established fine
+       between R4-R5-R3-R1.
+     - Verify that there is not traffic loss.
+
+Results: PASS 
+
+
+4.8.3
+
+Goal: Make Before Break NSR on Transit LSR.
+
+Test Steps:
+     - Continue with the configurations from test case 4.8.2.
+     - Do RE switchover on R4.
+     - Do one more RE switchover after initial sync is complete.
+
+
+Success Criteria:
+     - Verify that P2MP LSPs route on new master RE is not changed 
+       after switchover.
+     - Verify that there is not traffic loss.
+     - Verify that there is no traffic loss after second RE switchover as well.
+
+Results: PASS 
+
+
+4.8.3
+
+Goal: Make Before Break NSR on Transit LSR contd..
+
+Test Steps:
+     - Do the next RE switchover.
+
+
+Success Criteria:
+     - Verify that P2MP LSPs route on new master RE is not changed 
+       after switchover.
+     - Verify that there is not traffic loss.
+
+Results: PASS 
+
+4.8.4
+
+Goal: Make Before Break on Standby RE after Link Up.
+
+Test Steps:
+     - Continue with the configurations from test case 4.8.3.
+     - Start a traffic from BSD machine connected to R1 (Ingress)
+       and receive on BSD machine connected to R6 (Egress)
+     - Bring Up the link between R2 and R4.
+
+Success Criteria:
+     - Verify that MBB happens on R4.
+     - verify that Standby RE on R4 also performs make before break
+       snooping Master REs outbound/inbound messages.
+     - Verify that the new P2MP LSP segment is established fine
+       between R4-R2-R1.
+     - Verify that there is not traffic loss.
+
+Results: PASS 
+
+
+4.8.5
+
+Goal: Link Protection NSR
+
+Test Steps:
+     - Continue with the configurations from test case 4.8.4.
+     - Start a traffic from BSD machine connected to R1 (Ingress)
+       and receive on BSD machine connected to R6 (Egress)
+     - Bring down the link between R2 and R4.
+
+Success Criteria:
+     - Verify that MBB happens on R4.
+     - verify that Standby RE on R4 also performs make before break
+       snooping Master REs outbound/inbound messages.
+     - Verify that the new P2MP LSP segment is established fine
+       between R4-R5-R3-R1.
+     - Verify that there is not traffic loss.
+
+Results: PASS 
+
+4.8.6
+
+Goal: Link Protection NSR contd..
+
+Test Steps:
+     - Continue with the configurations from test case 4.8.5.
+     - Start a traffic from BSD machine connected to R1 (Ingress)
+       and receive on BSD machine connected to R6 (Egress)
+     - Bring Up the link between R2 and R4.
+
+Success Criteria:
+     - Verify that MBB happens on R4.
+     - verify that Standby RE on R4 also performs make before break
+       snooping Master REs outbound/inbound messages.
+     - Verify that the new P2MP LSP segment is established fine
+       between R4-R2.
+     - Verify that there is not traffic loss.
+
+Results: PASS 
+
+
+4.9 mLDP tunneling over RSVP NSR
+
+4.9.1
+
+Goal: mLDP tunneling over RSVP on transit.
+
+Test Steps:
+     - Continue with the configurations from test case 4.8.6.
+     - Start a traffic from BSD machine connected to R1 (Ingress)
+       and receive on BSD machine connected to R6 (Egress)
+     - Configure a RSVP LSP from R4 to R6.
+     - Do a RE switchover.
+     - Do one more RE switchover after RPD is sycned with new standby RE.
+
+Success Criteria:
+     - Verify that P2MP LSP transit route is using a RSVP LSP.
+     - Verify that P2MP LSP transit route on master RE is matching with 
+       Standby RE.
+     - After RE switchover, verify that P2MP LSP transit route is not 
+       changed on new master RE.
+     - Verify that there is not traffic loss.
+     - After second RE switchover, Verify that there is not traffic loss.
+
+Results: PASS 
+
+
+4.9.2  
+
+Goal: mLDP tunneling over RSVP on transit contd.
+
+Test Steps:
+     - Continue with the configurations from test case 4.9.1.
+     - Do one more RE switchover.
+
+Success Criteria:
+     - After RE switchover, verify that P2MP LSP transit route is not 
+       changed on new master RE.
+     - Verify that there is not traffic loss.
+
+Results: PASS 
+
+
+4.9.3
+
+Goal: mLDP tunneling over RSVP on Ingress.
+
+Test Steps:
+     - Continue with the configurations from test case 4.9.2.
+     - P2MP LSP 2 is used for this test case and DUT is R1
+     - Do a RE switchover.
+     - Do one more RE switchover after RPD is sycned with new standby RE.
+
+Success Criteria:
+     - After RE switchover, verify that static route with P2MP LSP nexthop is not 
+       changed on new master RE.
+     - Verify that there is not traffic loss.
+     - After LDP is synced with new Standby RE, verify that static ingress route 
+       with P2MP LSP nexthop on standby RE is same as primary RE.
+     - After second RE switchover, Verify that there is no traffic loss.
+
+Results: PASS 
+
+
+4.9.4
+
+Goal: mLDP tunneling over RSVP on Ingress contd.
+
+Test Steps:
+     - Continue with the configurations from test case 4.9.3.
+     - Do one more RE switchover.
+
+Success Criteria:
+     - After RE switchover, verify that static route with P2MP LSP nexthop is not 
+       changed on new master RE.
+     - Verify that there is not traffic loss.
+
+Results: PASS 
+
+
+4.10 LDP P2MP NSR show commands
+
+4.10.1
+
+Goal : Verify LDP P2MP Ingress tunnel database.
+
+Test Steps:
+     - Continue with the configuration intial configuration.
+     - show ldp p2mp tunnel on R1.
+
+Success Criteria:
+    - Primary RE:
+
+	regress@pro10-c# run show ldp p2mp tunnel extensive 
+	Instance    Tunnel type          Tunnel name
+	0           Name              10.254.1.1:1:ldp-p2mp:mvpn:vpn-1 
+	    P2MP root-addr 10.255.107.232, lsp-id 16777217
+	    Self id 805306372
+	    Reference count 2
+	0           Name              ldp-p2mp:static1 
+	    P2MP root-addr 10.255.107.232, lsp-id 1
+	    Self id 805306383
+	    Reference count 2
+
+    - Standby RE:
+
+	regress@pro10-c1# run show ldp p2mp tunnel extensive 
+	Instance    Tunnel type          Tunnel name
+	0           Name              10.254.1.1:1:ldp-p2mp:mvpn:vpn-1 
+	    P2MP root-addr 10.255.107.232, lsp-id 16777217
+	    Self id 805306372
+	    Reference count 2
+	0           Name              ldp-p2mp:static1 
+	    P2MP root-addr 10.255.107.232, lsp-id 1
+	    Self id 805306383
+	    Reference count 2
+   
+
+Results: PASS 
+
+
+4.10.2
+
+Goal : Verify LDP P2MP Ingress tunnel replication database.
+
+Test Steps:
+     - show show ldp replication p2mp tunnel on R1.
+
+Success Criteria:
+
+    - Primary RE:
+
+	regress@pro10-c# run show ldp replication p2mp tunnel extensive 
+	Instance    Tunnel type            Tunnel name                   State
+	0           Name             10.254.1.1:1:ldp-p2mp:mvpn:vpn-1    Sync
+	    P2MP root-addr: 10.255.107.232, lsp-id: 16777217
+	    Self id: 805306372
+	    Reference count: 1
+	0           Name             ldp-p2mp:static1                    Sync
+	    P2MP root-addr: 10.255.107.232, lsp-id: 1
+	    Self id: 805306383
+	    Reference count: 1
+
+
+    - Standby RE:
+
+	regress@pro10-c1> show ldp replication p2mp tunnel extensive 
+	Instance    Tunnel type            Tunnel name                   State
+	0           Name             10.254.1.1:1:ldp-p2mp:mvpn:vpn-1    Sync
+	    P2MP root-addr: 10.255.107.232, lsp-id: 16777217
+	    Self id: 805306372
+	    Reference count: 2
+	0           Name             ldp-p2mp:static1                    Sync
+	    P2MP root-addr: 10.255.107.232, lsp-id: 1
+	    Self id: 805306383
+	    Reference count: 2
+
+Results: PASS 
+
+
+4.10.3
+
+
+Goal : Verify LDP P2MP nexus database.
+
+Test Steps:
+     - show ldp p2mp path on R2.
+
+Success Criteria:
+    - Primary RE:
+
+	sh{master}
+	regress@pro10-e1> show ldp p2mp path extensive 
+	P2MP path type: Transit/Egress
+	  Output Session (label): 10.255.107.232:0 (300032)
+	  Input Session (label): 10.255.107.234:0 (3)
+	  Attached FECs:  P2MP root-addr 10.255.107.232, lsp-id 1 (Active)
+	  Address: 0x93205a0, Reference count: 2, Transit route
+	P2MP path type: Transit/Egress
+	  Output Session (label): 10.255.107.234:0 (300096)
+	  Input Session (label): 10.255.107.232:0 (299856)
+	  Attached FECs:  P2MP root-addr 10.255.107.230, lsp-id 16777217 (Active)
+	  Address: 0x9320280, Reference count: 2, Transit route
+	P2MP path type: Transit/Egress
+	  Output Session (label): 10.255.107.232:0 (300112)
+	  Input Session (label): 10.255.107.234:0 (301840)
+	  Attached FECs:  P2MP root-addr 10.255.107.232, lsp-id 16777217 (Active)
+	  Address: 0x9320550, Reference count: 2, Transit route
+
+    - Standby RE:
+
+	{backup}[edit protocols ldp]
+	regress@pro10-e# run show ldp p2mp path extensive 
+	P2MP path type: Transit/Egress
+	  Output Session (label): 10.255.107.232:0 (300032)
+	  Input Session (label): 10.255.107.234:0 (3)
+	  Attached FECs:  P2MP root-addr 10.255.107.232, lsp-id 1 (Active)
+	  Address: 0x9323390, Reference count: 3, Transit route
+	P2MP path type: Transit/Egress
+	  Output Session (label): 10.255.107.234:0 (300096)
+	  Input Session (label): 10.255.107.232:0 (299856)
+	  Attached FECs:  P2MP root-addr 10.255.107.230, lsp-id 16777217 (Active)
+	  Address: 0x9323520, Reference count: 3, Transit route
+	P2MP path type: Transit/Egress
+	  Output Session (label): 10.255.107.232:0 (300112)
+	  Input Session (label): 10.255.107.234:0 (301840)
+	  Attached FECs:  P2MP root-addr 10.255.107.232, lsp-id 16777217 (Active)
+	  Address: 0x93223f0, Reference count: 3, Transit route
+
+Results: PASS 
+
+
+4.10.4
+
+Goal : Verify LDP P2MP nexus replication database.
+
+Test Steps:
+     - show ldp p2mp path on R2.
+
+Success Criteria:
+    - Primary RE:
+
+	regress@pro10-e1# run show ldp replication p2mp path extensive 
+	Instance    Label       Transit Self ID State
+	0           300032      805306388           Sync
+	    Reference count: 1
+	0           300096      805306392           Sync
+	    Reference count: 1
+	0           300112      805306393           Sync
+	    Reference count: 1
+
+
+    - Standby RE:
+
+	{backup}[edit protocols ldp]
+	regress@pro10-e# run show ldp replication p2mp path extensive 
+	Instance    Label       Transit Self ID State
+	0           300032      805306388           Sync
+	    Reference count: 2
+	0           300096      805306392           Sync
+	    Reference count: 2
+	0           300112      805306393           Sync
+	    Reference count: 2
+
+Results: PASS 
+
+
+4.10.5
+
+Goal : Verify LDP P2MP standby FEC database.
+
+Test Steps:
+     - show ldp p2mp path on R2.
+
+Success Criteria:
+ 
+    - Standby RE:
+
+	{backup}[edit protocols ldp]
+	regress@pro10-e# run show ldp replication p2mp standby-fec        
+	P2MP root-addr 10.255.107.230, lsp-id 16777217          Fec in ldp database
+	        Label: 300096   Reference count: 2
+	P2MP root-addr 10.255.107.232, lsp-id 1         Fec in ldp database
+	        Label: 300032   Reference count: 2
+	P2MP root-addr 10.255.107.232, lsp-id 16777217          Fec in ldp database
+	        Label: 300112   Reference count: 2
+
+Results: PASS 
+
+
+4.10.6
+
+Goal : Verify LDP P2MP standby path database.
+
+Test Steps:
+     - show ldp p2mp path on R2.
+
+Success Criteria:
+ 
+    - Standby RE:
+
+	regress@pro10-e# run show ldp replication p2mp standby-path    
+	Label: 299872 Reference count: 2
+	    Prefix:  P2MP root-addr 10.255.107.230, lsp-id 16777217
+
+
+Results: PASS 
+
+
+4.10.7
+
+Goal : Verify LDP P2MP replication statistics
+
+Test Steps:
+     - show ldp p2mp replication statistics on R1
+
+Success Criteria:
+
+    - PrimaryRE:
+
+	{master}[edit]
+	regress@pro10-c# run show ldp replication p2mp statistics    
+	Type             Inits        Adds         Modifications     Deletes
+	P2MP tunnel      2            0            0                 0
+	P2MP path        1            1            0                 0
+
+ 
+    - Standby RE:
+
+	{backup}[edit]
+	regress@pro10-c1# run show ldp replication p2mp statistics 
+	Type             Inits        Adds         Modifications     Deletes
+	P2MP tunnel      2            0            0                 0
+	P2MP path        1            0            0                 0
+
+Results: PASS 
+
+
+4.10.7
+
+Goal : Verify LDP replication statistics
+
+Test Steps:
+     - show ldp replication statistics on R1
+
+Success Criteria:
+
+    - PrimaryRE:
+
+	regress@pro10-c# run show ldp replication statistics 
+	Type             Inits       Adds         Modifications   Deletes
+	Neighbor         3           3            4               0
+	Session          2           2            0               0
+	Path             6           0            0               0
+	Trace route      0           0            0               0
+
+
+ 
+    - Standby RE:
+
+	regress@pro10-c1# run show ldp replication statistics 
+	Type             Inits       Adds         Modifications   Deletes
+	Neighbor         3           0            0               0
+	Session          2           0            0               0
+	Path             6           0            0               0
+	Trace route      0           0            0               0
+
+
+4.11 Link Protection with Dynamic RSVP LSP 
+
+4.11.1
+
+Goal: New master RE signals and programs dynamic-rsvp-lsp as a backup nexthop
+      after RE switchover.
+
+Test Steps:
+     - Continue with the initial configuration.
+     - Disable IGP link protection on R2.
+     - Enable 'link-protection dynamic-rsvp-lsp' on R2.
+     - Do a RE switchover on R2.
+     - Do one more RE switchover after Standby RE is sync with master RE.
+
+Success Criteria:
+    - All verifications are done on R2.
+    - Verify that RSVP LSP nexthop is available for R4 avoiding the link 
+      between R2 and R4.
+    - Verify that link protection with dynamic-rsvp-lsp is active for session 
+      between R2-R4.
+    - Verify that dynamic-rsvp-lsp nexthop is used as a backup nexthop for 
+      P2MP LSP Transit route on master RE.
+    - Verify that P2MP path is replicated to Standby RE.
+    - Verify that Standby REs transit route is NOT same as Master RE and 
+      flood nexthop DO NOT include RSVP LSP nexthop. Note that we do not 
+      support NSR for dynamic rsvp lsp.
+    - After RE switchover, verify that dynamic-rsvp-lsp is re-signaled to R4
+      avoiding the link between R2 and R4.
+    - Verify that this LSP is used as a backup nexthop for P2MP LSP 1 link 
+      protection.
+    - After second RE switchover, verify that dynamic-rsvp-lsp is re-signaled 
+      to R4 avoiding the link between R2 and R4.
+    - Verify that these is no traffic loss.
+
+Results: PASS 
+
+
+4.11.2
+
+Goal: New master RE signals and programs dynamic-rsvp-lsp as a backup nexthop
+      after multiple RE switchover.
+
+Test Steps:
+     - Continue with the configuration from test case 4.11.1.
+     - Do one more RE switchover after Standby RE is sync with master RE.
+
+Success Criteria:
+
+    - After RE switchover, verify that dynamic-rsvp-lsp is re-signaled to R4
+      avoiding the link between R2 and R4.
+    - Verify that this LSP is used as a backup nexthop for P2MP LSP 1 link 
+      protection.
+    - Verify that there is no traffic loss during RE switchover.
+
+Results: PASS 
+
+
+4.11.3
+
+Goal: Link Protection with dynamic RSVP LSP NSR.
+
+Test Steps:
+     - Continue with the configuration from test case 4.11.2.
+     - Deactivate link between R2-R4.
+     - Do RE switchover.
+
+Success Criteria:
+    - All tests are performed on R2.
+    - After link down, P2MP LSP transit route on on Standby RE is deleted.
+    - After RE switchover, verify that dynamic-rsvp-lsp is re-signaled to R4
+      avoiding the link between R2 and R4.
+    - Verify that this LSP is used as a backup nexthop for P2MP LSP 1 link 
+      protection.
+    - Verify that there is "Traffic loss" after RE switchover.
+
+Results: PASS 
+
+
+4.12 mLDP Inband Signalling NSR on transit
+
+TODO After mldp inband signaling code is merged to mainline branch. 
+PR 832008.
+
+
+5.  BOUNDARY TEST CASES
+
+None.
+
+6.  GRES TEST CASES
+
+GRES is not supported.
+
+
+7.  ISSU TEST CASES
+
+7.1
+
+Goal: Transit ISSU - Upgrade both routing engines from 12.3 to 13.3 Junos release.
+
+Test Steps:
+     - NSR is enabled.
+     - Load R4 with 12.3 image.   
+     - Perform a unified ISSU using the request system software 
+       in-service-upgrade package-name reboot command 
+
+Success Criteria:
+    - ISSU is successful with NSR on Transit LSR. 
+
+Results: PASS 
+
+
+7.2
+
+Goal: Ingress ISSU - Upgrade both routing engines from 12.3 to 13.3 Junos release.
+
+Test Steps:
+     - NSR is enabled.
+     - Load R1 with 12.3 image.   
+     - Perform a unified ISSU using the request system software 
+       in-service-upgrade package-name reboot command 
+
+Success Criteria:
+    - ISSU is successful with NSR on Ingress LSR. 
+
+Results: PASS 
+
+
+8. TX TEST CASES
+
+None.
+
+9.  AGGREGATED ETHERNET/SONET TEST CASES
+ 
+None.
+ 
+10.  REGRESSION TEST CASES
+
+10.1 LDP regressions
+
+Script Name                         Exec ID Status        Duration
+----------------------------------- ------- ------------- ----------
+ldp_pr30040.pl (3607)                       ABORT         5 minutes 48 seconds
+ldp_xport.pl (283)                          PASS          16 minutes 22 seconds
+ldp_addr.pl (286)                           PASS          4 minutes 42 seconds
+ldp_traceoptions.pl (288)                   PASS          2 minutes 49 seconds
+ldp_router_test.pl (291)                    PASS          5 minutes 33 seconds
+ldp2rsvp.pl (295)                           ABORT         6 minutes 46 seconds
+ldpof.pl (1065)                             PASS          8 minutes 53 seconds
+ldp_find_route_core.pl (1914)               PASS          4 minutes 5 seconds
+ldp_graceful_restart_ospf.pl (274)          FAIL          1 hour 23 minutes 10 seconds
+ldp_graceful_restart_isis.pl (305)          LINK_FAIL     4 minutes 42 seconds
+ldp_hold_time_neg_ether.pl (2499)           PASS          1 hour 18 seconds
+ldp_transit_loadbalancing.pl (958)          PARAMS_FAIL   6 seconds
+ldp_deaggregate.pl (272)                    PASS          12 minutes 35 seconds
+ldp_track_igp_metric_deaggregate.pl         LINK_FAIL     4 minutes 21 seconds
+ldp_track_igp_metric_isis.pl (280)          LINK_FAIL     4 minutes 16 seconds
+ldp_track_igp_metric_L3vpns.pl (296         LINK_FAIL     4 minutes 19 seconds
+ldp_track_igp_metric_ospf.pl (298)          PASS          13 minutes
+ldp_track_igp_metric_L2circuits.pl          LINK_FAIL     5 minutes 4 seconds
+ldp_track_igp_metric_L2vpns.pl (304         LINK_FAIL     5 minutes 8 seconds
+ldp_l2circuits.pl (1639)                    LINK_FAIL     5 minutes 41 seconds
+ldp_find_adj_core.pl (2203)                 PASS          7 minutes 29 seconds
+draft_ldp_mib_target_peer.pl (3490)         PARAMS_FAIL   4 seconds
+draft_mpls_ldp_mib_lr.pl (3493)             PARAMS_FAIL   3 seconds
+draft_mpls_ldp_mib_routing_inst.pl          PARAMS_FAIL   2 seconds
+draft_mpls_ldp_mib_switch.pl (3495)         PARAMS_FAIL   3 seconds
+ldp_md5.pl (275)                            PASS          22 minutes 12 seconds
+ldp_release_msg.pl (1925)                   FAIL          13 minutes 3 seconds
+ldp-stats.pl (980)                          PASS          1 hour 38 minutes 54 seconds
+ldp_LR_basic.pl (1250)                      PASS          55 minutes 6 seconds
+ldp_bfd_nsr.pl (15195)                      PASS          43 minutes 56 seconds
+
+
+Most test cases failed due to Topology issues. Other failed test cases are failing 
+on base image as well.
+
+
+10.2 mLDP regressions
+
+All passed.
+
+
+10.3 AS-ROD Regressions
+
+<http://systest.juniper.net/ti/webapp/dr/debug_dr/view/gen_tl9000_report.mhtml?result_id=25943&trans=remove> 
+
+
+11.  INTEROPERABILITY TEST CASES
+
+None. 
+
+
+12.  MIGRATION & COMPATIBILITY TEST CASES
+
+13.  TEST COVERAGE REMAINING
+
+14.  DEFECTS REMAINING
+
+15. SCALING AND PERFORMANCE
+ 
+As per function specification.
+
+16. STATIC ANALYSIS 
+
+17. CODE COVERAGE
+
+18. AUTOMATION
+
+19. UNIT TEST PLAN REVIEW FEEDBACK
+
+(A) A formal Review of the final Test Plan draft must be held with the following participants
+
+- Responsible Development Engineer (Software): Host, mandatory, interactive presence required (in person or over the phone)
+- Responsible Test Engineer: Mandatory, interactive presence required (in person or over the phone)
+  {If needed the Test Manager can represent the Responsible Test Engineer}
+- Area Lead or Expert (may be a Software or Systest Manager): Mandatory (e-mail feedback accepted)
+
+
+The review minutes and agreed action items must be captured <somewhere>
+for the review of the test plan during the scheduled SW release. The notification list must contain 
+all mandatory and invited people. Subsequent changes to the test plan or closure of action items must
+be captured <somewhere>, which will trigger an automatic notification to all reviewers.

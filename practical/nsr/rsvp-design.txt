@@ -1,0 +1,1056 @@
+$Id: rsvp-design.txt,v 1.6 2007/01/13 05:13:16 sukhesh Exp $
+
+                    RSVP/MPLS synchronization for NSR
+                    ---------------------------------
+                       Design Specification
+
+                   Arthi Ayyangar (arthi@juniper.net)
+
+
+1. Introduction
+   ------------
+
+Some of the design goals and assumptions t
+
+1) State synchronization should not impact performance on 
+   primary.
+   - this means allowing primary to proceed with its tasks, 
+   as if no secondary existed, as much as possible.
+   - prevent any lock-step behavior
+   - get secondary to be as asynchronous as possible
+2) Primary and secondary REs could potentially be running 
+   different versions of code
+   - it is expected that secondary will always be running 
+   higher version of code than primary. So do not 
+   over-engineer for all combinations.
+3) The replication API (wrt message formats and actual info
+   sent) between primary and secondary is expected to change 
+   as more info or different info may need to be sent in the 
+   future. Either keep this API generic (wire formats), so
+   that changes can be handled or use message versioning.
+4) There are different channels available for replication
+   between primary and secondary:
+   i) Internal routing socket (IRS) - can be of any type as 
+      needed by protocol. The onus is on the protocol to create/
+      maintain socket API between primary and secondary. If 
+      reliable delivery of messages/info is needed, protocol 
+      needs to make choice of appropriate socket or handle it 
+      in the protocol itself.
+  ii) Mirroring API (MAPI) - uses TCP socket to ensure reliable 
+      message delivery and creates/maintains underlying socket 
+      between primary and secondary. Deals with the notion of 
+      "databases" for replication. Will carry out "state 
+      compression", so the protocol needs to make sure it is 
+      okay with this 'feature'. A nice and detailed description of
+      the MAPI has been described in [ISIS-S-SPEC] section 5.
+ iii) Juniper kernel socket replication (JSR) - In this case 
+      the kernel replicates the protocol socket for incoming/
+      outgoing PDUs, so that secondary sees all the protocol 
+      messages sent out of and received into the box over that 
+      socket. Current available and required for TCP socket 
+      replication. For TCP the kernel keeps significant state, and 
+      so it makes sense to replicate this info on the secondary.
+      For UDP or RAW IP, there is no additional socket specific 
+      info in the kernel. 
+
+   It would be important to understand the charateristics of each of
+   these available replication channels and the requirements/
+   charateristics of the protocol itself and the state that needs to
+   be synchronized, before choosing one or more replication
+   channels. This discussion for RSVP will follow later in this
+   document.
+
+After a switchover as well, there are certain assumptions/goals:-
+
+1) As far as possible neighbors should not notice the switchover 
+   event. If, however, valid mechanisms are already built into the
+   protocol to request certain info from neighbors or await info
+   from neighbors, say in the form of refreshes, then this could
+   definitely be used for reconciling state (say if some state was 
+   unsynchronized) after switchover.
+2) It should be okay to do data structure linkages; etc after 
+   switchover, so long as this does not impact regular functionality 
+   after switchover. E.g. CSPF runs to link paths to TED links 
+   (create cross-connects) could be done in a window after 
+   switchover, instead of trying to deal with dependencies during 
+   ongoing synch. Plus, ERO is already available, so signaling is 
+   functioning okay anyway.
+3) Granularity of unsynchronized state and corrective actions
+   should be kept as fine as possible, when applicable and possible;
+   such as one session or one peer; instead of having to tear
+   everything down if state is unsynchronized.
+
+
+2. Introduction to RSVP-TE / MPLS on JUNOS
+   -----------------------------------------
+
+2.1 Implementation of RSVP TE LSPs
+
+It is important to understand that our implementation of RSVP TE
+LSPs comprises of two modules:
+
+i) MPLS module - MPLS is the "client" of RSVP. Deals with
+configuration, path computation, originating certain signaling
+parameters for the LSP, association of configuration to signaling
+parameters. This module only exists on INGRESS LSR. 
+
+ii) RSVP module - deals with just the signaled state, maintains
+backward association to the MPLS module (on ingress) that "owns" the
+signaled state. Other possible "clients" of RSVP is RSVP link 
+protection module. Present on INGRESS/TRANSIT/EGRESS LSRs.
+
+The problem is slightly different on the ingress and transit LSRs, so 
+it would be useful to understand this difference.
+
+At the head-end, the usual sequence of events on a commit is that
+MPLS will parse the config and create tunnels (pvcs) and one or more
+paths (paths: primary, secondary) for each tunnel. It will then
+perform path computation, remember which paths take which links and
+on a successful path computation will initiate path setup via RSVP
+for each path with the computed result. Note that signaling
+parameters which RSVP signals and some RSVP route nexthop related
+parameters are actually "generated" by MPLS and passed on to RSVP.
+Changing the order of path computation for LSPs can yield different
+results.
+
+At the transit, there is usually no MPLS state. Also, from a
+configuration point of view only "significant" RSVP config that can 
+affect externally visible state is related to link-protection.
+On transit, RSVP states are created and removed purely based on
+messages coming from neighbors. The exception is link protection or
+FRR. In addition, in certain cases transit may also perform path
+computations; E.g. FRR, ERO expansion; etc. This needs to be accounted
+for in the design to deal with features that may be added in near
+future.
+
+So, it is not enough to just deal with RSVP for NSR. MPLS module
+also generate states that need to be synchronized on the secondary 
+and the MPLS->RSVP dependencies need to be maintained.
+
+2.2 Protocol Characteristics 
+
+Let us leave out the MPLS part for this discussion. 
+
+The characteristics of a protocol and its implementation need to be 
+considered before designing an NSR or state synchronization solution 
+for it.
+
+o RSVP messages
+  Messages that create state 
+  - Path/Resv
+  Messages that destroy state
+  - PathTear/ResvTear and PathErr in some cases
+
+o It is a soft-state protocol
+  - this means that protocol, for most cases, can deal with lost
+  messages/states by timing out related states on neighbors.
+  - timeouts could be large, but network will converge.
+
+o Uses RAW IP socket for PDUs
+  - protocol creates the packet to be sent out, kernel has no special
+  info related to the socket.
+
+o Presence or absence of state dictates forwarding traffic on 
+  the LSP.
+               ---------------> (LSP1)
+         X --- A ---- B ----- C
+         ----------------------> (LSP2)
+
+  - If A doesn't have state which is present on B and C, it's okay.
+    It's A's decision to put traffic on LSP1 or not. Similar to 
+    PathTear from A to B getting lost.
+
+  - If A doesn't have state which is present on X, there could be
+    traffic loss. No different from if ResvTear from A to X was 
+    lost.
+
+  - If A has state which is NOT present on B and C, it will result 
+    in blackholing of traffic till either state on A times out and is 
+    deleted or state is recreated on B and C.  Similar to ResvTear 
+    from B to A getting lost.
+
+o RSVP has mechanisms to do reliable message delivery
+  - this is optional behavior
+  - we, however, only implement this for Path/Resv messages. So 
+    PathTears/ResvTears need not be delivered reliably.
+
+o It also has ability to "bundle" multiple messages to a neighbor
+  - useful to keep in mind for optimization requirements
+
+o RSVP add routes which are used by other protocols to send traffic 
+  over the LSP.
+  - Local RSVP parameters that need to stay the same to prevent
+  route/nexthop changes after switchover are: nexthop interface,
+  address, label, self ID, sequence number, lsp ID, filter ID; etc.
+    => One way is to pass this info to secondary as auxillary info
+    => Another way is to change allocation scheme so that there is 
+    a predicatble way of re-generating the same ID/number based on 
+    some other stable info.
+
+o After switchover, if there are changes to certain RSVP paramaters
+  in the RSVP message sent to a neighbor, neighbor could react
+  drastically and flap the LSP.
+  - Externally visible RSVP parameters which need to be kept in sync 
+    to prevent neighbors from noticing a change are: All
+    session/sender params, ERO, label, Hello instance numbers, HOP
+    information (nexthop i/f and nexthop peer); etc. 
+  - RSVP messages are i/f sensitive. So, we also need to ensure that
+    messages arrive on the same interface as before on the neighbor.
+    RSVP does a route lookup (and additional logic) to find which
+    i/f to send message on. This result needs to be preserved across
+    switchover, especially in case of parallel interfaces.
+
+2.3 Note on other features dependent on RSVP
+
+There are various features associated with RSVP TE LSPs, which may 
+require additional design considerations. i.e. just making RSVP NSR 
+work, may not mean that all these features would be NSR capable 
+automatically. These are:-
+
+o CCC 
+o P2MP
+o GMPLS
+o LSP hierarchy
+
+Although RSVP/MPLS NSR solution may not cover all these in the first
+phase, it would be useful to keep these in perspective, while
+designing the solution.
+
+3. State synchronization
+   ----------------------
+
+3.1 What state needs to be synchronized ?
+
+I) RSVP control plane state  :-
+
+o Session state
+  RSVP session info
+
+o Path state
+  a) Key: session, sender template, hop
+  b) Other info: various objects sent/received
+  c) Local info - sequence number, self ID, identify if
+     state is ingress/transit/tail, link to client creating this PSB
+     (if any), any install routes that the client may pass to RSVP
+  d) PSB nexthop resolution info
+     outgoing ERO
+     outgoing interface
+     peer address
+     router alert/ dont route info
+     *** What if we are doing loose hop expansion ?
+     *** What about detours ?
+
+  a) &
+   b) could be retrieved from messages
+  c) is local info - so could be part of auxilliary data
+  d) is a little tricky since this MUST be replicated so that no
+  change is noticed after switchover. It may be hard to "maintain"
+  this after a switchover.
+
+o Resv state
+  It might be possible to retrieve most of this from Resv message.
+
+o Neighbor state
+  a) My view of the neighbor 
+     Address, interface, capabilities, nbr instance no. - snoop Hellos
+  b) Neighbor's view of me
+     Src address, Src instance
+  *** What about RR capabilities - any issues here ?
+  c) Local state machine
+  *** Do we leave it to the secondary to make it's own decision about
+  Nbr state or do we communicate state and transitions on primary to 
+   secondary RE ?
+
+o Routes and nexthops
+   - Labels
+   - SelfID
+   - LSP ID
+   - Path MTU info
+
+*** Instead of having separate local IDs (e.g. LSP ID), can't 
+    we simply use one of the IDs that we signal for these ?
+    That will reduce the amount of extra info to be replicated.
+    May not be possible for IDs that are shared by different
+    protocols, such as selfID.
+
+
+II) MPLS control plane info that needs replication:-
+
+o PVC and path states
+  - up/down state 
+    ** should the secondary RE make this decision independently ?
+  - which is the active path 
+  - cspf result : ERO
+  - protection state 
+  - current path bandwidth (may be diff from configured one)
+  - Tunnel ID, PVC ID
+  - LSP ID
+
+ *** Do we communicate PVC/Path state from primary to secondary RE or 
+ should the secondary be allwed to parse config and alloc pvcs and 
+ paths ?
+ - 90% of the contents of pvcs and paths is config related info,
+  so instead of trying to pass this around from primary to secondary, 
+  it would be useful for secondary to create and fill these data 
+  structures independently. The IDs or other key info can come from 
+  primary.
+
+o TE Database
+  - IGP will take care of replicating this on the secondary RE
+  *** What about in the case of FAs (links) created by FA-LSPs ?
+
+o Cross connect info - linkage/connection between path and TED links
+  We need to re-create cross-connect info on the secondary RE.
+  To ensure that the result is the same on primary and secondary REs, 
+  we can send the CSPF result ERO to the secondary RE. However,
+  there is the other question, which is when do we establish this
+  linkage on the secondary RE ? The issue is that if while trying
+  to establish the cross-connect info, the corresponding TED info
+  has not yet made it to the secondary RE, then we will fail. Hence
+  we need to make sure that when we do the linkage, the
+  TED info is synchronized on primary and secondary RE when path
+  computation is carried out. 
+
+  Option 1 - Implement full-fledge path computation synchronization
+  --------
+
+  This can get very complicated since this turns into implementing
+  dependencies between MPLS and IGP.
+
+                     OR 
+  Option 2 - Do the linkage after switchover
+  --------
+
+  This keeps the overall design simple and isolated to MPLS. The
+  only caveat is that after the switchover there is likely to be
+  a small window when we are fixing things up where in case of
+  a failure along LSP path, convergence MAY increase slightly since
+  we do not have the cross-connect info to figure out 'which LSP takes
+  which path'.
+
+o Miscellaneous
+
+  *** What about re-optimization result ?
+
+3.2 What are the sources of this information ?
+
+I) Configuration
+
+Infrastructure is taking care of syncing configuration.
+We need to deal with stale messages from primary (could be realted
+to old config).
+
+II) Messages sent and received by RSVP
+
+Path/Resv - state creation/maintenance
+            (new and refreshes)
+PathTear/ResvTear - State deletion
+PathErr/ResvErr - Error condition 
+SummaryRefresh - regular refreshes
+Ack - dictates refresh reduction state
+Hellos
+
+These messages are a source of lot of info which can be used to create
+state on secondary.
+
+III) States on primary RE
+
+pvc, path
+psb, rsb, nbr
+
+
+4. Available channels for state synchronization
+   --------------------------------------------
+
+4.1 Kernel socket replication
+
+o RSVP 
+------
+This mechanism could provides easy replication of inbound and
+outbound RSVP messages. We would need Raw IP socket replication
+infrastructure in the kernel. (This is not available currently)
+
+The issue here is that - 
+1) For RAW IP kernel doesn't actually maintain any socket specific 
+   info. So the application should be able to handle this itself.
+2) There is likely to be auxillary info corresponding to Path/Resv
+   state to be communicated to the secondary RE, then a separate
+   channel would be needed for that. Then we would need 
+   to deal with information arriving on two channels.
+
+o MPLS
+------
+We cannot use this mechanism since MPLS is simply a local module
+and no messages are exchanged specific to this.
+
+4.2 Socket connection between primary and secondary REs
+    using IRS
+
+o RSVP
+  -----
+
+Instead of using the kernel to replicate messages, since RSVP
+uses Raw IP socket for messaging, the messages are fully formed
+by RPD, so kernel doesn't really keep any significant state. So,
+RSVP itself could do replication of inbound and outbound RSVP
+messages in the I/O. Auxillary info could be added to messages
+sent to secondary RE as a proprietary object in RSVP. This avoids
+having to deal with multiple channels of communication (one via
+socket replication & one for auxillary data) b/w primary and
+secondary REs.
+
+It is not clear at this time what type of socket we would need for
+RSVP-RSVP communication for the IRS. A RAW IP socket may be enough.
+i) Do we even need reliable delivery of messages between primary 
+and secondary RE for RSVP ?
+------> No, if an IRS is being used, we might as well send refreshes
+to secondary.
+
+ii) If yes, then could we simply use RSVP msg_id ack for reliable 
+transimission between primary and secondary.
+CON-  Not all RSVP messages have reliable delivery support in JUNOS.
+------> NA.
+
+iii) Would TCP socket be an overkill ?
+-------> Yes. If message refreshes are used, that should suffice.
+
+iv) Would we need to treat secondary RE as neighbor ? (Wouldn't that 
+be more cumbersome) ?.
+--------> No.
+
+** This is the message exchange view of things. 
+
+PRIMARY
+---------
+Incoming messages - could be simply relayed to secondary
+                  - should avoid exchanging periodic message which have no 
+                    changes.
+                  - try to avoid frequent message exchanges
+Outgoing messages - could be sent to secondary with an AUX_OBJ appended 
+                    which could carry auxillary info needed on secondary 
+                    to - a) associate PSB with a particular pvc, path
+                    b) maintain IDs that need to be same; c) ingress/
+                    transit/tail identity, d) nexthop info ;etc
+
+
+
+RSVP I/O on primary needs to take care of sending messages over to 
+the secondary on the IRS. This method seems okay for Path/Resv state
+synchronization by observoing incoming and outgoing Path/Resv and 
+PathTear/ResvTear messages on secondary. However, for Hellos this 
+method seems like an overkill. We do not wish to send every Hello
+message across. Also, RSVP does not create neighbors on receipt of
+Hellos. So a different approach might be needed to synch neighbor
+state.
+
+Also, MPLS control pane state has to be somehow conveyed to 
+the secondary. It might be possible to piggyback MPLS info 
+corresponding to an RSVP path state (on ingress especially) in the
+AUX_OBJ.  But this might not be the best option since amount 
+of state could be quite a bit, also there might be repetition; 
+e.g. path msg for main and detour could contain pvc, path info
+
+** We need to decide which part of pvc,path info needs to be 
+communicated and which path the secondary can create by itself 
+as part of config parsing, since pvc and path allocation is triggered 
+by config. 
+
+SECONDARY
+---------
+
+On secondary, the receive code should be able to identify which
+real interface  the pkt arrived on the primary. It also needs 
+to know if this was a msg 'received' by primary or 'sent' by primary. 
+The procedures should be pretty much the same for 'receive' code.
+Create/destroy state on 'receipt' pretty much similar to primary. 
+However, when a message arrives on secondary, not all info may be
+available to create the final data structure that we want to create.
+E.g. Path msg could arrive on secondary, but the incoming interface 
+may not yet be present. There are two approaches to deal with this:-
+
+1) accept the message on secondary, but create temporary data structure
+   to hold the received msg. These placeholders are converted to final 
+   data structures when all info is available. We need to define this info 
+   and the events that may trigger conversion from placeholder to 
+   final data structure. 
+   ** What conditions keep a state as unresolved ?
+   ** Which events should try to resolve placeholder state ?
+
+or 
+
+2) indicate to primary somehow that it is not ready to accept this msg 
+   for now, so that primary can send this msg again later.
+
+or
+
+3) simply rely on refreshes for creating state at a later time.
+
+Creating final data structures directly but somehow keeping them in a 
+weird state has been stated to be a bad idea based on other folks 
+experience. But for RSVP maybe this may work. Need to explore.
+
+Also, on ingress, a send message needs to create state. This is 
+non-intuitive.
+
+PROS:
+o Reuse of processing code and decision making code on secondary.
+o Intuitive
+
+CONS:
+o Reverse engineering state from messages (outbound messages especially)
+  is difficult. It is hard to imagine what decisions were made on 
+  primary to send a particular outbound message.
+o Not all state craetion/deletion results in messages being sent out.
+  (say for fast-reroute). This would be hard to fix.
+o The worst thing about this approach is that it is bound to go and
+  spread conditional checks around the code, which we want to avoid.
+
+4.3 Mirroring API (MAPI)
+
+This is the database view of things. We look at all the states 
+that we need to synch as database elements and use the MAPI to 
+add/delete/modify state.
+
+This approach works well for Nbr state. Not sure how efficient 
+this would be for psb, rsb (path state especially), given the amount
+of state as well as the frequency of changes to it. Also, this uses
+TCP between primary and secondary. Does RSVP really need this overhead ?
+But since this deals with database and changes, the onus would be on 
+the primary to decide if a particular state changed and if that 
+change needs to be propagated. On the secondary, none of the 
+usual code will be mucked with, which might be good in a way. 
+New data structures would be created to hold db info and similar 
+to 4.2, we would need to define which events trigger creation 
+of final data structures based on database info.
+
+So, what about pvcs and paths ? They could also be treated as 
+two other databases which need to be synched. If this approach 
+is taken the regular processing and creation of pvcs/paths needs 
+to be disabled. But since pvcs and paths are usually driven 
+by config, it might be a lot of unecessary info (info 
+available on secondary via config) that may be transmitted.
+Or pvc/path info can be piggybacked with psb info, if 
+applicable.
+
+Also, if placeholder db data structures are maintain, then this
+scheme does involve allocating additional memory to store
+db info which may involve duplication of info which is also present 
+in real data structures. And the placeholder state continues to
+stay to deal with changes to database. So keeping this state
+permanently on secondary could be costly. 
+
+PROS:
+
+o Since this is purely state based, all states will be sure to be 
+  replicated or deleted. No reliance on outbound/inbound messages,
+  so states will be in synch with primary. This is the main advantage 
+  of this approach.
+o Can leverage state compression.
+o Provides the socket API for the application and since it is TCP 
+  socket, reliability is available as well.
+o Does not muck with existing code, most of the secondary NSR code 
+  could potentially remain on the periphery.
+
+CONS:
+
+o If this is treated as a simply dumb data base replication scheme,
+  on secondary, then:
+  i) the decisions/ or triggers that led to certain decisions that
+     were made on primary that led to a particular state will be 
+     unavailable on the secondary. But we still want secondary to 
+     take certain actions like adding/deleting/changing routes.
+  ii) New duplicate code needs to be written to process the state
+      create routes, allocate labels ; etc. Bound to be unstable.
+o Increased memory usage to store the db data structures which are 
+  different from real data structures.
+
+
+
+4.4 Conclusion
+
+JSR - ruled out
+NSR and MAPI both have pros and cons.
+
+A scheme that can combine benefits of bothe NSR and MAPI is needed.
+
+Solution summary
+----------------
+
+o Use MAPI as channel for replication
+o Instead of sending actual state info, it is possible to simply 
+  send corresponding received message. This will allow us to not 
+  have to add new code on secondary, but instead treat this as if 
+  a state creation/deletion message was received.
+  E.g on transit, the db_state corresponding to path state will 
+  comprise minimally of received Path message and incoming interface.
+  On secondary, the callback registered for this state, will simply 
+  call rsvp_recv with the given IFL.
+o For state that gets created/deleted not based on incoming messages 
+  it is still possible to convey this to the secondary without 
+  any message info.
+o For now we can assume that primary does NOT have to keep db_state.
+  It will simply create the state just before sending it over to the
+  secondary. So no extra memory usage on primary.
+  ** What about initial sync ? (see below)
+o On secondary, secondary only owns the "real states" that it creates.
+  db_states are still "owned by" primary. So any change to db_state 
+  will only be carried out based on received indication from primary.
+o Secondary will keep the db_state in unresolved queue, till the required 
+  info to process the db_state is available on secondary. Any errors
+  or problems on secondary will simply delete the real state on 
+  secondary and move the corresponding db_state to unresolved queue.
+o For ingress state, instead of message info, corresponding pvc/path/
+  or any other info may be replicated.
+o After switchover, any unresolved state may be tried to be resolved.
+  Any unresolved state still lingering will be cleaned up.
+o Code will be modified so that any critical independent decision (such as
+  label allocation) always tries to lookup for db_state. On secondary, 
+  if this state is found, then the info in that state will be used as 
+  the result of decision.
+o neighbor state is also replicated using MAPI, but simply treated as 
+  dumb database replication, no message processing on secondary.
+
+5. Operation - Initial state synchronization
+   -----------------------------------------
+
+o Required to keep last received Path/Resv message
+o Either could be stored in current data structures on create a new 
+  data structure and store it there
+
+MAPI will call appropriate callback to walk through list of database 
+elements to be replicated when it sees a connection from the secondary.
+RSVP and MPLS simply need to allow walking their data structures that 
+need to be replicated and encode the mirroring info. 
+
+For the case where secondary may crash and come back up, MAPI 
+currently clears database queue on secondary and primary and resynchs
+all the states. So to the protocol, this is no different from initial 
+synch.
+
+6. Operation - ongoing state synchronization
+   -----------------------------------------
+
+o Procedures on primary
+  
+  As states that need replication get ADDED/MODIFIED/DELETED, this 
+  will be conveyed via MAPI to secondary. MAPI will do state
+  compression.
+
+  It is possible to do some level of state compression in the 
+  protocol itself. E.g. 
+  1) PSB is created
+  2) nexthop is resolved (path is send out)
+  3) RSB is created (resv is received)
+  4) Label is allocated
+  5) Resv is sent out
+
+  1,2,4 - modify path state
+  3 created resv state
+  4,5 do not occur on ingress
+
+  Path state is usable only after step 4 for transit and step 2 for 
+  ingress on secondary.
+
+  There are 2 approaches that can be taken to decide when to send 
+  state to secondary.
+
+  Approach 1:
+  - Send db states as and when they get created and modified.
+  - Onus is on secondary to maintain unresolved state and keep 
+    trying.
+
+  Approach 2:
+  - Send db states to secondary only when they are in usable state
+  - Onus is on primary to decide when to transmit a particular state 
+    to secondary.
+  - On secondary the logic is simpler, since we can avoid/minimize
+    several retries for resolution of state
+
+  Step 4 is very important from RSVP perspective. See discussion in 
+  section 2.2. So it would be useful/required to delay sending Resv 
+  upstream till we are sure that secondary has seen the Resv Label;
+  since this directly affects data plane behavior after switchover.
+  So, it would be useful to have the secondary ACK to primary when it 
+  has seen the Resv Label (for transit/egress case only). So primary 
+  should delay sending Resv till it receives this ACK from secondary.
+  MAPI allows secondary to primary communication. So ACK will probably 
+  be just a TLV for path state only allowed from secondary to primary.
+  
+
+o Procedures on secondary
+  
+  Secondary when it receives a particular db_state will attempt to 
+  "resolve" this into real data structure or to trigger processing 
+  of this db_state. But if not all relevant info is present in the 
+  db_state, the db_state will be kept in the unresolved queue. 
+  Certain events would result in re-attempting resolution of
+  db_state.
+
+  Certain important routines such as :
+  sending out messages
+  allocating labels
+  allocating IDs
+  nexthop resolution; etc
+  will have a different version on the secondary which are different 
+  from primary. Especially routines which make certain independent 
+  decisions will have versions which look for corresponding db_state 
+  to procure info.
+
+  Once a db_state is resolved, the db_state and real_data_structure 
+  would somehow be linked, so that a change or deletion in db_state 
+  can trigger corresponding actions on the real_data_structure.
+
+  Secondary is only allowed to delete real_data_structures. When it 
+  does so, it should move the corresponding db_state to unresolved 
+  queue.
+
+7. Procedures on/after switchover
+   ------------------------------
+
+7.1 Dealing with unsynchronized states
+
+For initial design stage, we assume that we will simply clean up/
+delete unsynchronized state on the secondary after switchover, before 
+assuming mastership. In the future, we can evaluate whether attempting to
+resolve unsynch state before assuming mastership adds encough value 
+to justify complexity. If it does, then this will be considered.
+
+CSPF cross-connect linkages need to occur after switchover. So CSPFs 
+need to be scheduled for all LSPs, with the given ERO, for verification 
+and forming cross-connect linkages.
+
+Would be useful to "trigger" all RSVP outbound messages to synch refresh 
+reduction state after switchover.
+
+8. Notes
+   -----
+
+Look for implementation details in [RSVP-SPEC].
+
+9. References
+  -----------
+[ISIS-S-SPEC] cvs://sw-projects/os/nsr/isis_software_spec.txt
+[RSVP-SPEC] cvs://sw-projects/os/nsr/rsvp-funcspec.txt
+
+10. Review comments
+    ---------------
+
+Design review meetings were held on Dec 1st and Dec 7th. Meeting
+attendees were : Arthi Ayyangar, Der-Hwa Gan and Anil Lohiya.
+
+=====================================================================
+Final implementation details
+
+
+Introduction
+------------
+
+Goal of RSVP NSR feature is to allow switching over from master RE to
+backup RE in such a way that network is not aware of this switchover.
+
+For convinience, this is broken into two large peices:
+
+1. RSVP transit NSR
+2. RSVP Ingress NSR
+
+RSVP transit NSR deals with replicating RSVP state at LSP transit and
+egress points. This is relatively straight forward because, basically,
+what we are replicating here is incoming PATH and RESV messages along
+with any additional state created by the master like selfID, nhop etc.
+
+RSVP Ingress NSR has to replicate all ingress state of an LSP. This
+includes any tag PVC/Path state created on master, active path, ERO etc.
+Its assumed that TED is replicated by the IGPs. Its extremely important
+to have TED in consistant state on the standby. Another thing that needs
+to be handled as part of this feature is to replicate Bypass LSPs and
+backup  LSPs. Bypass LSPs dont have tag PVC/Path datastructures like
+traditional LSPs.
+
+Its important to remember that (as Dave Katz put it) NSR is treated as 
+an optimization rather than perfection. We dont synchronize master and
+standby at every step of the way. Idea is to create just enough state 
+on standby so that it can take over with minimal impact during switchover.
+
+Implementation details
+----------------------
+
+Briefly speaking, the way it works is, RPD on standby RE connects to RPD
+on master RE using a TCP socket. After a brief exchange of control
+information to make sure both REs have a compatible software version,
+standby requests all state from the master. Master replicates all state
+to standby using mirror API. During this stage, we suspend master from
+adding any new LSPs(Experiments have shown this is relatively small
+period). Once all the state is replicated, standby RE is marked as ready
+to take over. If the master fails before standby is marked as ready, we
+reset all state on the standby and start fresh. This is equivalent to
+non-NSR switchover. Once standby has received all state, any changes or
+any new state is sent to standby using mirror API. For some states like
+adding a new LSP, we also wait for an acknowledgement from the standby
+before we advertize it to our neighbors. This is to make sure standby
+is ready to take over at any moment. We also take extreme care to make
+sure we dont disrupt any forwarding state. If a master-ship switchover happens
+in this steady state, standby RPD takes over and starts to run based on
+its replicated state.
+
+Not every state is replicated from master to standby. Any state that can
+be created on standby is not replicated. Eg. Configuration is available
+to both master and standby. standby parses its own config and creates
+some state. We make no assumption config on master and standby are
+identical. This is because there could be transient conditions where
+they are not same. Some states like IFL/IFF etc are read from the kernel
+on standby RE. kernel's ifstate replication mechanism ensures they are
+replicated from master kernel to standby.
+
+Once all the state is created/replicated to standby, we supress it from
+sending out any packets. we supress all time-outs. We also supress quite
+a few state transitions for neighbor-state, path-state resv-state etc.
+Most state transitions have to come from the master. All the routes are
+added to routing tables. but, krt does not add it to kernel. Once the
+switchover happens, krt checks if kernel and rpd's routing table have
+same routes. if not, it changes kernel routes to reflect RPD's routing
+table.
+
+Hello packets are not replicated to standby. Any change in neighbor
+state is replicated. Not all PATH/RESV packets are replicated to
+standby. Only when there is any change to incoming packet, we replicate
+it.[Note: This is expected to cause quite a few bugs in initial stage.
+We may not be detecting all changes to the incoming packet. Philosophy
+so far has been unless its a significant change, we dont bother to
+tell the standby. As and when we see the bugs, we need to sprinkle
+xxx_mirror_update() functions throughout the code].
+Message Ids are not replicated for efficiency. Once the switchover
+happens, neighbors will start seeing new message Ids. We might miss some
+'ack's and summary-refresh will get reset. Neighbors will notice these.
+But, these are not catastophic. It reconverges quickly. This is also the
+aproach taken by graceful-restart.
+
+Replication
+-----------
+
+Replication in RSVP is done using Mirror APIs. Mirror API is a reliable
+IPC mechanism which can be used to send arbitrary data from master to
+standby. We typically view it as a mechanism of mirroring a database.
+The way mirroring API works is, you register an object type with the
+API. you specify encode/decode functions to TLV encode/decode the
+object. Then all Add/update/delete operations on the object will be
+mirrored to the standby. Master RE 'TLV encodes' the object and sends it to
+standby. Mirror infrastructure on the standby receives it and calls the
+decode routine for the object type. Decode routine on the standby is
+responcible for creating the object on standby.
+
+in RSVP we mirror following objects:
+
+1. Neighbor state.
+    - Ifl-idx, neighbor-addr, local & remote instance Ids.
+2. TE-link state
+    - we just replicate te-link-id to IFL maping. This is required
+      because the lmp stub sitting in RPD does not replicate it.
+
+3. Path state.
+   - selfID, session_id, nexthop info for MAIN & DETOUR instances.
+   - full PATH mesage in case of transit.
+   - rsvp_clnt_params_t structure passsed from the clients in case of
+     ingress LSP.
+4. Resv state.
+   - selfID, session_id, associated ifl-idx.
+   - incoming RESV message(except in case of egress)
+
+
+In case of RSVP ingress, we mirror following TAG states:
+
+1. tag PVC state.
+   - pvc_id, active path, [dest|src][addr|port] for session
+     identification.
+2. tag Path state.
+  - pvc name, path name, selfIDs used by RSVP. path state, metric.
+  - ERO computed by master.
+
+
+for Bypass: this is TBD.
+Most Likely its going to be:
+1. Bypass datastructure
+  - LP_KEY(includes, interface, to_avoide node, to node and LP_number in
+    case of multiple Bypasses).
+  - psb_selfID & session_ids.
+  - ERO computed by the master.
+
+RSVP replication works in kind of two states. On master, we create a
+replication object for each object. Eg. for each neighbor, we create a
+neighbor_repl object, for each path state, we create path_repl object
+etc. These replication objects are registered with mirror API. Then,
+these replication objects are mirrored to standby. One could argue these
+replication objects are just wasting memory. Information contained in
+these replication object are just derived from other objects. But, this
+makes for a simpler locking mechanism and a simpler delete
+mechanism.[Note: This is the aproach taken by ISIS & RSVP. OSPF doesnt
+do this. These objects are *required* on standby, so, even if we save
+memory on master, we'll not be able to save on standby].
+
+Mirror infrastructure on standby receives the TLVized message. It calls
+the xxx_decode() routine for the object type. Decode routine decodes the
+message and creates a replication object. These replication objects are
+added into a tree. Then standby tries to perform a 'resolve' operation
+on these replication objects. Resolve operation is the process of
+creating the real object from replication object. Eg. if we received a
+path replication state for a transit LSP, we try to add the real path
+state using incoming PATH message, various Ids and nexthop info. The
+resolve operation might fail for various reasons like dependencies. We
+periodically keep retrying the 'resolve' operation till the object is
+resolved. Its important to note that the replication object on standby
+RE is treated as if its owned by the master. Only master can
+add/update/delete it. Eg. any changes to the path state on standby will
+not change the replication state on standby. Even if the path-state gets
+deleted on standby(say because the IFL went away), will not delete the
+replication state. This is very important to remember when we move to
+ISSU. 
+
+Replicating Neighbor and TE-link is fairly simple. Bulk of the RSVP
+state is actually associated with PATH and RESV state. We do quite a few
+special things for them.
+
+RSVP transit NSR
+----------------
+
+Operation of transit NSR is fairly simple. When master receives a PATH
+message, he creates the path-state on the master. It also creates a
+path_repl state. Mirrors this replication state to standby and requests
+an ack. It marks the path as replication-ack pending. Master continues
+and sends the PATH message to the nexthop and waits for a RESV message.
+Once the RESV is received, it creates the resv-state. creates resv_repl
+state. mirrors it to standby. Master allocates a Label for the LSP.
+updates path-state and path_repl state, send it to standby with ack
+request. path-state is marked as replication-ack pending. Till the
+standby acks the path-state, RESV is not sent upstream. This is to
+ensure, standby is aware of any label that is sent upstream. Once the
+standby acks the path-state, RESV is sent upstream. If the LSP requested
+a detour, master creates the DETOUR nhop on the PSB. This is again replicated
+to the standby. Master also creates a new RSB for the DETOUR LSP. This is
+also replicated to standby.
+
+On standby, various things are suppressed. Once the standby receives
+path_repl message, it creates the replication object add it to the tree
+and starts the resolve operation. Resolve operation on standby just
+emulates receiving of a PATH message. We just have a wrapper to
+rsvp_path_recv() function that skips some of the validation that are
+required on master. While processing we skip things like allocating new
+session_ids, selfIDs etc. We reuse the Ids given by the master. We
+supress the nexthop lookup done by the master. We just reuse whatever
+was sent by the master. We also skip any detour creation and use DETOUR
+nhop parameters passed by the master. Even for RESV, the process is
+similar. we just emulate receiving of a RESV message. On LSP egress
+points, we just add a localRSB based on already added PSB.
+
+Once the neighbor, PSB & RSB are added, standby continues to run pretty
+much the same code that is running on the master. We supress sending out
+any packet. We also supress neighbor timeouts, RSB/PSB timeouts etc.
+
+One thing to remember here is, we dont replicate the TCBs. Admission
+control is done independently by master and standby. In theory, this
+should not cause any problems.
+
+RSVP ingress NSR
+----------------
+
+RSVP ingress NSR works slightly differently. First, it has no incoming
+PATH message. Instead, we rely on the client params that is passed
+between tag and rsvp codes. We TLVize the whole client params structure
+and replicate it from master to standby. [Note: currently this client
+params structure has some pointers. All these will be changed to
+embedded variable length structures. Kind of like an RTSOCK message].
+In standby, we use this client params structure and add a local PSB,
+just like master did. Tag passes a call back routine to RSVP to report
+the path state. It also passes a pointer to tag_path structure as the
+callback context. These can not be passed to the standby. Tag code on Standby
+will update these at a later point.
+
+Today, tag_path keeps a pointer to PSB structure as a void handler.
+We'll change this to use psb_selfID. This will aloow us to communicate
+from master to standby the linkage between tag_path and PSB.
+
+On tag side, both master and standby will parse protocol->mpls
+hierarchy. both master and standby will create PVCs and Paths. Standby
+will not assign any pvc_id/pvc_index to the PVC. Standby will not choose
+the active path. tag_reconfig_job() is disabled on the standby. So,
+standby will not update any state on the PVC. TED queue is also disabled
+on standby, no ERO computation is done on standby. standby will not
+create the cross-connect(cc) for any path. PVCs and Paths will just sit
+in a dormant state on standby. Once the master creates the PVC and Paths
+and assigns the necesary Ids, It will also create the replication
+entries and send them to standby. Stansby will update the local PVC and
+Paths based on these replication state.
+
+On master when a path is brought up, TED will compute the ERO and RSVP
+will signal the Path. Once the local PSB is created, ERO and the
+psb_selfID is sent to the standby. Standby will locate the PSB and
+create the linkage between tag_path and the PSB. It will register the
+callback function for the path status. The status callback function will
+do different things whils in standby mode and master mode. In standby
+mode, all state updates are disabled. Path's state can be changed by the
+master alone.
+
+Once the switchover happens, function vectors are changed so that
+tag_reconfig_job() and other state update functions are enabled. TED
+queue is enabled. Using the existing ERO of the path, create all
+cross-connects. [Note: creating cross-connects at switchover time is not
+expected to consume significant time assuming there will not be many
+Ingress LSPs on a router. We might need to do this in a background
+thread at some later point].
+
+One of the big differences between transit RSVP and Ingress RSVP is,
+in case of Ingress, most of the logic is disabled on standby. Nothing
+much happens on standby except to parse the config. Most of the
+functionality is disabled. Updates are done to PVC/Paths only based on
+messages from the master. All the state machines are started *AFTER* the
+switchover.
+
+Bypass LSPs
+-----------
+
+There are two options for handling Bypass LSPs.
+
+1. Convert Bypass LSPs into PVCs. This way all bypasses will be
+replicated just like regular PVCs. Data LSPs will trigger the creation
+of bypass LSPs. The trigger mechanism will just create a PVC and Path
+and add it to PVC database. These PVCs will be replicated to standby.
+Data PSBs maintain an LP_KEY. This associates a data PSB with a bypass.
+This information will be replicated along with the PSB itself.
+This might be good going forward, because we dont have to maintain two sets
+of code that does prettymuch the same thing. But, this may not be practical
+in terms of impact on code stability.
+
+2. Replicate the RSVP bypass datastructures.
+We'll disable bypass creation/deletion on standby RE. Master will
+replicate most bypass info including ERO (except what can be parsed
+from config). Standby will add/delete bypass based on messages from
+the master. PSB/RSB associated with the bypass LSP will also be
+replicated from the master along with the rsvp client params. selfID of
+the PSB associated with the Bypass will be replicated with the bypass
+data structure. We'll use the mechanism similar to associating tag path
+and RSVP PSB on standby to associate PSB and the Bypass. LP_KEY will be
+replicated as part of data PSB. We'll use the same to associate data PSB
+to the Bypass.
+Note: Admission control to make sure Bypass LSP has enough bandwidth to
+carry the data PSBs will be done independently on both standby and
+master. Hopefully this should not cause any problems.
+
+
+
+FIXME:
+1. what about some of the psb_updates that tag code does? We need to
+streamline the update mechanism. Ideally, all updates should use the
+same rsvp_clnt_params structure. This way master can update the localPSB
+anytime.
+
+2. what about the PSB's rlist. should it be sent from master or
+parsed on standby?
+
+3. What about make-before-break. Is the mechanism fool-proof.
+
+4. What about auto-bandwidth? Is disabling auto-bandwidth timer on
+standby OK?
+
+5. Anything specific for p2mp LSPs?
+
+6. RSVP and CCC interact quite a bit. We need to disable them on
+standby. Better would be to change this so that CCC talks to tag code
+alone(and never makes any direct calls to RSVP).

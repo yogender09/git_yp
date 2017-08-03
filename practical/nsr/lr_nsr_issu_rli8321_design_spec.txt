@@ -1,0 +1,1988 @@
+$Header: /cvs/juniper/sw-projects/os/nsr/lr_nsr_issu_rli8321_design_spec.txt,v 1.9 2013/02/01 07:21:21 tdeng Exp $
+
+Process Template J3.02.P05.T03S
+
+NSR Support for Logical Systems - RLI 8321
+
+Authors: Tao Deng, tdeng@juniper.net
+         Bob Salmi, bsalmi@juniper.net
+
+Copyright (C) 2012, Juniper Networks, Inc.
+
+NOTICE: This document contains proprietary and confidential
+information of Juniper Networks, Inc. and must not be distributed
+outside of the company without the permission of Juniper Networks
+engineering.
+
+
+
+TABLE OF CONTENTS
+
+1.	INTRODUCTION
+1.1	SCOPE
+1.2	REVISION HISTORY
+1.3	REFERENCED DOCUMENTS
+1.4	GLOSSARY
+2.	ARCHITECTURE OVERVIEW
+2.1.    NSR INFRA SUPPORT IN DEFUALT RPD
+2.2     NSR Infra Support in lsys 
+2.3     DESIGN REQUIREMENTS
+3.	DESIGN DETAILS
+3.1	ASSUMPTIONS AND DEPENDENCIES
+3.2	HIGH LEVEL DESIGN
+3.3	DESIGN RISK ITEMS
+3.4	IMPACTED SOFTWARE COMPONENTS
+3.4.1	SOFTWARE COMPONENTS IMPACTED BY DESIGN
+3.4.2	POTENTIALLY IMPACTED SOFTWARE COMPONENTS
+3.5	COMPONENT INTERACTIONS
+3.5.1	COMPONENT X
+3.5.1.1	COMPONENT DEFINITION
+3.5.1.2	LIST OF CHANGES
+3.6	INTER PROCESS COMMUNICATION
+3.7	CONCURRENCY STRATEGY
+3.8	STARTUP STRATEGY
+3.9	RESOURCE MANAGEMENT
+3.9.1   MEMORY ALLOCATION STRATEGY
+3.9.2   MEMORY UTILIZATION
+3.9.3   STORAGE UTILIZATION
+3.9.4   SYSTEM RESOURCE UTILIZATION
+3.10	FAULT AND EXCEPTION HANDLING
+3.11	DEBUG SUPPORT
+3.12	TESTABILITY, SERVICEABILITY AND DIAGNOSE-ABILITY
+3.13	CONSTRAINTS AND LIMITATIONS
+3.14	REJECTED DESIGN ALTERNATIVES
+4.	PATENT OPPORTUNITIES
+5.	PERFORMANCE
+5.1	PERFORMANCE RELATED RESOURCES
+5.2	TARGET PERFORMANCE
+5.3	64-BIT KERNEL SUPPORT
+6.	SCALING
+7.	MULTI-CORE ENVIRONMENT
+8.	COMPATIBILITY ISSUES
+9.	HIGH AVAILABILITY (HA)
+9.1	GRACEFUL RE SWITCHOVER (GRES), ISSU/ NSSU IMPACT
+9.2	NSR IMPACT
+10.	LOGICAL SYSTEM / ROUTING INSTANCE IMPACT
+11.	MULTI / VIRTUAL CHASSIS IMPACT (HOBSON/ FIXX/ CHAI)
+12.	PLATFORMS SUPPORTED
+13.	SDK IMPACT
+13.1	SDK CUSTOMER USAGE
+14.	JUNOS READY SOFTWARE CONSIDERATIONS
+15.	FREE SOFTWARE CONSIDERATIONS
+16.	3RD PARTY SOFTWARE CONSIDERATIONS
+16.1	FUNCTIONAL ROLE OF 3RD PARTY CODE WITHIN JUNOS
+16.2	INTEGRATION DETAILS OF 3RD PARTY CODE WITHIN JUNOS
+17.	POSIX NON-COMPLIANCE
+18.	FUTURE CONSIDERATIONS
+19.	REVIEW COMMENTS
+19.1	REVIEW STAKEHOLDER MATRIX
+
+
+INDEX OF FIGURES
+----------------
+Figure 1: NSR support in default rpd.
+Figure 2: NSR support in default rpd and lsys rpds.
+Figure 3: Communicating dynamic ports from master lsys rpds to backup lsys rpds
+Figure 4: Librpd sessions between lsys processes and lrmuxd.
+Figure 5. Libmirror session between master LRMUXD and backup LRMUXD.                      
+Figure 6: Sequence diagram of establishing libmirror connection between an 
+          active lsys and its standby peer
+Figure 7: Sequence diagram of establishing ldp rsync connection between an 
+          active lsys and its standby peer.
+Figure 8: Sequence diagram of establishing bgp rsync connection between an 
+          active lsys and its standby peer.
+Figure 9: Librpd message subtypes between an lsys and lrmuxd.
+Figure 10: Case study when the active lsys is down.
+Figure 11: Case study when the active lrmuxd is down.
+Figure 12: Case study when the standby lsys is down.
+Figure 13: Case study when the active lrmuxd is down.
+
+
+
+1. INTRODUCTION
+
+This document captures the software design for RLI 8321 - NSR Support for 
+Logical Systems (lsys). Code shall be committed to JUNOS release 13.3. 
+
+In JUNOS, NSR (nonstop-routing) has been supported by major protocols for the 
+default (non-lsys) rpd. They mainly use libmirror and rsync channels to 
+replicate data/state from the master default rpd to the backup default rpd.
+
+This RLI shall make NSR configurable not only for default rpd, but also lsys 
+rpds. The major work lies in implementing infrastructure which can be used to 
+establish libmirror and rsync channels between an NSR enabled lsys in the 
+master RE and its peer in the backup RE. 
+
+
+1.1 SCOPE
+
+This document captures the NSR design of RLI8321. 
+
+At the time of writing, the published HA config guide for JUNOS 12.2 lists the 
+following platforms that support NSR in the default rpd:
+
+M10i                      8.4 or later
+M20                       8.4 or later
+M40e                      8.4 or later
+M120                      9.0 or later
+M320                      8.4 or later
+MX Series                 9.0 or later
+T320, T640, and TX Matrix 8.4 or later
+T1600                     8.5 or later
+TX Plus Matrix           10.0 or later
+
+Despite the above list, the ddl library gives us a slightly longer list of 
+platforms where NSR can be configured in the default rpd. In 
+common_include_priv.dd, they are:
+
+#define PRODUCTS_SUPPORTING_NSR \
+	m10i \
+	m20 \
+	m40e \
+	m120 \
+	m160 \
+	m320 \
+	T_SERIES \
+	MX_SERIES_DUAL_RE \
+	EX62_SERIES \
+	EX82_SERIES \
+	JAVA_LATTE \
+	JAVA_EX3300 \
+	JAVA_TSUNAMI \
+	EX_XRE \
+	SNG_SERIES
+
+This RLI aims to make NSR functionality not only available in the default rpd, 
+but also in logical systems for the above listed platforms. Other platforms are 
+beyond the scope of this RLI.
+
+
+1.2 REVISION HISTORY
+
+1.0 6/14/2012 tdeng  Initial draft
+1.1 9/19/2012 bsalmi Updates to several sections with template references
+1.2 10/01/2012 tdeng Adds sections for task commit sync and ddl/odl, and more
+1.3 10/01/2012 tdeng Adds "Phase 1" to the title
+1.4 10/03/2012 tdeng Addresses Tim's comments.
+                     - Adds more figures to illustrate failure recovery cases.
+                     - Clarifies that lrmuxd acts as a librpd client.
+                     - Adds new message formats in librpd.
+                     - Gives brief description of lrmuxd's librpd client 
+                       callbacks.
+                     - Displays the structure of a mirror info entry.
+                     - Removes lsys-lite related text as NSR and lsys-lite 
+                       cannot co-exist in a config.
+                     - Clarifies memory utilization and performance impact.
+1.5 10/03/2012 tdeng Addresses more of Tim's comments.
+                     - Adds the failure recovery case for RE switchover.
+                     - Aligned acronyms.
+                     - Clarifies that the "failover on rpd thrash" knob is not
+                       impacted.
+                     - Misc.
+
+
+1.3 REFERENCED DOCUMENTS
+
+LDP NSR Implementation Specs:
+http://cvs.juniper.net/cgi-bin/viewcvs.cgi/sw-projects/os/nsr/rpd/ldp/ldp-nsr-implementation.txt?view=markup
+
+BGP NSR Functional Specs:
+http://cvs.juniper.net/cgi-bin/viewcvs.cgi/sw-projects/os/nsr/bgp-design.txt?view=markup
+
+MSDP NSR Functional Specs:
+http://cvs.juniper.net/cgi-bin/viewcvs.cgi/sw-projects/os/nsr/msdp-nsr-2729-funcspec.txt?view=markup
+
+Kernel Socket Replication Specs:
+http://cvs.juniper.net/cgi-bin/viewcvs.cgi/sw-projects/os/nsr/kernel/socket_replication_api.txt?view=markup
+http://cvs.juniper.net/cgi-bin/viewcvs.cgi/sw-projects/os/nsr/kernel/kernel_replication_spec.txt?view=markup
+
+JUNOS 12.2 High Availability Configuration Guide
+http://www.juniper.net/techpubs/en_US/junos12.2/information-products/topic-collections/config-guide-high-availability/config-guide-high-availability.pdf
+
+
+1.4 GLOSSARY
+
+LSYS - Logical System, may be used interchangeably with LR (Logical Router)
+IRS  - Internal Routing Socket
+JSR  - Juniper Socket Replication
+HA   - High Availability
+RPD  - Routing Protocol Daemon
+TCP  - Transmission Control Protocol
+
+
+2. ARCHITECTURE OVERVIEW
+
+2.1. NSR infra support in default rpd 
+
+Let us first take a look at how NSR is supported in the default rpd. As shown 
+in Figure 1, when "nonstop-routing" is configured under "routing-options" in 
+the default rpd, the default rpd will be spawned in the backup RE to be a hot 
+standby of its master peer. At the same time, depending on what protocols are
+configured in the default rpd, up to three tcp connections: libmirror, bgp
+rsync, and ldp rsync, may be established between the active and standby default 
+rpds via the IRS (Internal Routing Socket) through interface fxp1.0. 
+
+          MASTER RE                                   BACKUP RE
+ 
+    rpd (default)                                     rpd (default)
+     |	| | |                                           | | |  |
+     |	| | |       libmirror (tcp port = 6156)         | | |  |
+     |  | | +-------------------------------------------+ | |  |
+     |  | |         bgp rsync (tcp port = 179)            | |  |
+     |  | +-----------------------------------------------+ |  |
+     |  |           ldp rsync (tcp port = 646)              |  |
+     |  +---------------------------------------------------+  |
+     |                                                         | kevent              
+=============================================================================
+    kernel                                                  kernel
+     |                                                         ^ 
+     |                                                         |
+     |                      JSR tcp channel                    |
+     +---------------------------------------------------------+  
+
+                Figure 1: NSR support in the default rpd.
+
+
+Most protocol modules that currently support NSR exclusively rely on the 
+libmirror tcp connection to replicate protocol data and socket state from 
+master to backup. Modules of this sort include but are not limited to: tag, 
+rsvp, mpls_oam, msdp, rt_instance, pim, rip, ospf and isis. The libmirror tcp 
+session between the two default rpds uses the predefined tcp port 6156 
+(RPD_MIRROR_DATA_TCP_PORT).
+
+However, two other protocols are a bit special. Bgp does not use libmirror at 
+all, but rather, establishes its own bgp rsync tcp connection via IRS. Ldp, 
+on the other hand, not only uses libmirror, but also establishes its own ldp 
+rsync tcp connection via IRS for some initial syncing activities. To 
+differentiate multiple tcp sessions through the same interface fxp1.0, the bgp 
+rsync channel between the two default rpds uses the predefined protocol port 
+179 (BGP_PORT), and the ldp rsync channels uses the predefined protocol port 
+646 (LDP_PORT).
+
+We should note that some tcp/udp protocols, such as ldp, bgp, msdp and rip, 
+use the JSR (Juniper Socket Replication) utility in libjuniper/jsr/jsr_api.c 
+for socket state snooping from the active rpd to the backup rpd on a per socket 
+basis. The replication channel is essentially a tcp connection between the 
+master kernel and the backup kernel. But to establish the snooping association 
+between the designated socket in the master rpd and the two snooping sockets 
+in the backup rpd using JSR APIs, rpd needs to have an out-of-band channel 
+(usually libmirror) to communicate JSR handles between two REs, and a routing 
+socket to manage the replication session. In essence, JSR control APIs are 
+implemented using traditional librtsock APIs. Once the association is 
+successfully established, the socket activities of the replicated socket shall
+be notified to the backup rpd via kevent.
+
+
+2.2 NSR infra support in lsys
+
+When the system is configured with multiple rpds including lsys and non-lsys, 
+we need to make sure that the above mentioned syncing channels should all be 
+available between an arbitrary rpd (lsys or non-lsys) in the master and its 
+peer in the backup, if so configured.
+
+
+          MASTER RE                                   BACKUP RE
+ 
+       lsys rpd 1                                     lsys rpd 1
+     	| | |                                           | | |  
+     	| | |       libmirror (tcp port = ?)            | | |  
+        | | +-------------------------------------------+ | |  
+        | |         bgp rsync (tcp port = ?)              | |  
+        | +-----------------------------------------------+ |  
+        |           ldp rsync (tcp port = ?)                |  
+        +---------------------------------------------------+  
+        .                                                   .      
+        .                                                   .     
+        .                                                   .
+
+     rpd (default)                                     rpd (default)
+       | | |                                            | | |  
+       | | |       libmirror (tcp port = 6156)          | | |  
+       | | +--------------------------------------------+ | |  
+       | |         bgp rsync (tcp port = 179)             | |  
+       | +------------------------------------------------+ |  
+       |           ldp rsync (tcp port = 646)               |  
+       +----------------------------------------------------+  
+
+          Figure 2: NSR support in default rpd and lsys rpds.
+
+
+As shown in Figure 2, we removed the JSR replication out of the picture.
+This is because each rpd, lsys or non-lsys, can open a unique routing
+socket for sending and receiving JSR control messages to and from the kernel.
+The routing socket file descriptor is contained in the global variable 
+task_jsr_cookie in each rpd. All lsys rpds share the same kernel-to-kernel 
+tcp connection for socket snooping. Whether the replicated socket belongs to 
+the default rpd or an lsys should not place any impact on the JSR replication 
+itself. Therefore, we consider JSR replication channel already lsys compatible 
+by design. No change is necessary in this regard in order to support lsys NSR. 
+
+After taking JSR channel out of the scope of this design spec, we shall focus 
+on the other three IRS channels: libmirror, bgp rsync, and ldp rsync.
+
+All IRS tcp connections for lsys rpds and the non-lsys rpd must go through the 
+same ifl fxp1.0. In order for each of them to be successfully established, we 
+must ensure that every connection has a unique port number. For default rpd,
+it should continue using the pre-defined ports as before to maintain backward
+compatibility. But we cannot do the same static port assignment for lsys rpds, 
+because it is not flexible enough when the number of logical systems vary by 
+config, and since we may end up supporting a large number logical systems in 
+the future, we cannot statically define everything in advance.
+
+
+2.2.1 Dynamic tcp port allocation
+
+Dynamic port allocation for IRS channels can be easily done on the master lsys
+rpd when it bind()'s a tcp socket with a port 0 address, then uses getsockname()
+to retrieve the ephemeral port number that the kernel assigns to the socket. But
+once the port number is available in the active lsys, how to communicate this 
+information to the standby lsys, such that the standby lsys can initiate the 
+connect() call to establish the IRS tcp session, needs a fair amount of work. 
+Basically, we need to set up another communication channel in advance between 
+a pair of lsys rpds to convey the port information. Only after the port 
+information is successfully conveyed to the standby lsys, can these three IRS 
+tcp channels - libmirror, bgp rsync, and ldp rsyn, be established. 
+
+
+2.2.2 Dynamic tcp port communication
+
+After careful consideration, the following design is selected for the dynamic
+port info transportation from an active lsys to its standby peer.
+
+
+        MASTER RE                       |               BACKUP RE 
+                                        |
++------+ libmirror port  +--------+     |      +--------+ libmirror port  +------+
+|      | bgp rsync port  |        |     |      |        | bgp rsync port  |      |
+| lsys | ldp rsync port  |        |     |      |        | ldp rsync port  | lsys | 
+| rpd  | --------------->|        |     |      |        | --------------->| rpd  | 
+|  1   |                 |        |     |      |        |                 |  1   | 
+|      | librpd session  |        |     |      |        | librpd session  |      | 
++------+                 |        |     |      |        |                 +------+ 
+                         |        |     |      |        |
+                         | LRMUXD | ---------> | LRMUXD |
+                         |        |     |      |        |
++------+ libmirror port  |        |     |      |        | libmirror port  +------+
+|      | bgp rsync port  |        |     |      |        | bgp rsync port  |      |
+| lsys | ldp rsync port  |        |     |      |        | ldp rsync port  | lsys | 
+| rpd  | --------------->|        |     |      |        | --------------->| rpd  | 
+|  n   |                 |        |     |      |        |                 |  n   | 
+|      | librpd session  |        |     |      |        | librpd session  |      | 
++------+                 +--------+     |      +--------+                 +------+ 
+
+                       libmirror session (tcp port = 6165) 
+
+  Figure 3: Communicating dynamic ports from master lsys rpds to backup lsys rpds.
+
+
+Each active lsys already hosts a rpd server on a unix socket to allow other 
+daemons (such as jpppd, jdhcpd, etc) to manipulate routes in rpd. 
+This convenience allows us to set up a channel for our own purpose of obtaining 
+the dynamic tcp port information from an lsys. The idea here is as follows:
+
+1. The active lrmuxd, as the daemon who oversees the entire logical system 
+config, shall establish a librpd session with each NSR configured lsys 
+in the master RE, and acquire the three dynamic tcp port values for libmirror, 
+bgp rsync, and ldp rsync. 
+
+2. The active lrmuxd, shall listen to the predefined port 6165 
+(LRMUXD_MIRROR_DATA_TCP_PORT) for libmirror connection request from the standby
+lrmuxd. Once established, the dynamic tcp port information is carried to the 
+standby lrmuxd over it.
+
+3. The standby lrmuxd, shall also initiate a librpd session on a unix socket 
+with every lsys in the backup RE, and send over the dynamic tcp port 
+information to the corresponding lsys.
+
+Following path 1-2-3, we are able to provide an independent channel between
+an active lsys and its standby peer. For now, the information it carries is 
+the dynamic tcp ports needed for replication services. But the same channel 
+can be used to carry any other information when so desired.
+
+
+2.3 DESIGN REQUIREMENTS
+
+2.3.1 Design requirements:
+
+This design must extend support of the NSR Capability to lsys processes 
+transparently. The design must deliver NSR functionality that matches 
+the feel of NSR functionality for the default rpd process.
+
+Each lsys must be able to configure NSR functionality independently of each 
+other. Thus some logical systems may choose to have a hot spare and some may 
+choose not to.
+
+
+2.3.2 Design restrictions:
+
+The design will not extend NSR capability to new platforms or new protocols.  
+Thus if a current platform or protocol experiences traffic interruptions in its
+default rpd during switchover due to lack of NSR capabilities, this design will 
+not address that issue. 
+
+
+
+3. DESIGN DETAILS
+
+
+3.1 ASSUMPTIONS AND DEPENDENCIES
+
+The design of this RLI is based on the assumption that every protocol that 
+already supports NSR in the default rpd, is able to function the same in an
+lsys, as long as the replication infrastructure is provided. This is the reason 
+why this RLI is scoped as an rpd infra RLI. 
+
+
+3.2 HIGH LEVEL DESIGN
+
+This RLI impacts various software components including rpd, lrmuxd, libmirror,
+librpd, ddl and odl libraries. Within rpd, the impacted modules include ldp, 
+bgp, rpd server, and synchronized commit.
+
+Next, we will describe the major changes that are made to these components/
+modules through this RLI.
+
+
+3.2.1 LRMUXD 
+
+Although LRMUXD currently is still 32-bit, all changes made by this RLI shall 
+keep forward-compatibility of 64-bit case in mind, by not assuming a pointer 
+to be 32-bit long.
+
+--------------------------
+Convert LRMUXD to libjtask
+--------------------------
+
+Before this RLI, LRMUXD uses eventlib to drive events, The lightweight eventlib 
+was convenient enough when the main purpose of LRMUXD was to deliver config 
+checks and signals to sys rpds.
+
+But now, as needed by this RLI, we are going to make LRMUXD a lot more complex 
+to conduct a lot more activities. This includes establishing unix sessions 
+with rpd servers in lsys processes, establishing libmirror tcp sessions between 
+master and backup lrmuxds, scheduling asynchronous jobs and timers, and 
+providing multi-flag tracing capabilities. Implementing these features under 
+eventlib would have been difficult and the resulting code would have been 
+hard to maintain and debug. On the other hand, rich features lacked in eventlib 
+are almost all ready-to-use in libjtask.
+
+Converting LRMUXD to using libjtask is considered desirable to be done here, 
+for the benefit of the implementation of this RLI and the future evolvement of 
+LRMUXD functionalities. At the time of writing, converting multiple task-based 
+daemons to using libjtask is an ongoing effort under the initiative of 
+"RPD Modularity". It takes a lot more work to convert lrmuxd because it was 
+not originally written in a task-based framework.
+
+This conversion should not create regressions to the existing functionalities 
+in LRMUXD. It should still be able to parse the command-line arguments, spawn
+lsys config-check processes, deliver signals, perform basic logical system
+config sanity inspection, and stop lsys processes when instructed so. 
+
+Most code change for libjtask conversion occurs in lrmuxd.c. Altogether, four
+modules are defined:
+
+typedef enum {
+    LRMUX_MODULE_LSYS_MGMT,
+    LRMUX_MODULE_UI,
+    LRMUX_MODULE_LIBRPD,      
+    LRMUX_MODULE_LIBMIRROR,
+    LRMUX_MODULE_MAX
+} lrmux_module_id;
+
+where LRMUX_MODULE_LSYS_MGMT is the module that takes care of the legacy 
+functionalities of config inspection and signal passing of logical systems, 
+and LRMUX_MODULE_UI is the module that takes care of the legacy UI related
+interactions. The other two modules: LRMUX_MODULE_LIBRPD and 
+LRMUX_MODULE_LIBMIRROR are added for the purpose of this RLI to provide new 
+capabilities of managing librpd sessions and the libmirror session.
+
+After libjtask conversion, a new cli command "show task logical-system-mux" is added
+to display task related information in lrmuxd. This command is similar to rpd's 
+"show task" command and mcsnoopd's "show task snooping" command.
+
+{master}
+regress@pro4-d> show task logical-system-mux  
+Pri Task Name                           Pro  Port So Flags
+ 15 Memory
+ 40 lsys_session_task:lr2                         11 <WriteDisable>
+ 40 lsys_session_task:lr1                         14 <WriteDisable>
+ 40 lrmuxd mirror info task
+ 40 LR Mgmt Task
+ 60 Mirror Task.128.0.0.6                   55785  7 <WriteDisable>
+ 70 MGMT.local                                    15 <WriteDisable>
+ 70 MGMT_Listen./var/run/lrmuxd_mgmt               6 <Accept WriteDisable>
+
+{master}
+regress@pro4-d> show task logical-system-mux ?  
+Possible completions:
+  <[Enter]>            Execute this command
+  <task-name>          Name of task
+  io                   Show task I/O statistics
+  memory               Show memory utilization of lrmuxd tasks
+  replication          Stateful replication
+  summary              Display summary output (default)
+  |                    Pipe through a command
+
+
+----------------------------- 
+Configure LRMUXD traceoptions
+-----------------------------
+
+After the libjtask conversion, all task-based tracing is now available in 
+lrmuxd. In this RLI, the following traceoptions flags have been added to trace 
+important activities in lrmuxd. 
+
+{master}[edit]
+regress@pro2-a# set routing-options logical-system-mux traceoptions flag ?
+Possible completions:
+  all                  Trace everything
+  debug                Trace debug-level lrmuxd activities
+  general              Trace general events
+  normal               Trace normal events
+  parse                Trace configuration parsing
+  policy               Trace policy processing
+  route                Trace routing information
+  state                Trace state transitions
+  task                 Trace routing protocol task processing
+  timer                Trace routing protocol timer processing
+
+
+Most of the above flags are standard task based tracing flags. For 
+troubleshooting purpose of new functionalities added by this RLI, such as 
+librpd/libmirror sessions and dynamic port transportation, it is usually 
+sufficient to just enable the traceoptions flag "debug". The config parsing
+function for the traceoptions is lrmuxd_trace_config().
+
+
+------------------------
+LRMUXD's librpd session
+------------------------
+
+As show in Figure 4, for every NSR configured lsys, the active or standby 
+lrmuxd shall attempt to connect to the rpd server hosted by the 
+lsys on an unix socket. Basically, LRMUXD acts as a librpd client, while
+the lsys rpds are servers. The unix sock address is PATH_LRPD_SERVICE_FORMAT, 
+which follows the path "/var/run/<lr_name>_rpd_server_communication". 
+
+        MASTER RE                       |               BACKUP RE 
+                                        |
++------+                 +--------+     |      +--------+                 +------+
+|      |                 |        |     |      |        |                 |      |
+| lsys |server     client|        |     |      |        |client     server| lsys | 
+|      |<--------------->|        |     |      |        |<--------------->|      | 
+|  1   |                 |        |     |      |        |                 |  1   | 
+|      | librpd session 1|        |     |      |        | librpd session 1|      | 
++------+                 |        |     |      |        |                 +------+ 
+                         |        |     |      |        |
+                         | LRMUXD |     |      | LRMUXD |
+                         |        |     |      |        |
++------+                 |        |     |      |        |                 +------+
+|      |                 |        |     |      |        |                 |      |
+| lsys |server     client|        |     |      |        |client     server| lsys | 
+|      |<--------------->|        |     |      |        |<--------------->|      | 
+|  n   |                 |        |     |      |        |                 |  n   | 
+|      | librpd session n|        |     |      |        | librpd session n|      | 
++------+                 +--------+     |      +--------+                 +------+ 
+
+
+  Figure 4: Librpd sessions between lsys processes and lrmuxd.
+
+Every librpd session is charged to a task in LRMUXD. The task name follows the 
+convention of "lsys_session_task:<lsys_name>". The number of such tasks are 
+equal to the number of lsys rpds configured with NSR. The task data stores the 
+librpd session entry pointer. Logical systems not configured with NSR do not 
+have a librpd session task. Being able to cleanly use librpd is also one of the
+major motivations for converting LRMUXD to libjtask.
+
+As soon as the librpd session is established, if on master RE, lrmuxd will send 
+an IPC message of type RPD_MSG_LSYS_NSR_PORT_REQUEST to the connected lsys 
+to pull the dynamic tcp port information; if on backup RE, lrmuxd will push the 
+dynamic tcp port information, if available, to the connected lsys using librpd 
+message type RPD_MSG_LSYS_NSR_PORT_INFO. Please refer to Section 3.2.5 (RPD 
+server and librpd) for the formats of the above two messages.
+
+It is possible that the backup lrmuxd may temporarily store and communicate 
+stale port information. For example, if the active lsys dies and restarts,
+it will allocate a new set of tcp ports for the replication services. Before
+these port numbers are successfully transported to the backup RE, the standby 
+lrmuxd has no idea that the port information in its database is already stale. 
+If at this time, it establishes a librpd session with the standby lsys, it 
+will push the stale ports into the standby lsys. Certainly, the standby lsys 
+will not be able to connect to the active lsys using the stale ports. But this 
+state should not last long, because the active lrmuxd will pass over the new 
+port information through libmirror very soon. For details on state recovery 
+when any of the four processes involved in port info transportation dies, 
+namely, active lsys, active lrmuxd, standby lrmuxd, and standby lsys, please 
+see Section 3.10.
+
+All rpd server session entries are stored in a patricia tree with root global
+lrmuxd_lsys_session_tree, the key being the lsys name. The librpd client
+callbacks include:
+
+lrmux_lsys_session_connect_cb
+  - Registered session_connect callback as a librpd client. Invoked by  
+    rpd_session_reply_get() for the connection status reply from the rpd 
+    server. Does error handling if return code is RPD_SC_FAILED, or proceeds
+    to send or request port info from rpd server.
+
+lrmux_lsys_session_state_cb
+  - Invoked when the librpd session goes down. Does error handling. 
+
+lrmux_lsys_rpd_port_info_cb
+ - Invoked when the active lrmuxd receives the port info from the connected 
+   active lsys. It updates the local copy of the port info in the active
+   lrmuxd. It also invoke mirror_update() to queue mirror tlvs for sending the
+   port info to the standby lrmuxd.
+
+The file that deals with librpd session management is lrmuxd_rpd.c. 
+
+
+--------------------------
+LRMUXD's libmirror session
+--------------------------
+
+As shown in Figure 5, as long as one or more logical systems are configured 
+with NSR, lrmuxd will be spawned in both master RE and backup RE. The standby
+lrmuxd will initiate the connect() call to the active lrmuxd on a predefined 
+tcp port 6165 (LRMUXD_MIRROR_DATA_TCP_PORT). The active lrmuxd, after receiving
+the connection request, will accept the request. Once the session is
+established, the session management is charged to the mirror_task created by 
+the libmirror library on both REs.
+
+
+   MASTER RE                  BACKUP RE 
+               
+  +--------+                 +--------+ 
+  |        |                 |        | 
+  |        |                 |        |
+  |        |                 |        |   
+  |        |                 |        |
+  |        |   libmirror     |        |
+  | LRMUXD |<--------------> | LRMUXD |
+  |        | tcp port = 6165 |        |
+  |        |                 |        | 
+  |        |                 |        | 
+  |        |                 |        | 
+  |        |                 |        | 
+  +--------+                 +--------+ 
+
+  Figure 5: Libmirror session between master LRMUXD and backup LRMUXD.                      
+
+
+For every lsys that is configured with NSR, an lsys info entry is created
+to store the dynamic tcp port information associated with this particular lsys.
+The structure of an lsys info entry looks like the following:
+
+typedef struct {
+    patnode            llie_pnode;        /* Key is the lsys name */
+    lr_name_t          llie_lsys_name;
+    flag_t             llie_flags;        /* LLIEF_DELETE */
+    int16_t            llie_refcnt;
+    flag_t             llie_mirror_flags; /* Flags for mirroring the data */
+    mirror_data_node   llie_mirror_node;
+    task_timer         *llie_mirror_update_timer;
+    u_int16_t          llie_data[LSYS_NSR_PORT_MAX+1];
+} lrmuxd_lsys_info_entry_t;
+
+
+All dynamic tcp ports are stored in the array llie_data[LSYS_NSR_PORT_MAX+1].
+The lsys info entry is created on a per lsys (NSR configured) basis, and can
+be located from a patricia tree using lsys name as the key. The patricia tree 
+has root global lrmuxd_lsys_info_tree.
+
+Whenever the master lrmuxd receives a new set of dynamic tcp port information
+from a particular lsys via librpd, it will update the info entry of this 
+lsys, and try to push this info to the backup lrmuxd via libmirror tlvs. When 
+the backup lrmuxd receives the tlv from the master lrmuxd via libmirror, it 
+will attempt to push it forward to the corresponding standby lsys via librpd
+message type RPD_MSG_LSYS_NSR_PORT_INFO.
+
+A global task lrmux_lsys_info_task is used to manage timers that are
+related to managing the lsys info entries.
+
+The customized libmirror function callbacks include the following:
+
+static mirror_registry_entry lrmuxd_mirror_registry = {
+    .mirror_data_lock_func = lrmux_mirror_registry_lock,
+    .mirror_data_unlock_func = lrmux_mirror_registry_unlock,
+    .mirror_data_encode_func = lrmux_mirror_registry_encode,
+    .mirror_data_decode_func = lrmux_mirror_registry_decode,
+    .mirror_data_get_next_func = lrmux_mirror_registry_next,
+    .mirror_recvd_data_clear_func = lrmux_mirror_registry_reset,
+    .mre_data_id = MIRROR_DATA_LSYS_PORT,
+    .mirror_db_type = MIRROR_DB_MASTER_TO_STANDBY,
+    .mirror_donot_chunk_db_walk = TRUE 
+};
+
+The file that deals with the lsys info entry management is lrmuxd_mirror.c.
+
+A new lrmuxd extension is added to the existing cli command "show mirror" to
+display the libmirror session information between lrmuxd's on different REs.
+
+regress@pro4-a> show mirror ?     
+Possible completions:
+  logical-system-mux   Show lrmuxd mirror replication information
+  routing              Show routing protocols stateful replication information
+
+{master}
+regress@pro4-a> show mirror logical-system-mux ?  
+Possible completions:
+  clients              Show registered clients for mirroring
+  peer                 Show mirror peer status information
+  queue                Show mirroring queues
+  statistics           Show mirroring statistics
+
+{master}
+regress@pro4-a> show mirror logical-system-mux clients              
+End-of-database
+        Replication mode: Master <-> Standby
+        Entries resynced: 0
+Mirror ack
+        Replication mode: Master <-- Standby
+        Entries resynced: 0
+LSYS Port Info
+        Replication mode: Master --> Standby
+        Entries resynced: 2
+
+
+3.2.2 Libmirror in lsys
+
+For the active default rpd, the mirror listen task continues listening to the 
+predefined port 6156 (RPD_MIRROR_DATA_TCP_PORT). Likewise, the standby default 
+rpd uses the same predefined port to connect to the active default rpd for
+establishing the libmirror channel.
+
+                                           ||
+                Master RE                  ||            Backup RE
+===========================================||=========================================
+         lsys              |    lrmuxd     ||   lrmuxd      |           lsys 
+---------------------------|               ||               |--------------------------
+ libmirror |   rpd server  |               ||               |  rpd server  | libmirror
+-----------|---------------|---------------||---------------|--------------|-----------
+           |               |               ||               |              |
+1. Allocate|               |               ||               |              |
+mirror port|               |               ||               |              |
+           | 2. Extract    |               ||               |              |
+           | mirror port   |               ||               |              |
+           |               |               ||               |              |
+           | 3. Send mirror|               ||               |              |
+           | port to LRMUXD|               ||               |              |
+           |               | 4. Recv       ||               |              |
+           |               | mirror port   ||               |              |
+           |               |               ||               |              |
+           |               | 5. Send mirror||               |              |
+           |               | port to backup||               |              |
+           |               | LRMUXD        ||               |              |
+           |               |               || 6. Recv       |              |
+           |               |               || mirror port   |              |
+           |               |               ||               |              |
+           |               |               || 7. Send mirror|              |
+           |               |               || port to rpd   |              |
+           |               |               || server        |              |               
+           |               |               ||               | 8. Recv      |
+           |               |               ||               | mirror port  |
+           |               |               ||               |              |
+           |               |               ||               | 9. Push      |
+           |               |               ||               | mirror port  |
+           |               |               ||               | to libmirror |
+           |               |               ||               |              | 10. Set
+           |               |               ||               |              | mirror port
+           |               |               ||               |              |
+
+                    11. Establish libmirror tcp connection on mirror port
+   <<-------------------------------------------------------------------------------
+
+    Figure 6: Sequence diagram of establishing libmirror connection between an 
+              active lsys and its standby peer.
+
+
+Figure 6 shows the sequence of events to take place for the libmirror session
+between two lsys rpds on different REs to be established. 
+
+For the active lsys configured with NSR, the mirror listen task shall 
+dynamically allocate a tcp port for the mirror channel, and starts listening 
+on that. It will notify the mirror port to rpd server module, which will pass 
+the mirror port info to the active lrmuxd. This info shall travel from the 
+active lrmuxd to the backup lrmuxd through the libmirror session, and 
+eventually arrive at the corresponding standby lsys via librpd.
+
+The standby lsys will wait until it receives the mirror port before 
+connecting to the active lsys.
+
+An additional field is added to the mirror_state_t structure to allow a 
+callback into the client space when the dynamic tcp port is available. A 
+customizable trace pointer is also added for the convenience of troubleshooting.
+
+
+typedef struct {
+     mirror_data_id data_id_end_db;  /* End DB id */
+     u_int16_t tcp_port;             /* TCP port to listen on */
+     u_int16_t lr_id;                /* logical-router id */
++    lr_mirror_port_func_t lr_mirror_port_cb;
++				    /* Invoked when the dynamic mirror port
++				     * for an lr becomes available */
+     boolean active;                 /* Active or passive */
+     union {
+         struct {
+	     void *ev_ctx;            /* eventlib context */
+             void *timer_context;     /* timer context */      
+         } eventlib_fields;
+     } u;
++    void *trp;                       /* trace pointer for mirror_trace() */
+ } mirror_state_t;
+
+A new logical-system extension is added to the existing "show mirror routing"
+command to display lsys-specific mirror session information. For example:
+
+{master}
+regress@pro4-a> show mirror routing statistics logical-system lr1 
+Connection resets: 0
+Database resyncs: 18
+Bytes sent: 7656
+Bytes received: 1792
+
+
+3.2.3 LDP
+
+For the default rpd on the master RE, ldp continues using the main "LDP Listen" 
+task to not only hear the rsync connection from the backup RE, but also other 
+ldp peers connection requests, on the predefined tcp port LDP_PORT (646). The 
+task differentiates the rsync request from other ldp connections by the 
+incoming ifl. If it belongs to the __juniper_private1__ private instance, it is 
+a rsync connection.
+
+                                           ||
+                Master RE                  ||            Backup RE
+===========================================||=========================================
+         lsys              |    lrmuxd     ||   lrmuxd      |           lsys 
+---------------------------|               ||               |--------------------------
+ ldp       |   rpd server  |               ||               |  rpd server  | ldp
+-----------|---------------|---------------||---------------|--------------|-----------
+           |               |               ||               |              |
+1. Allocate|               |               ||               |              |
+ldp rsync  |               |               ||               |              |
+port       |               |               ||               |              | 
+           | 2. Extract    |               ||               |              |
+           | ldp rsync     |               ||               |              |
+           | port          |               ||               |              |
+           |               |               ||               |              |
+           | 3. Send ldp   |               ||               |              |
+           | rsync port to |               ||               |              |
+           | lrmuxd        |               ||               |              |
+           |               | 4. Recv ldp   ||               |              |
+           |               | rsync port    ||               |              |
+           |               |               ||               |              |
+           |               | 5. Send ldp   ||               |              |
+           |               | rsync port    ||               |              |
+           |               | to backup     ||               |              |
+           |               | lrmuxd        ||               |              |
+           |               |               || 6. Recv ldp   |              |
+           |               |               || rsync port    |              |
+           |               |               ||               |              |
+           |               |               || 7. Send ldp   |              |
+           |               |               || rsync port to |              |               
+           |               |               || rpd server    |              |
+           |               |               ||               | 8. Recv ldp  |
+           |               |               ||               | rsync port   |
+           |               |               ||               |              |
+           |               |               ||               | 9. Push ldp  |
+           |               |               ||               | rsync port   |
+           |               |               ||               | to ldp       |
+           |               |               ||               |              | 10. Set ldp
+           |               |               ||               |              | rsync port
+           |               |               ||               |              |
+
+                    11. Establish ldp rsync connection on the ldp rsync port
+   <<-------------------------------------------------------------------------------
+  
+Figure 7: Sequence diagram of establishing ldp rsync connection between an 
+            active lsys and its standby peer.
+
+
+Figure 7 shows the sequence of events to take place for the ldp rsync session
+between two lsys rpds in different REs to be established. 
+
+For an active lsysconfigured with ldp and NSR, a new task 
+ldp_rsync_listen_task is created to take care of the rsync connection. It will
+dynamically allocate an ldp_rsync_port, and notify the port to the rpd server
+module, which will push the port information to the master lrmuxd through a
+librpd message. The port info will travel through the libmirror channel from
+the active lrmuxd to the standby lrmuxd, and eventually arrive at the standby
+lsys via librpd session.
+
+The standby lsys will wait until it receives the ldp_rsync_port before 
+connecting to the active lsys.
+
+Activities of ldp rsync related activities in an lsys are tracked by:
+"set logical-systems <lr> protocols ldp traceoptions flag nsr-synchronization detail".
+
+A logical-system extension is added to the existing cli command 
+"show ldp replication" to display lsys specific ldp replication information. 
+For example:
+
+{master}
+regress@pro4-a> show ldp replication neighbor logical-system lr1 
+Instance        Address                 Interface         State
+6               10.12.101.1             so-1/0/2.0        Established
+
+
+3.2.4 BGP
+
+For the default rpd on the master RE, bgp continues using the main 
+bgp_listen_task to not only hear the rsync connection from the backup RE, but
+also other bgp peer connection requests, on the predefined tcp port 
+BGP_PORT (179). The task differentiates the rsync request from other bgp 
+connections by the incoming ifl. If it belongs to the __juniper_private1__ 
+private instance, it is a rsync connection.
+
+                                           ||
+                Master RE                  ||            Backup RE
+===========================================||=========================================
+         lsys              |    lrmuxd     ||   lrmuxd      |           lsys 
+---------------------------|               ||               |--------------------------
+ bgp       |   rpd server  |               ||               |  rpd server  | bgp
+-----------|---------------|---------------||---------------|--------------|-----------
+           |               |               ||               |              |
+1. Allocate|               |               ||               |              |
+bgp rsync  |               |               ||               |              |
+port       |               |               ||               |              | 
+           | 2. Extract    |               ||               |              |
+           | bgp rsync     |               ||               |              |
+           | port          |               ||               |              |
+           |               |               ||               |              |
+           | 3. Send bgp   |               ||               |              |
+           | rsync port to |               ||               |              |
+           | lrmuxd        |               ||               |              |
+           |               | 4. Recv bgp   ||               |              |
+           |               | rsync port    ||               |              |
+           |               |               ||               |              |
+           |               | 5. Send bgp   ||               |              |
+           |               | rsync port    ||               |              |
+           |               | to backup     ||               |              |
+           |               | lrmuxd        ||               |              |
+           |               |               || 6. Recv bgp   |              |
+           |               |               || rsync port    |              |
+           |               |               ||               |              |
+           |               |               || 7. Send bgp   |              |
+           |               |               || rsync port to |              |               
+           |               |               || rpd server    |              |
+           |               |               ||               | 8. Recv bgp  |
+           |               |               ||               | rsync port   |
+           |               |               ||               |              |
+           |               |               ||               | 9. Push bgp  |
+           |               |               ||               | rsync port   |
+           |               |               ||               | to bgp       |
+           |               |               ||               |              | 10. Set bgp
+           |               |               ||               |              | rsync port
+           |               |               ||               |              |
+
+                    11. Establish bgp rsync connection on the bgp rsync port
+   <<-------------------------------------------------------------------------------
+  
+    Figure 8: Sequence diagram of establishing bgp rsync connection between an 
+              active lsys and its standby peer.
+
+
+Figure 8 shows the sequence of events to take place for the bgp rsync session
+between two lsys rpds in different REs to be established. 
+
+For an active lsys configured with bgp and NSR, a new task 
+bgp_rsync_listen_task is created to take care of the rsync connection. It will 
+dynamically allocate a bgp_rsync_port, and notify the port to the rpd server
+module, which will push the port information to the master lrmuxd through a 
+librpd message. The port info will travel through the libmirror channel from
+the active lrmuxd to the standby lrmuxd, and eventually arrive at the standby 
+lsys via librpd session.
+
+The standby lsys will wait until it receives the bgp_rsync_port before
+connecting to the active lsys.
+
+Activities of bgp rsync related activities in an lsys are tracked by:
+"set logical-systems <lr> protocols bgp traceoptions flag nsr-synchronization".
+
+A logical-system extension is also added to the existing cli command 
+"show bgp replication" to display lsys specific bgp replication information. 
+For example:
+
+{master}
+regress@pro4-a> show bgp replication logical-system lr2  
+Synchronization master:
+  Session state: Up, Since: 24:53
+  Flaps: 0
+  Protocol state: Idle, Since: 2
+  Synchronization state: Complete
+  Number of peers waiting: AckWait: 0, SoWait: 0, Scheduled: 0
+  Messages sent: Open 1, Establish 145, Update 0, Error 1, Complete 145
+  Messages received: Open 1, Request 1 wildcard 144 targeted, EstablishAck 0, CompleteAck 145
+
+
+3.2.5 Rpd server and librpd
+
+Two new librpd IPC subtypes are defined in ipc_rpd.h:
+
+#define RPD_MSG_LSYS_NSR_PORT_REQUEST   56
+#define RPD_MSG_LSYS_NSR_PORT_INFO      57
+
+The formats of these two new messages are as follows:
+
+/*
+ * RPD_MSG_LSYS_NSR_PORT_REQUEST
+ */
+typedef struct {
+    u_int32_t ctx;
+    u_int16_t type;
+} rpd_msg_lsys_nsr_port_request_t;
+
+/*
+ * RPD_MSG_LSYS_NSR_PORT_INFO
+ */ 
+typedef struct {
+    u_int32_t           ctx;
+    u_int16_t           type;
+    u_int16_t           port;
+} rpd_msg_lsys_nsr_port_info_t;
+
+
+where RPD_MSG_LSYS_NSR_PORT_REQUEST is used by lrmuxd in the master RE to 
+request the dynamic port values when the librpd session is fully established,
+and RPD_MSG_LSYS_NSR_PORT_INFO is the push of the known dynamic port values to
+the other side. RPD_MSG_LSYS_NSR_PORT_INFO tlvs can be used by the active lsys
+to notify the active lrmuxd of its newly allocated port numbers, or by the
+standby lrmuxd to notify the standby lsys of port numbers received from the
+active lrmuxd via libmirror.
+
+
+                	   Master RE
+
+  +----------+    RPD_MSG_LSYS_NSR_PORT_REQUEST    +--------+
+  |   lsys   | <---------------------------------  | lrmuxd |	    
+  |          |                                     |        |
+  |	     |    RPD_MSG_LSYS_NSR_PORT_INFO       |        |
+  |          | ----------------------------------> |        |            
+  +----------+                                     +--------+
+
+
+                	   Backup RE
+
+  +--------+                                     +----------+
+  | lrmuxd |                                     |   lsys   |	    
+  |	   |    RPD_MSG_LSYS_NSR_PORT_INFO       |          |
+  |        | --------------------------------->  |          |            
+  |        |                                     |          |
+  |        |                                     |          |
+  +--------+                                     +----------+
+
+  Figure 9: Librpd message subtypes between an lsys and lrmuxd.
+
+
+Activities related to the port tlv transportation between lrmuxd and lsys rpds 
+are tracked by 
+"set logical-systems <lr> routing-options rpd-server traceoptions flag general".
+
+
+3.2.6 Task commit sync module
+
+Basically, we implement the same filesystem behavior of the default rpd
+onto logical systems. It is important to note that we may have to revisit
+the use of the filesystem as a rendezvous point, if we ever scale to 1000's 
+of lsys.
+
+----------------------
+Sequence number check
+---------------------
+
+Before this RLI, when NSR is configured in the default rpd, in the commit check 
+phase (rpd -C) in both master and backup REs, a sequence number check is always 
+performed to ensure that rpd is not SIGHUP'ed to process a new commit until 
+the previous commit is consumed. The function for the sequence number check is 
+task_commit_sync_read_file(). The check is done by comparing the current 
+sequence number, stored in global "config_db_version", and the previous 
+sequence number, stored in a file named "/var/run/__rpd_commit_sync__". If they 
+differ by 0 or 1, rpd -C will pass. If not, rpd -C will try the check 30 times, 
+1 second apart, then rpd -C will still pass, allowing the SIGHUP to be 
+delivered to the running rpd. This is based on the assumption that rpd should 
+be able to finish any synchronized commit in 30s. If the check fails after 30s, 
+there might be a legitimate reason for it - for example, when a new jroute 
+package is installed, the new sequence number may differ a lot from the 
+previous sequence number - and we should not permanently block the whole commit 
+process.
+
+The new sequence number is written to "/var/run/__rpd_commit_sync__" in
+function task_commit_sync_update_file(), when the synchronized commit is
+completed, which means both active and standby rpds have consumed the latest
+config.
+
+In this RLI, we need to make this check lsys-compatible by creating a separate 
+file "/var/run/__rpd_commit_sync__<lsys-name>" for each lsys. This should be 
+done in both master and backup rpds. The reason is that every rpd progresses
+differently in handling the same commit. If there is only one sequence number
+file shared by multiple rpds, the slower ones will get seriously confused to
+see that the sequence number has been updated by the faster rpds. Hence, we 
+need one file per rpd. Note that, for backward compatibility, we retain the 
+existing file name for default rpd to be "/var/run/__rpd_commit_sync__". 
+
+
+-------------------------------------
+Ksyncd initiated commit (backup only)
+-------------------------------------
+  
+Before this RLI, when NSR is configured in the default rpd, during the commit 
+check phase (rpd -C), if it is a backup rpd and the environment variable 
+"BACKUP_CONFIG_INIT" is set by ksyncd, indicating this is a special ksyncd 
+initiated commit, rpd -C will skip the sequence number check, and it will also 
+create a skip sync file "/var/run/__rpd_no_config_sync__" to communicate this  
+situation to the running rpd. Ksyncd initiated commit takes place when ksyncd 
+syncs configuration through mgd during backup RE boot-up or ksyncd restart. 
+
+During the ksyncd initiate commit, ksyncd forks mgd with a special option, 
+which results in a SIGHUP only delivered to the backup rpd, not to the master 
+rpd. Then the primary done message will never arrive at the backup rpd. The 
+backup rpd must be aware of this special situation while enforcing the task 
+commit sync state machine, otherwise it will be stuck forever.
+
+In this RLI, we need to make this check lsys-compatible as well. Since the 
+ksyncd initiated commit applies to the entire backup RE, it certainly applies 
+to all lsys processes in the backup RE as well. We can continue using the 
+single environment variable "BACKUP_CONFIG_INIT" in the rpd -C process for each 
+lsys rpd -C process. 
+
+However, instead of multiple lsys processes consulting a single skip sync file, 
+every lsys rpd -C should manage (create/delete) its own 
+"/var/run/__rpd_no_config_sync__<lsys_name>" file to avoid race conditions. 
+
+The skip sync file for each lsys should be deleted in the commit check 
+rpd -C process in the subsequent commit made after the initial RE boot-up.
+
+
+--------------------
+Commit check tracing
+--------------------
+
+Before this RLI, the commit check tracing is turned off by default, and can be 
+turned on by setting the global variable "commit_check_trace_enabled" to TRUE
+and recompile. When this is enabled, the "rpd -C" process will log activities 
+about commit sequence number checking of the default NSR-enabled rpd to a file 
+named "/var/log/__rpd_commit_check__".
+
+During this RLI, we extend the tracing to all logical systems configured with 
+NSR. When global "commit_check_trace_enabled" is set to TRUE, every lsys will
+log its "rpd -C" seqno checking activities to its own file named
+"/var/log/__rpd_commit_check__<lr_name>".
+
+
+------------------------------------------------------------
+Decouple task commit sync handshaking from bgp rsync channel
+------------------------------------------------------------
+
+This is an optional piece of work and may not be implemented in Phase 1.
+
+Before this RLI, the task commit sync handshaking between default rpds in the 
+master and the back is communicated using bgp rsync channel. If protocol bgp 
+is not configured in an NSR setup, we will lose the benefit of the coordinated 
+commit process between REs. In other words, upon receiving a SIGHUP, the backup 
+rpd will no longer wait to parse its config until the master rpd finishes. This
+can cause some confusion for the backup rpd to interpret mirror tlvs from
+the master, because the two rpds in different REs may be sitting on different
+configs without knowing it. 
+
+A solution to this is to decouple the task commit sync module from the bgp 
+rsync channel, and replace it with the libmirror channel. The libmirror channel 
+is created whenever NSR is configured, and it has no dependency on bgp config. 
+As such, task commit sync will become a true infrastructure module with clear 
+logic. However, the amount of work of the decoupling is expected to be large. 
+Though it's ideal to implement this in the framework of this RLI, most likely
+we cannot deliver it in Phase 1. 
+
+
+-------------------------
+Tracing and show commands
+-------------------------
+
+The whole synchronized commit handshaking activities in an lsys can be traced 
+by "set logical-systems <lr_name> routing-options traceoptions flag commit-synchronize".
+ 
+A logical-system extension is added to the existing cli command "show task
+commit-sync" and "show task commit-sync internals".
+
+{master}
+regress@pro4-a> show task commit-sync logical-system lr1 
+ 
+logical-system: lr1
+Commit-sync Information
+    State : No commit in progress
+    Phase : Commit-sync Complete
+
+{master}
+regress@pro4-a> show task commit-sync internals logical-system lr1    
+Commit-sync Information
+    State : No commit in progress
+    Phase : Commit-sync Complete
+
+Commit-sync Internal Information
+    Other-rpd-up : true
+    Flags : 0x10 Local-re-done : 0x3  Commit-sync-done : 0x3
+    complete_seqno : -1   pending_seqno : 1416
+
+Timers
+    Reconfig-timer : Not running
+    Standby-done-timer : Not running
+    Multiple-commit-timer : Not running
+
+Reconfig requests while previous one was incomplete
+    none
+
+
+3.2.7 DDL and ODL 
+
+In this RLI, necessary changes need to be made to ddl and odl libraries to 
+spawn new daemons, implement new configs, implement new cli commands, and 
+furnish existing commands with new arguments. Here, we give a summary about all 
+the DDL/ODL changes.
+
+-------------------------------------------------------
+Spawn lrmuxd, ppmd, lmpd and lsys rpds in the backup RE
+-------------------------------------------------------
+
+Before this RLI, lrmuxd is not spawned in the backup RE. Since we wish to add
+NSR support for lsys in this RLI, nonstop-routing should be allowed to be
+configured under an arbitrary logical system instance. As a result, the 
+corresponding lsys shall be spawned in the backup RE.
+
+When at least one lsys is configured with NSR, lrmuxd needs to be spawned in 
+the backup RE to deliver the commit SIGHUPs to lsys rpds in the backup RE. 
+However, if NSR is only configured in the default rpd, LRMUXD should not be 
+spawned in the backup, even if the config itself contains logical systems.
+
+As long as nonstop-routing is configured somewhere, be it default rpd, or an
+lsys, ppmd and lmpd should be spawned in the backup RE. 
+
+Spawning daemons in the backup is achieved by adding necessary lines to file
+/var/etc/init.inc. This can be taken care of in ddl action function 
+"mgd_prop_lr_processes()" in lib/ddl/input/export.c. Note that lrmuxd should 
+only have one entry in the init.inc file even if there are multiple logical
+systems configured with NSR.
+
+Below is an example of lines added to /var/etc/init.inc when NSR is configured
+on logical systems named lr1 and lr2.
+
+root@pro4-a% vi /var/etc/init.inc
+
+...
+
+process "lr_lr1" {
+    action respawn;
+    command "/usr/sbin/rpd -JLlr1";
+    dump-command "/bin/sh /etc/dumpd rpd /var/tmp _lr1";
+    re-mode protocol-master protocol-backup;
+    terminate-signal hup;
+}
+process "lr_lr2" {
+    action respawn;
+    command "/usr/sbin/rpd -JLlr2";
+    dump-command "/bin/sh /etc/dumpd rpd /var/tmp _lr2";
+    re-mode protocol-master protocol-backup;
+    terminate-signal hup;
+}
+process "lr_lrmuxd" {
+    action respawn;
+    command "/usr/sbin/lrmuxd ";
+    re-mode protocol-master protocol-backup;
+
+}
+ 
+processes {
+    routing re-mode protocol-master protocol-backup;
+}
+
+processes {
+    periodic-packet-services re-mode protocol-master protocol-backup;
+}
+
+processes {
+    link-management re-mode protocol-master protocol-backup;
+}
+
+
+------------
+New configs
+------------
+
+1. The following new config is made available to enable nonstop-routing in an 
+   lsys:
+
+   "set logical-systems <lr_name> routing-options nonstop-routing"
+
+2. The following new traceoptions are added to trace lrmuxd activities 
+   in establishing librpd sessions and the libmirror session.
+
+   "set routing-options logical-system-mux traceoptions"
+
+
+----------------
+New cli commands
+----------------
+
+1. The "logical-system" argument is added to the following cli commands.
+
+   "show task commit-sync" and "show task commit-sync internals"
+   "show task replication"
+   "show mirror routing xxx"
+   "show l2vpn replication label"
+   "show ldp replication xxx"
+   "show ospf replication xxx"
+   "show ospf3 replication xxx"
+   "show l2circuit replication label"
+   "show bgp replication"
+
+The "logical-system" extension is already supported in the following cli 
+commands.
+
+   "show mpls replication xxx"
+   "show isis replication xxx"
+
+2. The "logical-system-mux" argument is added to the following cli command:
+
+   "show mirror"
+   "show task"
+
+-----
+Notes
+-----
+
+An existing knob "set system processes routing failover other-routing-engine"  
+will initiate a RE switchover if init fails to restart the default rpd after a 
+crash. The behavior of this knob will not be changed by this RLI, as extending 
+this knob to allow differentiated behaviors for logical systems would be 
+non-trivial. If this feature is desired for lsys, a modification PR or a small 
+RLI may be created.
+
+
+3.3 DESIGN RISK ITEMS
+
+If there are any un-identified blockages in the protocol land for NSR from 
+functioning the same in an lsys as in the default rpd, even if the replication 
+infrastructure has been provided transparently, we may face the risk of an 
+incomplete NSR support for this particular protocol in an lsys.
+
+
+3.4 IMPACTED SOFTWARE COMPONENTS
+
+
+3.4.1 SOFTWARE COMPONENTS IMPACTED BY DESIGN
+
+- Impacted daemons include rpd and lrmuxd
+- Impacted libraries includes libmirror, librpd, and ddl/odl libraries
+- Within rpd, the impacted components include bgp, ldp, rpd server,
+  and task commit sync.
+
+
+3.4.2 POTENTIALLY IMPACTED SOFTWARE COMPONENTS
+
+None
+
+
+3.5 COMPONENT INTERACTIONS
+
+As described above, LRMUXD will now become a librpd client of the lsys 
+configured with NSR. The active lrmuxd will also communicate with the standby
+lrmuxd using a libmirror connection. This allows the exchange of the tcp port 
+information such that libmirror, ldp and bgp replication sessions can be 
+established between the active and the standby lsys processes, as described 
+throughout Section 2.
+
+
+3.5.1 COMPONENT 
+
+No new components are added in the scope of this RLI, but several existing components are
+extended as described above.
+
+3.5.1.1 COMPONENT DEFINITION
+
+All Changes for this RLI reside on the master or backup RE.
+
+3.5.1.2 LIST OF CHANGES
+
+LRMUXD enhancements
+    -- Convert from eventlib framework to libjtask.
+    -- Establish librpd connections to master and backup lsys processes.
+    -- Establish libmirror session between master and backup lrmuxd processes.
+    -- New lrmuxd task commands.
+          regress@pro4-d> show task logical-system-mux ?
+          Possible completions:
+            <[Enter]>            Execute this command
+            <task-name>          Name of task
+            io                   Show task I/O statistics
+            memory               Show memory utilization of lrmuxd tasks
+            replication          Stateful replication
+            summary              Display summary output (default)
+            |                    Pipe through a command
+
+    -- LRMUXD also gets standard set of libjtask tracing options.
+    -- For more detail see section 3.2.1 LRMUXD.
+
+Libmirror Changes
+    -- Libmirror gains new clients 1 per NSR enabled lsys.
+    -- These new clients will use dynamically allocated port for establishing 
+       libmirror connections.
+    -- See section 3.2.2 for details.
+
+LDP changes
+    -- Add ldp_rsync_listen_task for dynamic allocation of an rsync port.
+    -- Push/pull rsync port info to/from rpd server module when it's available.
+    -- Specific traceoptions flag for tracing nsr-synchronization.
+       set logical-systems <lr> protocols ldp traceoptions flag nsr-synchronization detail
+    -- See section 3.2.3 for more details.
+
+BGP changes
+    -- Add bgp_rsysnc_listen_task for dynamic allocation of an rsync port.
+    -- Push/pull rsync port info to/from rpd server module when it's available.
+    -- Specific traceoptions flag for tracing nsr-synchronization
+          set logical-systems <lr> protocols bgp traceoptions flag nsr-synchronization
+    -- see section 3.2.4 for more detail.
+
+RPD server and librpd
+   -- 2 new IPC subtypes for communicating Port information.
+   -- Lrmuxd becomes the new librpd client of an NSR-configured lsys.
+   -- Additional tracing under:
+        set logical-systems <lr> routing-options rpd-server traceoptions flag general
+   -- For more detail see section 3.2.5.
+
+Task Commit Sync 
+   -- Perform per-lsys sequence number check in rpd -C.
+   -- Perform per-lsys check for ksyncd initiated commit.
+   -- Conduct per-lsys commit sync tracing when enabled.
+   -- For more detail please see Section 3.2.6 Task Commit sync.
+
+DDL and ODL
+   -- Spawn lsys rpd(s), lrmuxd, ppmd and lmpd in the backup RE.
+   -- Add new config knobs.
+   -- Add new cli commands.
+   -- For more detail please see Section 3.2.7 DDL and ODL.
+
+
+3.6 INTER PROCESS COMMUNICATION
+
+See Section 2.
+
+
+3.7 CONCURRENCY STRATEGY
+
+This falls under the existing rpd's single threaded tasking model.
+
+
+3.8 STARTUP STRATEGY
+
+Lsys rpds, lrmuxd, ppmd, and lmpd will be started in the backup RE and managed 
+by init, see section 3.2.7.
+
+
+3.9 RESOURCE MANAGEMENT
+
+3.9.1 MEMORY ALLOCATION STRATEGY
+
+Any new memory allocations will be managed using the existing libjtask or rpd
+based memory allocation infrastructure.
+
+
+3.9.2 MEMORY UTILIZATION
+
+- LRMUXD will have a larger footprint as it is doing more, but it is not
+  expected to be a concern.
+
+- With additional lsys rpds and LRMUXD spawned in the backup RE, enabling this 
+  feature certainly adds more memory utilization in the backup RE.
+
+- For default rpd NSR, the backup rpd always uses more memory than the master 
+  rpd due to phantom route maintenance. The scaling implications of lsys NSR are 
+  consistent with those of the default rpd NSR, i.e., the system scales a little 
+  less with NSR than it does without.
+
+
+3.9.3 STORAGE UTILIZATION
+
+This design has no impact on storage utilization.
+
+
+3.9.4 SYSTEM RESOURCE UTILIZATION
+
+Most platforms support 1 default rpd and up to 15 lsys rpds, except for some
+high-end SRX platforms, which support 1 default rpd and up to 31 lsys rpds. We 
+will only focus on the former case, because SRX is not within the scope of this
+design, due to its lack of NSR support even for the default rpd.
+
+Per each lsys configured with NSR, additional tcp ports will be consumed. 
+This can be up to 3 ports per lsys. In addition, there is a new port for the 
+lrmuxd to lrmuxd libmirror communication.
+
+There will be additional messages passed between the master and backup RE for 
+each lsys which enables NSR.
+
+CPU utilization is expected to go up in the backup RE due to additional
+processes.
+
+
+3.10 FAULT AND EXCEPTION HANDLING
+
+As this RLI is reusing much of the infrastructure, it will use the existing 
+fault and exception handling present in that infrastructure. Both the libmirror
+and librpd infrastructure is capable of automatic reconnect if the session goes
+down.
+
+Next, we provide a brief description about the recovery process when any of the 
+four daemons involved in the dynamic port transportation --  active lsys, 
+active lrmuxd, standby lsys, standby lrmuxd, is down. The active RE failure
+case is also studied.
+
+------------------------
+Active lsys crash/reboot
+------------------------
+
+As shown in Figure 10, when an active lsys crashes, all its tcp sessions - 
+libmirror, ldp rsync, and bgp rsync - with the standby lsys are down. Its 
+librpd session with the active lrmuxd is down too. However, what remains 
+unaffected are the libmirror session between the active lrmuxd and the standby 
+lrmuxd, as well as the librpd session between the standby lrmuxd and the 
+standby lsys. 
+
+
+ +--------+  librpd  +------+  libmirror  +-------+  librpd  +--------+     
+ |active  |          |active|             |standby|          |standby |
+ |lsys    |--- X ----|lrmuxd|-------------|lrmuxd |----------|lsys    | 
+ +--------+          +------+             +-------+          +--------+
+     |                                                           |
+     |--------------------------- X -----------------------------|
+            libmirror, bgp rsync, ldp rsync
+
+
+Figure 10: Case study when the active lsys is down.
+
+
+The restarted active lsys will assign a fresh set of dynamic ports, and wait 
+for the active lrmuxd's librpd connection. Once the librpd connection is 
+re-established, the active lrmuxd sends RPD_MSG_LSYS_NSR_PORT_REQUEST tlvs 
+to ask for the new ports, and the active lsys returns the port info 
+through RPD_MSG_LSYS_NSR_PORT_INFO tlvs.
+
+After receiving the new set of ports, the active lrmuxd updates its own record, 
+and communicates the new ports to the standby lrmuxd through the existing 
+libmirror channel via mirror tlvs.
+
+The standby lrmuxd updates its own record of the port information, and
+communicates the new ports to the standby lsys through the existing librpd
+session via RPD_MSG_LSYS_NSR_PORT_INFO tlvs.
+
+The standby lsys reconnects to the active lsys using the received ports.
+Libmirror, ldp rsync, and bgp rsync sessions are re-established.
+
+--------------------------
+Active lrmuxd crash/reboot
+--------------------------
+
+As shown in Figure 11, when the active lrmuxd crashes, the libmirror session 
+between the active lrmuxd and the standby lrmuxd is down. The librpd session 
+between the active lrmuxd and the active lsys is down too. However, tcp 
+sessions between the active lsys and the standby lsys remain unaffected. What 
+also remains unaffected is the librpd session between the standby lrmuxd and 
+the standby lsys.
+
+
+ +--------+  librpd  +------+  libmirror  +-------+  librpd  +--------+     
+ |active  |          |active|             |standby|          |standby |
+ |lsys    |--- X ----|lrmuxd|----- X -----|lrmuxd |----------|lsys    | 
+ +--------+          +------+             +-------+          +--------+
+     |                                                           |
+     |-----------------------------------------------------------|
+            libmirror, bgp rsync, ldp rsync
+
+
+Figure 11: Case study when the active lrmuxd is down.
+
+
+The restarted active lrmuxd will attempt to connect to the lsys rpd server and
+wait for the libmirror connection from the standby lrmuxd at the same time. 
+Once the librpd connection is established, it sends 
+RPD_MSG_LSYS_NSR_PORT_REQUEST tlvs to ask for the port info. The active lsys 
+rpd returns the current ports in use through RPD_MSG_LSYS_NSR_PORT_INFO tlvs.
+
+The active lrmuxd updates its own record of the port information, and
+communicates the ports to the standby lrmuxd through the newly established 
+libmirror channel via mirror tlvs.
+
+The standby lrmuxd receives the ports, and finds out that it is the same set
+of ports as it already has on file. It will skip sending any unnecessary port
+updates to the standby lsys.
+
+Throughout this process, the tcp sessions between the active and the standby
+lsys rpds are not interrupted.
+
+-------------------------
+Standby lsys crash/reboot
+-------------------------
+
+As shown in Figure 12, when the standby lsys crashes, all its existing tcp 
+sessions including libmirror, ldp rsync, and bgp rsync, with the active
+lsys, are down. Its librpd session with the standby lrmuxd is down too. 
+However, the libmirror session between the active lrmuxd and the standby 
+lrmuxd remains unaffected. What is also unaffected is the librpd session 
+between the active lsys and the active lrmuxd. 
+
+When the active lsys detects that the tcp replication sessions are down,
+it will start listening on the same set of ports for the reconnection requests
+from the standby lsys. 
+
+
+ +--------+  librpd  +------+  libmirror  +-------+  librpd  +--------+     
+ |active  |          |active|             |standby|          |standby |
+ |lsys    |----------|lrmuxd|-------------|lrmuxd |---- X ---|lsys    | 
+ +--------+          +------+             +-------+          +--------+
+     |                                                           |
+     |----------------------------- X ---------------------------|
+            libmirror, bgp rsync, ldp rsync
+
+
+Figure 12: Case study when the standby lsys is down.
+
+
+The restarted standby lsys will first wait for the standby lrmuxd's librpd 
+connection. Once the librpd connection is established, the standby lrmuxd 
+pushes the stored port information to the standby lsys through 
+RPD_MSG_LSYS_NSR_PORT_INFO tlvs.
+
+After receiving the ports, the standby lsys reconnects to the active lsys. 
+Libmirror, ldp rsync, and bgp rsync sessions are re-established.
+
+---------------------------
+Standby lrmuxd crash/reboot
+---------------------------
+
+As shown in Figure 13, when the standby lrmuxd crashes, the libmirror session 
+between the active lrmuxd and the standby lrmuxd is down. The librpd session 
+between the standby lrmuxd and the standby lsys is also down. However, the
+tcp replication sessions between the active lsys and the standby lsys are 
+unaffected. What is also unaffected is the librpd session between the active 
+lsys and the active lrmuxd.
+
+
+ +--------+  librpd  +------+  libmirror  +-------+  librpd  +--------+     
+ |active  |          |active|             |standby|          |standby |
+ |lsys    |----------|lrmuxd|----- X -----|lrmuxd |---- X ---|lsys    | 
+ +--------+          +------+             +-------+          +--------+
+     |                                                           |
+     |-----------------------------------------------------------|
+            libmirror, bgp rsync, ldp rsync
+
+
+    Figure 13: Case study when the active lrmuxd is down.
+
+The restarted standby lrmuxd will connect to the standby lsys rpd server. 
+Meanwhile, it will also connect to the active lrmuxd via the predefined mirror 
+port. Once the libmirror session is established, the standby lrmuxd will
+receive the current ports in use from the active lrmuxd via mirror tlvs. Then
+it communicates the port info to the standby lsys rpd server. 
+
+The standby lsys does not interrupt the existing libmirror, bgp rsync, and
+ldp rsync sessions since they are already in the established state.
+
+-------------------------------
+Active RE failure/RE switchover
+-------------------------------
+
+When a switchover is initiated due to the active RE failure or the operational
+command, all connections are down except for the librpd session between the old
+standby (new active) lrmuxd and the old standby (new active) lsys. 
+
+The old active lrmuxd will quit immediately and restart as standby. This is 
+done automatically in the libjtask function task_replicate_reconfigure(). 
+
+Similarly, the old active lsys will quit immediately and restart as standby as
+well. This is done in the rpd function task_replicate_reconfigure(). 
+
+Once both of them boot up as standby, lrmuxd will attempt to establish librpd 
+session with the lsys, and the lsys will start waiting for the dynamic tcp port 
+information before it attempts to connect to the new active lsys. The new 
+standby lrmuxd will also initiate libmirror connect() to the new active lrmuxd 
+on the predefined tcp port 6156 (RPD_MIRROR_DATA_TCP_PORT).
+
+Upon switchover, the old standby lrmuxd becomes the active in libjtask function
+task_re_switchover(). Similarly, the old standby lsys becomes the active in the
+rpd function task_re_switchover(). The librpd session between them remains up.
+
+Once the new active lsys detects the mastership change, it will allocate a new
+set of dynamic ports, push them into the rpd server module, and start listening 
+on them. 
+
+Once the new active lrmuxd detects the mastership change, it will send 
+RPD_MSG_LSYS_NSR_PORT_REQUEST messages to the new active lsys to pull the 
+dynamic port information. It also starts listening on port 6156 for libmirror 
+connection from the new standby lrmuxd. Once the ports are pulled, and
+the libmirror session is established, the port info will be communicated to
+the new standby lrmuxd, and further carried along to the new standby lsys. 
+
+Then, the standby lsys initiates connections to the active lsys on the received 
+tcp ports. The libmirror, bgp rsync and ldp rsync sessions are re-established
+with the new mastership.
+
+
+3.11 DEBUG SUPPORT
+
+Below is a list of useful traceoptions and show commands for troubleshooting
+this RLI.
+
+Traceoptions:
+- set routing-options logical-system-mux traceoptions flag debug
+- set logical-systems yyy protocols ldp traceoptions flag nsr-synchronization detail
+- set logical-systems yyy protocols bgp traceoptions flag nsr-synchronization
+- set logical-systems yyy routing-options rpd-server traceoptions flag general
+- set logical-systems yyy routing-options traceoptions flag commit-synchronize
+
+CLI commands:
+- show task logica-system-mux
+- show mirror logical-system-mux
+- show mirror routing xxx logical-system yyy
+- show task replication logical-system yyy
+- show mirror routing xxx logical-system yyy
+- show task commit-sync logical-system yyy
+- show task commit-sync internals logical-system yyy
+- show ldp replication xxx logical-system yyy
+- show bgp replication logical-system yyy
+- show bgp replication xxx logical-system yyy
+
+
+3.12 TESTABILITY, SERVICEABILITY AND DIAGNOSE-ABILITY
+
+See the added show task, show replication and traceoptions described above.
+
+
+3.13 CONSTRAINTS AND LIMITATIONS
+
+
+3.14 REJECTED DESIGN ALTERNATIVES
+
+An alternative design for Port discovery in the backup lsys was considered that would have added the port
+service mapping information to the kernel via and RTM_ADD request, and then relied on ksyncd to replicate
+this information to the backup.  For more information see the functional specification section 6.2 
+option 1.
+
+
+4. PATENT OPPORTUNITIES
+
+No patent opportunities.
+
+
+5. PERFORMANCE
+
+All lsys rpds and the default rpd are independent processes competing for the 
+CPU and memory resources, NSR or not. The limited CPU and memory resources are 
+the bottleneck that sets the maximum number of rpds (currently 16 for platforms 
+listed in Section 1.1) we can support on each RE. The performance impact 
+introduced by this RLI mainly lies in the backup RE. Except for some extreme
+cases, the user should not notice any significant performance degradation in 
+the active RE, even with the extra replication efforts when NSR is turned on 
+for logical systems. 
+
+However, user should expect to see very noticeably increased competition of cpu 
+and memory in the backup RE, with an increased number of lsys rpds being turned 
+on for NSR. Moreover, as mentioned in Section 3.9.2, memory resources in the 
+backup RE are under more stress than those in the master RE in an NSR setup, 
+due to extra phantom route maintenance in a backup rpd. Hence, if the master 
+RE with 16 rpds runs close to the maximum memory capacity, it is possible that 
+configuring NSR for all 16 rpds may exceed the memory capacity in the backup RE. 
+
+Note that 16 is not a number that we offer any guarantee for performance. Even a
+single rpd can overload the system if it works too hard. What we offer is the
+following:
+
+- If a system has N (N <= 16) rpds running in the master RE, turning on NSR for 
+  some or all of these rpds most likely should be safe, as long as the backup 
+  RE does not run out of memory. Lsys NSR should perform comparably to NSR in 
+  the default rpd, except for the increased contention for system resources.
+
+
+
+5.1 PERFORMANCE RELATED RESOURCES
+
+As described above the resources in competition for this RLI are CPU and memory 
+on the RE. Primarily this affects the backup RE as there will be additional rpd 
+processes running on the backup RE, notably one new rpd process for each lsys 
+which chooses to enable NSR.
+
+
+5.2 TARGET PERFORMANCE
+
+This RLI is not a scaling and performance RLI. Since NSR is already supported 
+for the default rpd, the lsys NSR is expected to achieve a similar performance 
+in comparable situations.
+
+
+5.3 64-BIT KERNEL SUPPORT
+
+No 64-BIT kernel issues.
+
+
+6. SCALING
+
+As mentioned, there is currently a limit of 15 non-default lsys rpds on
+platforms within the scope of this RLI, when NSR is not configured. With this
+RLI, this limit will be maintained, meaning that we support a maximum total of 
+16 rpds (1 default + 15 non-default) to be concurrently configured with NSR. 
+Note that the target of this RLI is not a scale increase but a functionality 
+improvement.
+
+
+7. MULTI-CORE ENVIRONMENT
+
+No multi-core issues.
+
+
+8. COMPATIBILITY ISSUES
+
+This RLI should not introduce any backward compatibility issue. The old NSR
+feature in the default rpd would work just well. 
+
+
+9. HIGH AVAILABILITY (HA)
+
+9.1 GRACEFUL RE SWITCHOVER (GRES), ISSU/ NSSU IMPACT
+
+this RLI provides NSR support to logical systems, which is a
+pre-requisite for the lsys ISSU development in the future.
+
+
+9.2 NSR IMPACT
+
+This RLI will allow existing state and mechanisms already in use to support NSR 
+in the default rpd to be used by lsys as well. It will allow each lsys to be 
+independently configured to use NSR functionality. If an lsys is configured with 
+NSR, its NSR behavior and transition will be the same as the default rpd 
+enabled with NSR.
+
+Note that additional copies of rpd (1 for each NSR enabled lsys) will be  
+running on the backup RE, and LRMUXD may also be spawned on the backup RE.
+
+
+10. LOGICAL SYSTEM / ROUTING INSTANCE IMPACT
+
+As described above this extends Logical system capabilities in the areas of
+NSR.
+
+
+11. MULTI / VIRTUAL CHASSIS IMPACT (HOBSON/ FIXX/ CHAI)
+
+Not Applicable.
+
+
+12. PLATFORMS SUPPORTED
+
+This RLI is only applicable to dual-RE platforms that currently support 
+
+1) NSR in default rpd, and
+2) Lsys configs. 
+
+For platforms that do not support either of the above, this RLI has no impact
+on them.
+
+Below is a list of platforms within the scope of this RLI, in published
+document.
+
+M10i                      8.4 or later
+M20                       8.4 or later
+M40e                      8.4 or later
+M120                      9.0 or later
+M320                      8.4 or later
+MX Series                 9.0 or later
+T320, T640, and TX Matrix 8.4 or later
+T1600                     8.5 or later
+TX Plus Matrix           10.0 or later
+
+Below is a slightly longer list of platforms where this RLI internally
+supports:
+
+#define PRODUCTS_SUPPORTING_NSR \
+	m10i \
+	m20 \
+	m40e \
+	m120 \
+	m160 \
+	m320 \
+	T_SERIES \
+	MX_SERIES_DUAL_RE \
+	EX62_SERIES \
+	EX82_SERIES \
+	JAVA_LATTE \
+	JAVA_EX3300 \
+	JAVA_TSUNAMI \
+	EX_XRE \
+	SNG_SERIES
+
+13. SDK IMPACT
+
+Not Applicable. 
+
+13.1 SDK CUSTOMER USAGE
+
+Not Applicable.
+
+
+14. JUNOS READY SOFTWARE CONSIDERATIONS
+
+Not Applicable.
+
+
+15. FREE SOFTWARE CONSIDERATIONS
+
+Not Applicable.
+
+
+16. 3RD PARTY SOFTWARE CONSIDERATIONS
+
+Not Applicable.
+
+16.1 FUNCTIONAL ROLE OF 3RD PARTY CODE WITHIN JUNOS
+
+Not Applicable.
+
+
+16.2 INTEGRATION DETAILS OF 3RD PARTY CODE WITHIN JUNOS
+
+Not Applicable.
+
+
+17. POSIX NON-COMPLIANCE
+
+Not Applicable.
+
+
+18. FUTURE CONSIDERATIONS
+
+A future RLI needs to be scheduled to provide ISSU support to
+logical systems.
+
+There is another possible RLI which has been discussed and prototyped for 
+extending the scale of logical systems from 32 into the 1000's of logical 
+systems.  Some design decision here have been made with the intent of making
+that scaling change less difficult should it arise.
+
+
+19. REVIEW COMMENTS
+
+See DRT.
+
+
+19.1 REVIEW STAKEHOLDER MATRIX
+
+Function			Name			Required?	Approval State
+---------------------------------------------------------------------------------------------------------------
+SW1 (kernel, RPD, PFE etc)				Yes/No/Optional	Approved/Rejected/Approved with actions
+SW2 (kernel, RPD, PFE etc)				Yes/No/Optional	Approved/Rejected/Approved with actions
+SW3 (kernel, RPD, PFE etc)				Yes/No/Optional	Approved/Rejected/Approved with actions
+SW Manager						Yes/No/Optional	Approved/Rejected/Approved with actions
+JAB							Yes/No/Optional	Approved/Rejected/Approved with actions
+HW							Yes/No/Optional	Approved/Rejected/Approved with actions
+---------------------------------------------------------------------------------------------------------------
+
+
+
+
+© Copyright 2010 Juniper Networks, Inc. -- Proprietary and Confidential –
+Do not distribute outside of the company without the permission of Juniper Networks engineering
+Printed copies are for reference only!

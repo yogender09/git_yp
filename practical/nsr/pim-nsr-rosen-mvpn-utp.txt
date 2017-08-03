@@ -1,0 +1,677 @@
+$Header: /cvs/juniper/sw-projects/os/nsr/pim-nsr-rosen-mvpn-utp.txt,v 1.1 2011/07/20 14:58:36 yizhang Exp $
+
+PIM NSR Support For Draft Rosen MVPN Unit Test Plan
+
+Author: Yi Zhang <yizhang@juniper.net>
+
+Process Template J3.02.P05.T04S
+{Standard Unit Test Plan Template}
+
+Copyright (C) 2011, Juniper Networks, Inc.
+
+NOTICE: This document contains the proprietary and confidential
+information of Juniper Networks, Inc., and must not be
+distributed outside of the company without the
+permission of Juniper Engineering.
+
+
+1.  INTRODUCTION
+
+This document describes the unit test plan for Rosen MVPN NSR support RLI. 
+The tests are focus on the following goals:
+   - Seamless RE switchover for Draft Rosen MVPN functionality. There should 
+     be no traffic loss after the RE switchover.
+   - All mt- interfaces should be replicated to the backup RE.
+   - All MVPN related PIM states and data-mdt states should be replicated to 
+     the backup RE. 
+
+This document lists the test-cases, success criterias, and testing results 
+for above functionalities. 
+
+1.1 RLI List
+
+RLI: 
+  #: 12174: Rosen NSR
+  tracking PR: 563513
+  FS: sw-projects/os/nsr/pim-nsr-rosen-mvpn-funcspec.txt
+  DS: sw-projects/os/nsr/pim-nsr-rosen-mvpn-design-spec.txt
+
+Related RLI:
+  #2728: PIM NSR phase-1
+  #6259: PIM NSR phase-2
+  #11800: PIM NSR phase-3
+
+1.2 Document Revision History
+
+Revision: 1.1
+  Author: Yi Zhang
+  Date: 05/31/2011
+  Description: Initial draft.
+  
+2.  SCOPE
+
+2.1 Function Coverage
+
+The main features that are supported in Rosen NSR are listed below.
+  1) Rosen 6 (PIM-ASM in the provider space)
+  2) Rosen 7 (PIM-SSM in the provider space
+  3) Data-mdt
+  4) data-mdt caching
+  5) data-mdt reuse
+  6) default-vpn-source (Using lo0.0 address instead of lo0.x for VRFs)
+  7) vpn-tunnel-source
+  8) Rpf-selection (Used for Rosen extranet)
+  9) CLI formats (Rosen NSR supports both old pre-11.4 format and new 11.4+ 
+     format)
+
+NGen-MVPN NSR is not supported yet, so NSR or PIM NSR should be disabled once 
+NGen-MVPN is in use. Otherwise a configuration error should be generated. This 
+configuration check for NGen-MVPN case is also included in this document.
+
+2.2 Software Change Description
+
+2.2.1 PIM NSR Module
+
+Major data structure:
+  New: pim_rdb_mdt_t
+
+New APIs:
+
+The following functions are used to maintain the MDT RDB entries.
+
+         Master RE                        Backup RE
+      pim_mdt_add_rdb_on_master       pim_mdt_add_rdb_on_backup
+      pim_mdt_update_rdb_on_master    pim_mdt_update_rdb_on_backup
+      pim_mdt_rdb_adj_stream_info
+      pim_mdt_del_rdb                 pim_mdt_del_rdb
+
+The following functions are used to mirror the change of the RDB entries.
+
+         Master RE                         Backup RE
+      pim_mdt_add_mirror
+      pim_mdt_update_mirror
+      pim_mdt_delete_mirror
+      pim_mirror_mdt_encode            pim_mirror_mdt_decode
+
+Modified APIs:
+    pim_reso_rosen
+    pim_nsr_rdb_mdt_all_delete
+    pim_rdb_ctx_trees_delete
+    pim_mirror_connection_status_cb
+
+2.2.2 PIM MT Module
+
+Common APIs: 
+  New: pim_mt_add_ifl_on_backup
+  Modified: pim_mt_ifachange
+
+On the master RE, Rosen 7 relies on NGen-MVPN to discover other PEs. NGen-MVPN 
+will then notify PIM to create/remove dynamic MT tunnels. However on the backup 
+RE, NGen-MVPN doesn't exist. So PIM will need to flash the routes in <instance>.
+mdt.0 table and trigger the creation/deletion of the MT tunnels. After RE 
+switch over, PIM on the new master RE will stopping flashing the mdt routes and 
+start listening to NGen-MVPN notifications again.
+
+Rosen7 specific APIs:
+  New: pim_mdt_flash
+       pim_mdt_rt_bits_cleanup
+       pim_mdt_tbl_rt_recv
+       pim_mdt_init_rtt
+  Modified: pim_init
+
+2.2.3 PIM Module
+
+PIM Module decides when to mirror the addition/update/deletion of the data MDT 
+related info. 
+
+Modified APIs:
+    pim_move_sg_on_to_tunnel
+    pim_update_join_mdt_cache
+    pim_tun_stream_update
+    pim_mdt_tun_stream_node_free
+    pim_data_mdt_cache_node_cleanup
+
+2.2.4 Mirroring Module
+
+A new mirroring type MIRROR_DATA_PIM_MDT is added for MDT RDB.
+A new mirroring client is added for pim_mdt_mirror_registry. 
+Other than these, existing mirroring mechanism and APIs are used.
+
+Major data structure:
+  pim_mdt_mirror_registry
+
+APIs:
+  New: pim_mirror_mdt_encode
+       pim_mirror_mdt_decode
+  Modified: pim_mirror_register_clients
+
+2.3 Feature Intersection
+
+Rosen NSR interacts with common PIM module, PIM MT module, and mirroring module. 
+
+2.4 Platform and HW Coverage Scope
+
+This RLI is platform independent. 
+
+3.  SETUP
+
+3.1 Topology 
+
+Logical Topology:
+
+                      +--------+           +--------+
+            +------+  |        |           |        |  +------+
+    src 1 --+ CE 1 +--+  PE 1  +-----------+  PE 2  +--+ CE 2 +-- src 2
+            +------+  |   DUT  |           |        |  +------+
+               |      +--------+           +--------+     |
+               |          |                     |         |
+             rcvr 1       |                     |       rcvr 2
+                          |      +--------+     |
+                          |      |        |     |
+                          +------+  PE 3  +-----+
+                                 |        |
+                                 +--------+
+                                     |
+                                     |
+                                   rcvr 3
+
+Where PE1 is the DUT with NSR enabled. Depending on where the traffic source is,
+ PE1 (DUT) can be the ingress (AKA source) PE or the egress (AKA receiver) PE. 
+If the multicast traffic is sent only from src 2 to rcvr 3, PE1 will only cache 
+the data-mdt Join info. 
+
+Physical Topology:
+
+           +----------+               +-----------+
+           |          |               |           |
+           | wfpro2-a +---------------+ wfpro2-b  |
+           |   DUT    |               |           |
+           +----------+               +-----------+
+                |                           |
+                |                           |
+            ------------------------------------------
+                              |
+                              |
+                       +-------------+
+                       | wfpro-lnx-3 |
+                       +-------------+
+
+
+Where PE1 (DUT) is wfpro2-a, PE2 is wfpro2-b. CE1, CE2, and PE3 are all logical 
+systems on wfpro2-b. The Linux box wfpro-lnx-3 functions as the sources and 
+receivers. Most of time static IGMP groups are configured as receivers. 
+
+Within the Linux box, mgen is used to generate multicast traffic. To measure the
+ traffic loss during the RE switch over, rapid ping to the multicast group 
+address is used. SAP is configured on the CEs so the CEs can respond ping pkts. 
+
+3.2 Hardware
+
+Both wfpro2-a and wfpro2-b used in this unit testing are m10i router with one or
+ more tunnel PICs. But again, this feature is platform independent. If MX or 
+other platforms are used, user may need to configure tunnel service, instead of 
+having tunnel PICs.
+
+4. FUNCTIONAL TEST CASES
+
+4.1 Configuration Tests
+
+4.1.1 Rosen 6 old format
+
+    Goal: Rosen NSR should work for Rosen 6 old format (pre-11.4).
+
+    Test Steps: 
+       1. Configure Rosen 6 on all PEs with the old format (using 
+          vpn-group-address).
+       2. Configure data-mdt under "<instance> protocols pim".
+       3. Enable NSR on the DUT.
+
+    Success Criteria:
+       1. There should be no configure error.
+       2. Mt- interfaces and related PIM states are replicated properly.
+       3. Data-mdt states are replicated correctly.
+
+    Result: Pass.
+
+4.1.2 Rosen 6 new format
+
+    Goal: Rosen NSR should work for Rosen 6 new format (11.4+).
+
+    Test Steps:
+       1. Configure Rosen 6 on all PEs with the new format (using 
+          provider-tunnel).
+       2. Configure data-mdt under "provider-tunnel mdt".
+       3. Enable NSR on the DUT.
+
+    Success Criteria:
+       1. There should be no configure error.
+       2. Mt- interfaces and related PIM states are replicated properly.
+       3. Data-mdt states are replicated correctly.
+
+    Result: Pass.
+
+4.1.3 Rosen 7 old format
+
+    Goal: Rosen NSR should work for Rosen 7 old format (pre-11.4).
+
+    Test Steps:
+       1. Configure Rosen 7 on all PEs with the old format (w/o family-inet).
+       2. Configure data-mdt. 
+       3. Enable NSR on the DUT.
+    
+    Success Criteria:
+       1. There should be no configure error.
+       2. Mt- interfaces and related PIM states are replicated properly.
+       3. Data-mdt states are replicated correctly.
+           
+    Result: Pass.
+
+4.1.4 Rosen 7 new format
+
+    Goal: Rosen NSR should work for Rosen 7 new format (11.4+).
+
+    Test Steps:
+       1. Configure Rosen 7 on all PEs with the new format (with family-inet).        
+       2. Configure data-mdt.     
+       3. Enable NSR on the DUT.
+   
+    Success Criteria:
+       1. There should be no configure error.
+       2. Mt- interfaces and related PIM states are replicated properly.
+       3. Data-mdt states are replicated correctly.
+
+    Result: Pass.
+
+4.1.5 Delete Rosen Configuration
+
+    Goal: Verify that the backup RE also deletes the Rosen related info.
+
+    Test Steps:
+       1. Configure Rosen MVPN using either of previous configuration.
+       2. Delete the Rosen configurations.
+       3. Restore the Rosen configurations.
+
+    Success Criteria:
+       1. Make sure that the Rosen related info are also removed from both RE 
+          after step 2.
+       2. The Rosen MVPN should come back up on both REs after step 3.
+
+    Result: Pass.
+
+4.1.6 Disable PIM NSR 
+
+    Goal: Verify that the backup RE cleans up PIM instances (including Rosen 
+          info).
+
+    Test Steps:
+       1. Configure Rosen MVPN.
+       2. Disable PIM NSR in the master instance.
+       3. Delete "pim nonstop-routing disable" configuration.
+
+    Success Criteria:
+       1. VRF PIM instances should be removed on the backup RE after step 2.
+       2. PIM and MVPN states should be re-sync'd to the backup RE after 
+          step 3.
+
+    Result: Pass.
+
+4.1.7 Disable NSR
+
+    Goal: Verify that whole RPD should be removed on the backup RE.
+
+    Test Steps:
+       1. Configure Rosen MVPN.
+       2. Delete NSR in routing-options. 
+       3. Re-config NSR in routing-options.
+
+    Success Criteria:
+       1. RPD should be cleaned up on the backup RE after step 2.
+       2. RPD is created on backup RE after step 3. PIM and MVPN states are 
+          sync'd over correctly.
+
+    Result: Pass.
+
+4.1.8 NGen-MVPN configuration should be denied.
+
+    Goal: Confirm that NGen-MVPN configuration is not allowed when NSR is 
+          enabled, unless PIM NSR is disabled.
+
+    Test Steps:
+       1. Configure Ngen-MVPN on all PEs (can use any provider-tunnels).
+       2. Enable NSR on the DUT, then commit.
+       3. Set protocols pim nonstop-routing disable on the master instance.
+       4. Commit again.
+
+    Success Criteria:
+       1. The commit in step 2) should fail. User will see a configuration 
+          error.
+       2. After disabling PIM NSR, the commit in step 4) should go thru now.
+
+    Result: Pass.
+
+4.2 Basic Rosen testing 
+
+Each following test case is executed in Rosen 6 and Rosen 7 setup.
+
+4.2.1 Rosen w/o data-mdt
+
+    Goal: Verify that Rosen NSR works for the default MT tunnels. 
+
+    Test Steps:
+       1. Configure multiple VRF instances on all PEs, w/o data-mdt 
+          configuration.
+       2. Let receivers join different groups and start traffic from the 
+          sources.
+       3. Perform RE switch over. 
+
+    Success Criteria:
+       1. All the mt- interfaces should be replicated to the backup RE.
+       2. The mt- interfaces in all VRF instances should have exact same 
+          subunit between the master RE and the backup RE.
+       3. PIM states and multicast routes should be replicated to the backup 
+          RE, in both VRF instances and master instance.
+       4. PIM states and multicast routes should not be cleaned up and re-built
+          on the new master RE after the RE switch over.
+       5. No traffic loss should be observed. 
+
+    Result: Pass.
+
+4.2.2 Delete one VRF instance
+
+    Goal: Verify that the VRF instance is also cleaned up on the backup RE, and
+          the other VRF instances are not affected.
+
+    Test Steps:
+       1. Deactivate one VRF instance.
+
+    Success Criteria:
+       1. The deactivated VRF instance is cleaned up on the backup RE.
+       2. The other VRF instances on the backup RE are not affected.
+
+    Result: Pass.
+
+4.2.3 Data-mdt on Ingress PE
+
+    Goal: Verify that data-mdt can be setup or torn down properly on the backup 
+          RE on the ingress PE.
+
+    Test Steps:
+       1. Configure mdt for (src 1, grp 1) on the DUT.
+       2. Let rcvr 2 join grp 1.
+       3. Start sending traffic to grp 1 from src 1. The flow rate should be 
+          higher than the configured mdt threshold.
+       4. After the flow is migrated to the data-mdt, stop the traffic.
+
+    Success Criteria:
+       1. After the flow is moved to the data-mdt in step 3), the data mdt ifl 
+          should be created on the backup RE.
+       2. The data-mdt states should be replicated to the backup RE, in both 
+          VRF instance and master instance.
+       3. "Show pim mdt instance <x>" should show the data-mdt info on the 
+          backup RE. The output should match with the output on the master RE.
+       4. After the flow is stopped in step 4), the data-mdt should be 
+          withdrawn on both REs. 
+
+    Result: Pass.
+
+4.2.4 Data-mdt on Egress PE
+
+    Goal: Verify that data-mdt can be setup or torn down properly on the backup 
+          RE on the egress PE.
+
+    Test Steps:
+       1. Configure mdt for (src 2, grp 2) on PE2. 
+       2. Let rcvr 1 join grp 2.
+       3. Start sending traffic to grp 2 from src 2. The flow rate should be 
+          higher than the configured mdt threshold.
+       4. After the flow is migrated to the data-mdt, stop the traffic.
+
+    Success Criteria: 
+       1. After the flow is moved to the data-mdt in step 3), the data-mdt 
+          states should be replicated to the backup RE.
+       2. "Show pim mdt instance <x>" should show the incoming data-mdt info 
+          on the backup RE. The output should match with the output on the 
+          master RE.
+       3. After the flow is stopped in step 4), the data-mdt should be withdrawn
+          on both REs.
+
+    Result: Pass.
+
+4.2.5 Data-mdt caching 
+
+    Goal: Verify that data-mdt cache addition/deletion can be replicated to the 
+          backup RE.
+
+    Test Steps:
+       1. Configure mdt for (src 2, grp 3) on PE2.
+       2. Let rcvr 3 on PE3 join grp 3.
+       3. Start sending traffic to grp 3 from src 2.
+
+    Success Criteria:
+       1. PE1 should not create forwarding entry for grp 3, since there is no 
+          downstream receiver on PE1.
+       2. "Show pim mdt data-mdt-joins" should record the data-mdt cache info. 
+          The cache info should be replicated to the backup RE. 
+
+    Result: Pass.
+
+4.2.6 Add/Remove downstream receivers at Egress PE
+
+    Goal: Verify that the data-mdt info is handled properly on the backup RE.
+
+    Test Steps:
+       1. Follow the configuration in the test case 4.2.5.
+       2. Let rcvr 1 join grp 3.
+       3. Notice that the forwarding entry for grp 3 is created on PE1.
+       4. Now let rcvr 1 leave grp 3.
+
+    Success Criteria:
+       1. After step 2), PIM states and multicast route should be added with the
+          downstream interface. These states should be replicated to the backup 
+          RE.
+       2. After step 4), the PIM states and multicast route should be removed 
+          due to no downstream interface. This should be done on both REs.
+       3. The output of "show pim mdt data-mdt-joins" should not change on 
+          either RE, since the ingress PE (PE2) is still sending data-mdt Join 
+          TLVs.
+
+    Result: Pass.
+
+4.2.7 Data-mdt cache timeout
+
+    Goal: Verify that the data-mdt cache is removed on the backup RE.
+
+    Test Steps:
+       1. Follow the configuration in the test case 4.2.5.
+       2. After PE1 gets the data-mdt Join TLV and creates data-mdt cache, stop 
+          sending traffic from src 2.
+
+    Success Criteria:
+       1. The data-mdt cache should time out after about 3 minutes. 
+       2. The data-mdt cache should also be cleaned up on the backup RE.
+
+    Result: Pass.
+
+4.2.8 Default-vpn-source
+
+    Goal: Verify that Rosen NSR works with default-vpn-source
+
+    Test Steps:
+       1. Set default-vpn-source to lo0.0 on all PEs.
+       2. Remove lo0.x addresses from the VRF instances.
+       3. Start all sources and receivers. 
+       4. Switch RE over.
+
+    Success Criteria:
+       1. Rosen NSR should still work with default-vpn-source.
+       2. Use rapid Ping and SAP to generate multicast flow. There should be no 
+          traffic loss after RE switch over.
+
+    Result: Pass.
+
+4.2.9 Data-mdt reuse 
+
+    Goal: Verify that reused data mdts are replicated to the backup RE properly.
+
+    Test Steps:
+       1. Turn on data-mdt-reuse knob on the ingress PE (DUT).
+       2. Set tunnel-limit to 2.
+       3. Start traffic from src 1 to 10 groups. 
+
+    Success Criteria:
+       1. Wait until all the 10 flows are migrated to data-mdt on the master RE.
+       2. The 10 flows should spread on two data mdts. 
+       3. The backup RE should allocate each flow on the exact same data-mdt as 
+          on the master RE.
+       4. "show multicast route instance <vrf>" should have same output on both 
+          REs. 
+       5. "show pim mdt instance <vrf>" should have same output on both REs. 
+
+    Result: Pass.
+
+4.2.10 Scale up data-mdt tunnels
+
+    Goal: Verify that the flows are relocated to the new data-mdts properly on 
+          both REs.
+
+    Test Steps:
+       1. Follow the setup in 4.2.9.
+       2. Now set tunnel-limit to 5. 
+       3. Wait until the flows are migrated and stable.
+       4. Now set tunnel-limit to 8.
+
+    Success Criteria:
+       1. Some flows should be migrated to new data-mdts on both REs.
+       2. "show multicast route instance <vrf>" should have same output on both 
+          REs, after step 2) or 4).
+       3. "show pim mdt instance <vrf>" should have same output on both REs, 
+          after step 2) or 4).
+
+    Result: Pass.
+
+4.2.11 Scale down data-mdt tunnels
+
+    Goal: Verify that the flows are relocated to the other data-mdts properly 
+          on both REs. 
+
+    Test Steps:
+       1. Follow the setup in 4.2.10.
+       2. Now set tunnel-limit to 5. 
+       3. Wait until the flows are migrated and stable. 
+       4. Now set tunnel-limit to 3.
+
+    Success Criteria:
+       1. Some flows should be migrated to other data-mdts on both REs.
+       2. Extra data-mdts should be removed on both REs.
+       3. "show multicast route instance <vrf>" should have same output on both 
+          REs, after step 2) or 4).
+       4. "show pim mdt instance <vrf>" should have same output on both REs, 
+          after step 2) or 4).
+
+    Result: Pass.
+
+4.2.12 RE switch over 
+
+    Goal: Verify that traffic flows should be hitless during the RE switch over.
+
+    Test Steps:
+       1. Config Rosen MVPN with data-mdt.
+       2. Use rapid mcast ping and SAP to simulate multicast flows.
+       3. Wait until all PIM and MVPN states are sync'd to the backup RE.
+       4. Perform RE switch over.
+
+    Success Criteria:
+       1. The traffic flow should not be affected.
+       2. The rpd on the new master RE remains with the same id.
+       3. The rpd on the new backup RE is removed and re-created.
+       4. The PIM and MVPN state are sync'd properly from the new master RE to 
+          the new backup RE.
+
+    Result: Pass.
+
+5.  BOUNDARY TEST CASES
+
+None.
+
+6.  GRES TEST CASES
+
+None.
+
+7.  ISSU TEST CASES
+
+7.1 ISSU test
+
+    Goal: Verify that ISSU succeeds from an old version image.
+
+    Test Steps:
+       1. Load Rosen MVPN configurations.
+       2. Configure NSR, with PIM NSR disabled. 
+       3. Perform ISSU with cmd "request system software in-service-upgrade".
+       4. Enable PIM NSR.
+
+    Success Criteria:
+       1. ISSU should be complete without error.
+       2. Rosen NSR should work after PIM NSR is enabled.
+
+    Result:
+
+8. TX TEST CASES
+
+None.
+
+9.  AGGREGATED ETHERNET/SONET TEST CASES
+ 
+None.
+ 
+10.  REGRESSION TEST CASES
+
+{As necessary.  As with functional tests but for regression tests.
+Include references to regression requests, who is performing them,
+etc.}
+
+
+11.  INTEROPERABILITY TEST CASES
+
+None.
+
+12.  MIGRATION & COMPATIBILITY TEST CASES
+
+None.
+
+13.  TEST COVERAGE REMAINING
+
+None.
+
+14.  DEFECTS REMAINING
+
+Hit the following PRs during the unit testing. 
+
+ PR #607731: PDT: RPD core in bgp_rtinfo_update_peer 
+ PR #670107: PRE-NSR: Observed difference in vpn route table status between 
+             master and backup
+ PR #665156: RPD core on backup RE
+ PR #670341: Unexpected pe- intf shows in Olist on the backup RE once BSR is 
+             enable.
+
+None of the above PRs are Rosen NSR related, but Rosen NSR could be affected 
+by any of them, sometimes badly. We may need to restart rpd on either master 
+RE or backup RE to overcome the problems. 
+
+15. SCALING AND PERFORMANCE
+ 
+None.
+
+16. STATIC ANALYSIS 
+
+Build completely. No error found.
+
+17. CODE COVERAGE
+
+18. AUTOMATION
+
+Using JCML scripts for the unit test automation. Due to the PRs mentioned in 
+section 14, it's very hard to finish one run of all test cases successfully, 
+even though manual testing passes pretty well. 
+
+19. UNIT TEST PLAN REVIEW FEEDBACK
+

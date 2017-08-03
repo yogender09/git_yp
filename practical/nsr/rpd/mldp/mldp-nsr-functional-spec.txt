@@ -1,0 +1,1177 @@
+                           mLDP Non-Stop Routing(NSR)
+
+                        Santosh Esale (sesale@juniper.net)
+
+
+Copyright (C) 2010, Juniper Networks, Inc.
+
+NOTICE: This document contains proprietary and confidential
+information of Juniper Networks, Inc. and must not be distributed
+outside of the company without the permission of Juniper Networks
+engineering.
+
+
+TABLE OF CONTENTS
+
+1.	Introduction	
+1.1	Document Revision History	
+1.2	Reference	
+1.3	RLI List	
+1.4	Feature Parity Traceability	
+2.	Functionality	
+2.1	Goals	
+2.2	Non-Goals	
+2.3	Functional competitive data	
+2.4	APIs/Messages	
+2.5	CLI Config	
+2.5.1	CLI Config Details	
+2.6	CLI Commands	
+2.6.1	CLI Command Details	
+2.7	JUNOScript	4
+2.8	J-Web Quick Configuration and Monitor Screen	
+2.9	SNMP	
+2.10	Syslog – ERRMSG	
+2.11	Serviceability and diagnose-ability	
+2.12	Assumptions	
+2.13	Constraints and Limitations	
+2.14	Dependencies and Interactions with other Components in the System
+2.15	Examples or Interaction Descriptions	
+2.16	Free Software Considerations	
+2.17	3rd party Software Considerations	
+2.17.1	3rd party software package information and its functionality
+2.17.2	Anticipated usage of 3rd party code	
+2.17.3	Anticipated integration rules within JUNOS	
+3.	Caveats	
+4.	Other Requirements	
+5.	Resource Estimation	
+6.	Performance	
+6.1	Performance Related Resources	
+6.2	Target Performance	
+7.	Compatibility Issues	
+8.	Security Issues	
+9.	Platforms Supported	
+10.	High Availability (HA)	
+10.1	Graceful RE Switchover (GRES), ISSU and NSSU Impact	
+10.2	NSR Impact	
+11.	Aggregated Ethernet/ SONET/ IRB Support	
+12.	SDK Impact	
+12.1	SDK Customer Usage	
+13.	Services/JSF (JUNOS Services Framework) Impact	
+14.	JUNOS Ready Software considerations	
+15.	Multi-Chassis Support	
+16.	64-Bit Support	
+17.	IPv6 Support
+18.   Logical System Support	
+19.	Notes	
+20.	Glossary	
+21.	Design Specification exception	
+22.	Review Comments	
+22.1	Review stakeholder matrix	
+
+
+
+
+
+1.	Introduction
+
+The goal of Non-Stop Routing (NSR) is to preserve Routing and MPLS control state 
+when there is a routing engine (RE) failover without any help from remote peers. 
+
+This is achieved in vanilla LDP by initially replicating LDP neighbor, session, 
+Label database etc from master to standby RE so that LDP on standby RE can create
+an exact replica of master LDP control state. After that these control states 
+are kept up-to-date with listening to communication between master LDP and remote 
+peers.
+ 
+Present Junos mLDP do not support NSR. After RE switchover, P2MP FEC/LSP
+control and forwarding state is deleted and re-added which results in traffic 
+loss. 
+
+The goal of this project is to implement mLDP NSR. This feature will replicate 
+all the necessary P2MP LSP control states from master to standby LDP.
+
+
+1.1	Document Revision History
+
+Revision 1.0
+Author: Santosh Esale
+Date: 07/25/2012
+Description of Changes: Initial revision.
+
+Revision 1.1
+Author: Santosh Esale
+Date: 08/07/2012
+Description of Changes: Incorporating review comments.
+
+
+1.2	Reference
+	
+[1] Functional spec for LDP support of NSR
+    <http://cvs.juniper.net/cgi-bin/viewcvs.cgi/sw-projects/os/nsr/rpd/ldp/ldp_software_spec.txt?rev=1.1&view=markup>
+
+[2] LDP P2MP LSP Functional Specification
+    <http://cvs.juniper.net/cgi-bin/viewcvs.cgi/sw-projects/mpls/ldp/p2mp/p2mp_ldp_lsp_func_spec.txt?rev=1.5&view=markup>
+
+[3] mLDP Link Protection 
+    <http://cvs.juniper.net/cgi-bin/viewcvs.cgi/sw-projects/mpls/ldp/frr/funcspec-mldp-link-protection.txt?rev=1.15&view=markup>
+
+[4] Functional spec MLDP inband signalling for multicast traffic 
+    <http://cvs.juniper.net/cgi-bin/viewcvs.cgi/sw-projects/routing/multicast/mldp/MLDP_inband_signalling.txt?rev=1.11&view=markup>
+
+[5] RSVP/MPLS support of NSR
+    <http://cvs.juniper.net/cgi-bin/viewcvs.cgi/sw-projects/os/nsr/rsvp-funcspec.txt?rev=1.11&view=markup>
+
+[6] Non-Stop Routing (NSR) - Functional specification
+    <http://cvs.juniper.net/cgi-bin/viewcvs.cgi/sw-projects/os/nsr/software_spec.txt?rev=1.8&view=markup>
+
+[7] RFC 6388: I. Minei, IJ. Wijnands, K. Kompella, B. Thomas.
+    "Label Distribution Protocol Extensions for Point-to-Multipoint and Multipoint-to-Multipoint Label Switched Paths"
+    <http://tools.ietf.org/html/rfc6388> 
+
+[8] RSVP Automesh
+    <http://cvs.juniper.net/cgi-bin/viewcvs.cgi/sw-projects/mpls/rsvp/automesh/automesh_funcspec.txt?view=markup>
+
+
+1.3 RLI List
+
+RLI No: 14681  
+Description: NSR:mLDP 
+Target Release: 13.3 
+
+
+1.4	Feature Parity Traceability
+
+N/A
+			
+
+2.	Functionality
+
+The main objective of this feature is to get to same protocol and forwarding 
+state for LDP P2MP LSPs on standby (RE) as master (RE). This need to happen such 
+that LDP peers are unaware of it. This will be achieved by syncing LDP protocol 
+on standby RE with primary RE over three connections - mirroring, ISR and JSR. 
+When secondary RE comes up, LDP will send neighbor, session and some additional 
+local information for label given to peers via RPD mirroring connection. Then 
+initial synchronization of each session will be done which includes sending 
+interface addresses, labels, label requests (sent and received from peers) via 
+internal routing socket(IRS) between master and standby LDP protocol. After that 
+session database will be kept in sync by listening to communication between master 
+LDP and its peers via junos replication socket(JSR).
+
+After RE switchover, neighbors and its corresponding session that were in sync 
+complete state will stay up, P2MP FECs/LSPs Label and its corresponding 
+forwarding state will remain same, packets continue to flow through these LSPs 
+without any drop, mLDP messages from downstream and upstream LSRs are processed 
+as before, Make before break algorithm for P2MP LSP will take over from were old 
+master left off, Link protection timer will be started for the sessions which 
+are operational due to link-protection targeted adjacency, dynamic-rsvp-lsp will 
+be signaled for those session which already had link protection active with this 
+lsp.
+
+This feature can be sub divided into 4 sub-features.
+
+1) P2MP LSP Transit NSR
+
+   Transit P2MP FEC state is maintained by mLDP protocol. Initially we will 
+   replicate P2MP FEC label and its associated data structure to standby RE. 
+   After that on-going sync will be done by listening to master LDP and 
+   upstream and downstream LSR communication via junos replicated TCP socket/s. 
+   After switchover, we should not see any packet drop on a P2MP LSP.
+
+   Note that currently LDP P2MP LSP is used as a provider tunnel for NG-MVPN 
+   and PIM protocol. static route can also be configured to point to LDP 
+   P2MP LSP. Transit P2MP LSP NSR will be applicable for all of these LSPs.
+
+2) P2MP LSP Ingress NSR
+
+   mLDP will replicate its data structure related to Ingress state of LDP P2MP 
+   LSP such as tunnel name, lsp-id etc for dynamic applications. 
+
+   This Functionality will be verified with static route pointing to LDP P2MP 
+   LSP. 
+
+   After NSR support for NG-MVPN and PIM (for mldp inband signaling) is 
+   added, mLDP NSR for ingress should work for dynamically signaled P2MP 
+   LSPs too.
+
+3) P2MP LSP Bud and Egress NSR
+
+   a) Bud NSR
+
+   Bud node functionality is a combination of Transit and Egress. Transit NSR 
+   will be covered by (1). 
+
+   b) Egress NSR
+
+   mLDP advertises implicit or explicit null label for P2MP LSP configured with 
+   static route. mLDP will replicate label data structure related to egress state 
+   of P2MP LSP to standby. This will be verified using the static route 
+   configuration and stub code/hidden command for dynamic applications. 
+
+   For egress NSR corresponding to PIM and NG-MVPN with vt interface, LDP will 
+   advertise a real label. Label as well its related data structures will be 
+   replicated to standby RE. As there is no NSR support for these application, 
+   egress information like vt interface and egress nexthop will not be available 
+   for LDP on standby and flood nexthop corresponding to the P2MP LSP will be 
+   programmed only after RE switchover which will result in traffic loss.
+
+4) Replicate ldp flood nexthop in KRT
+
+   LDP created flood nexthop will be replicated via ksyncd to standby RE. We 
+   will have to add some new TLVs to replicate LDP related information in KRT. 
+   When LDP on standby RE have protocol state to program the flood nexthop, it 
+   will check with KRT if such a flood nexthop already available. If so, it will 
+   use that flood nexthop to create the P2MP LSP forwarding state. For NSR to 
+   work as expected, we should always find the flood nexthop on standby RE as 
+   sent from the primary RE.
+
+ 
+2.1	Goals
+
+ - NSR support for Transit P2MP LSPs setup by all applications.
+ - NSR support for Ingress P2MP LSP with static route.
+ - NSR support for Egress P2MP LSP with static route.
+
+
+2.2	Non-Goals
+
+ - Graceful restart support for P2MP LSPs.
+ - NSR support for Ingress P2MP LSPs setup by NG-MVPN and PIM (No NSR support for 
+   these protocols).
+ - NSR support for Egress P2MP LSPs setup by NG-MVPN and PIM.
+ - No data loss after RE switchover for P2MP LSP which has link-protection with 
+   dynamic rsvp LSP in use. NSR is not supported for dynamic rsvp LSPs [Ref 8].
+
+
+2.3	Functional competitive data
+
+N/A
+
+
+2.4 APIs/Messages
+
+This will be covered in design document.
+
+
+2.5 CLI Config
+
+1) Config to enable mLDP NSR
+   This feature will be enabled with existing CLI 'nonstop-routing' under 
+   routing-options. 
+
+   So this feature will be enabled by default from 13.3 with NSR configuration.
+
+2) Trace for mLDP NSR
+
+   To trace mLDP specific state, events and processing related to NSR,
+   'flag p2mp-nsr-synchronization detail' will be added. This will be available 
+   on both primary and standby RE.
+
+regress@pro10-e1# set flag ?
+Possible completions:
+  address                  Trace address packets
+  all                      Trace everything
+  binding                  Trace label binding state
+  error                    Trace errored packets
+  event                    Trace LDP state machine events
+  general                  Trace general events
+  initialization           Trace initialization packets
+  label                    Trace label packets
+  link-protection          Trace link protection events
+  normal                   Trace normal events
+  notification             Trace notification packets
+  nsr-synchronization      Trace NSR synchronization events
++ p2mp-nsr-synchronization Trace p2mp NSR synchronization events
+  packets                  Trace all LDP packets
+  path                     Trace label path state
+  periodic                 Trace periodic (hello and keepalive) packets
+  policy                   Trace policy processing
+  ppmd                     Trace state and events for ppmd process
+  route                    Trace routing information
+  state                    Trace state transitions
+  task                     Trace routing protocol task processing
+  timer                    Trace routing protocol timer processing
+
+3) Static configuration for LDP P2MP LSPs
+
+We will unhide static configuration of P2MP FEC on Ingress and Egress as we have
+received requests in the past to unhide it. 
+
+a) Unhide static route pointing to p2mp-ldp-next-hop on Ingress 
+
+regress@spearhead# show routing-options
+
+static {
+    route 1.1.1.1/32 {
+        p2mp-ldp-next-hop {  <== Not hidden anymore
+            root-address 10.1.1.1 { 
+              lsp-id 1; 
+            }
+        }
+    }
+}
+
+b) Unhide the cli to configure P2MP FEC as egress under ldp
+
+{master}[edit protocols ldp p2mp]
+regress@pro10-e# up 
+
+{master}[edit protocols ldp]
+p2mp {
+    root-address 10.255.107.232 { <== Not hidden anymore
+        lsp-id 1;
+    }
+}
+
+2.5.1	CLI Config Details 
+
+N/A.
+
+
+2.6 CLI Commands
+
+Following new operational commands will be added for this feature.
+
+1) show ldp p2mp tunnel 
+2) show ldp replication statistics
+3) show ldp replication p2mp statistics 
+4) show ldp replication p2mp path   
+5) show ldp replication p2mp standby-path 
+6) show ldp replication p2mp standby-fec   
+7) show ldp replication p2mp tunnel 
+
+'p2mp' keyword will not be hidden anymore.
+
+Note that 'replication' is hidden keyword. 
+
+Following existing commands will be modified for this feature.
+
+1) show ldp database extensive
+
+
+2.6.1	CLI Command Details 
+
+
+2.6.1.1 show ldp p2mp tunnel extensive
+
+This command will display p2mp tunnel information.
+
+regress@pro10-c> show ldp p2mp tunnel extensive 
+Instance    Tunnel type          Tunnel name
+0           Name              10.254.1.1:1:ldp-p2mp:mvpn:vpn-1 
+    P2MP root-addr 10.255.107.232, lsp-id 16777217
+    Self id 805306372
+    Reference count 2
+
+regress@pro10-c> show ldp p2mp tunnel extensive | display xml 
+<rpc-reply xmlns:junos="http://xml.juniper.net/junos/13.2I0/junos">
+    <ldp-p2mp-tunnel-information xmlns="http://xml.juniper.net/junos/13.2I0/junos-routing">
+        <ldp-p2mp-tunnel>
+            <ldp-instance-id>0</ldp-instance-id>
+            <ldp-p2mp-tunnel-type>Name</ldp-p2mp-tunnel-type>
+            <ldp-p2mp-tunnel-name>10.254.1.1:1:ldp-p2mp:mvpn:vpn-1</ldp-p2mp-tunnel-name>
+            <ldp-prefix> P2MP root-addr 10.255.107.232, lsp-id 16777217</ldp-prefix>
+            <ldp-p2mp-tunnel-selfid>805306372</ldp-p2mp-tunnel-selfid>
+            <ldp-reference-count>2</ldp-reference-count>
+        </ldp-p2mp-tunnel>
+    </ldp-p2mp-tunnel-information>
+    <cli>
+        <banner>{master}</banner>
+    </cli>
+</rpc-reply>
+ 
+
+2.6.1.2 show ldp replication statistics
+
+This command will display vanilla LDP replication statistics.
+ 
+regress@pro10-e> show ldp replication statistics                       
+Type             Inits       Adds         Modifications   Deletes
+Neighbor         0           4            8               0
+Session          0           3            0               0
+Path             0           6            0               0
+Trace route      0           0            0               0
+
+regress@pro10-e> show ldp replication statistics | display xml 
+<rpc-reply xmlns:junos="http://xml.juniper.net/junos/12.3I0/junos">
+    <ldp-replication-statistics-information xmlns="http://xml.juniper.net/junos/12.3I0/junos-routing">
+        <ldp-replication-statistics>
+            <ldp-replication-type>Neighbor</ldp-replication-type>
+            <ldp-replication-inits>0</ldp-replication-inits>
+            <ldp-replication-adds>4</ldp-replication-adds>
+            <ldp-replication-modifications>8</ldp-replication-modifications>
+            <ldp-replication-deletes>0</ldp-replication-deletes>
+        </ldp-replication-statistics>
+        <ldp-replication-statistics>
+            <ldp-replication-type>Session</ldp-replication-type>
+            <ldp-replication-inits>0</ldp-replication-inits>
+            <ldp-replication-adds>3</ldp-replication-adds>
+            <ldp-replication-modifications>0</ldp-replication-modifications>
+            <ldp-replication-deletes>0</ldp-replication-deletes>
+        </ldp-replication-statistics>
+        <ldp-replication-statistics>
+            <ldp-replication-type>Path</ldp-replication-type>
+            <ldp-replication-inits>0</ldp-replication-inits>
+            <ldp-replication-adds>6</ldp-replication-adds>
+            <ldp-replication-modifications>0</ldp-replication-modifications>
+            <ldp-replication-deletes>0</ldp-replication-deletes>
+        </ldp-replication-statistics>
+        <ldp-replication-statistics>
+            <ldp-replication-type>Trace route</ldp-replication-type>
+            <ldp-replication-inits>0</ldp-replication-inits>
+            <ldp-replication-adds>0</ldp-replication-adds>
+            <ldp-replication-modifications>0</ldp-replication-modifications>
+            <ldp-replication-deletes>0</ldp-replication-deletes>
+        </ldp-replication-statistics>
+    </ldp-replication-statistics-information>
+    <cli>
+        <banner>{master}</banner>
+    </cli>
+</rpc-reply>
+
+
+2.6.1.3 show ldp replication p2mp statistics 
+
+This command will display mLDP replicaton statistics.
+
+regress@pro10-c> show ldp replication p2mp statistics 
+Type             Inits        Adds         Modifications     Deletes
+Tunnel           0            2            0                 0
+Path             0            1            0                 0
+
+regress@pro10-c> show ldp replication p2mp statistics | display xml 
+<rpc-reply xmlns:junos="http://xml.juniper.net/junos/12.3I0/junos">
+    <ldp-p2mp-replication-statistics-information xmlns="http://xml.juniper.net/junos/12.3I0/junos-routing">
+        <ldp-p2mp-replication-statistics>
+            <ldp-replication-type>Tunnel</ldp-replication-type>
+            <ldp-replication-inits>0</ldp-replication-inits>
+            <ldp-replication-adds>2</ldp-replication-adds>
+            <ldp-replication-modifications>0</ldp-replication-modifications>
+            <ldp-replication-deletes>0</ldp-replication-deletes>
+        </ldp-p2mp-replication-statistics>
+        <ldp-p2mp-replication-statistics>
+            <ldp-replication-type>Path</ldp-replication-type>
+            <ldp-replication-inits>0</ldp-replication-inits>
+            <ldp-replication-adds>1</ldp-replication-adds>
+            <ldp-replication-modifications>0</ldp-replication-modifications>
+            <ldp-replication-deletes>0</ldp-replication-deletes>
+        </ldp-p2mp-replication-statistics>
+    </ldp-p2mp-replication-statistics-information>
+    <cli>
+        <banner>{master}</banner>
+    </cli>
+</rpc-reply>
+
+
+2.6.1.4 show ldp replication p2mp path   
+
+egress@pro10-c> show ldp replication p2mp path extensive 
+Instance    Label       Transit Self ID     State
+0           299904      805306386           Sync
+    Reference count: 1 Upstream session: 10.255.107.236:0
+
+regress@pro10-c> show ldp replication p2mp path extensive | display xml 
+<rpc-reply xmlns:junos="http://xml.juniper.net/junos/13.2I0/junos">
+    <ldp-p2mp-path-replication-information xmlns="http://xml.juniper.net/junos/13.2I0/junos-routing">
+        <ldp-p2mp-path-replication>
+            <ldp-instance-id>0</ldp-instance-id>
+            <ldp-label>299904</ldp-label>
+            <ldp-p2mp-path-replication-transit-selfid>805306386</ldp-p2mp-path-replication-transit-selfid>
+            <ldp-p2mp-path-replication-state>Sync</ldp-p2mp-path-replication-state>
+            <ldp-reference-count>1</ldp-reference-count>
+            <ldp-p2mp-upst-session>10.255.107.236:0</ldp-p2mp-upst-session>
+        </ldp-p2mp-path-replication>
+    </ldp-p2mp-path-replication-information>
+    <cli>
+        <banner>{master}</banner>
+    </cli>
+</rpc-reply>
+
+
+2.6.1.5 show ldp replication p2mp standby-path 
+
+regress@pro10-e1> show ldp replication standby-path 
+Label: 299776              Reference count: 1
+    Prefix:  P2MP root-addr 10.255.107.232, lsp-id 1 Prefix reference count: 3
+
+regress@pro10-e1> show ldp replication p2mp standby-path | display xml 
+<rpc-reply xmlns:junos="http://xml.juniper.net/junos/10.4R10/junos">
+    <ldp-p2mp-standby-path-information xmlns="http://xml.juniper.net/junos/10.4R10/junos-routing">
+        <ldp-p2mp-standby-path>
+            <ldp-label>299776</ldp-label>
+            <ldp-reference-count>1</ldp-reference-count>
+            <ldp-standby-path-prefix>
+                <ldp-prefix> P2MP root-addr 10.255.107.232, lsp-id 1</ldp-prefix>
+                <ldp-reference-count>3</ldp-reference-count>
+            </ldp-standby-path-prefix>
+        </ldp-p2mp-standby-path>
+</ldp-p2mp-standby-path-information>
+    <cli>
+        <banner>{standby}</banner>
+    </cli>
+</rpc-reply>
+
+
+2.6.1.6 show ldp replication p2mp standby-fec                
+
+regress@pro10-e1> show ldp replication p2mp standby-fec 
+P2MP root-addr 10.255.107.230, lsp-id 16777217          Fec in ldp database
+        Label: 299952   Reference count: 2
+P2MP root-addr 10.255.107.232, lsp-id 16777217          Fec in ldp database
+        Label: 299968   Reference count: 2
+
+regress@pro10-e1> show ldp replication p2mp standby-fec | display xml 
+<rpc-reply xmlns:junos="http://xml.juniper.net/junos/13.2I0/junos">
+    <ldp-standby-p2mp-fec-information xmlns="http://xml.juniper.net/junos/13.2I0/junos-routing">
+        <ldp-standby-p2mp-fec>
+            <ldp-prefix>P2MP root-addr 10.255.107.230, lsp-id 16777217</ldp-prefix>
+            <ldp-standby-p2mp-fec-fec/>
+            <ldp-standby-p2mp-path-reference>
+                <ldp-label>299952</ldp-label>
+                <ldp-reference-count>2</ldp-reference-count>
+            </ldp-standby-p2mp-path-reference>
+        </ldp-standby-p2mp-fec>
+        <ldp-standby-p2mp-fec>
+            <ldp-prefix>P2MP root-addr 10.255.107.232, lsp-id 16777217</ldp-prefix>
+            <ldp-standby-p2mp-fec-fec/>
+            <ldp-standby-p2mp-path-reference>
+                <ldp-label>299968</ldp-label>
+                <ldp-reference-count>2</ldp-reference-count>
+            </ldp-standby-p2mp-path-reference>
+        </ldp-standby-p2mp-fec>
+    </ldp-standby-p2mp-fec-information>
+    <cli>
+        <banner>{backup}</banner>
+    </cli>
+</rpc-reply>
+
+
+2.6.1.7 show ldp replication p2mp tunnel 
+
+This command will display p2mp tunnel replication information.
+
+regress@pro10-c1> show ldp replication p2mp tunnel   
+Instance    Tunnel type            Tunnel name                   State
+0           Name             10.254.1.1:1:ldp-p2mp:mvpn:vpn-1    Sync
+    P2MP root-addr: 10.255.107.232, lsp-id: 16777217
+    Self id: 805306372
+
+regress@pro10-c1> show ldp replication p2mp tunnel | display xml    
+<rpc-reply xmlns:junos="http://xml.juniper.net/junos/13.2I0/junos">
+    <ldp-p2mp-tunnel-replication-information xmlns="http://xml.juniper.net/junos/13.2I0/junos-routing">
+        <ldp-p2mp-tunnel-replication>
+            <ldp-instance-id>0</ldp-instance-id>
+            <ldp-p2mp-tunnel-type>Name</ldp-p2mp-tunnel-type>
+            <ldp-p2mp-tunnel-name>10.254.1.1:1:ldp-p2mp:mvpn:vpn-1</ldp-p2mp-tunnel-name>
+            <ldp-p2mp-tunnel-replication-state>Sync</ldp-p2mp-tunnel-replication-state>
+            <ldp-p2mp-root-address>10.255.107.232</ldp-p2mp-root-address>
+            <ldp-p2mp-lsp-id>16777217</ldp-p2mp-lsp-id>
+            <ldp-p2mp-tunnel-selfid>805306372</ldp-p2mp-tunnel-selfid>
+        </ldp-p2mp-tunnel-replication>
+    </ldp-p2mp-tunnel-replication-information>
+    <cli>
+        <banner>{backup}</banner>
+    </cli>
+</rpc-reply>
+
+
+2.6.1.8 show ldp database extensive
+
+Show ldp database will be modified on standby RE to show standby binding state.
+
+regress@pro10-e1> show ldp database extensive 
+Input label database, 10.255.107.236:0--10.255.107.232:0
+  Label     Prefix
+ 301664      10.255.107.230/32
+            State: Active
+            Age: 1d 2:46:36
+            Standby binding state:
+                Map messages: 1
+                Release messages: 0
+  Label     Prefix
+      3      10.255.107.232/32
+            State: Active
+            Age: 1d 2:46:36
+            Standby binding state:
+                Map messages: 1
+                Release messages: 0
+  Label     Prefix
+ 301680      10.255.107.234/32
+            State: Active
+            Age: 1d 2:46:36
+            Standby binding state:
+                Map messages: 1
+                Release messages: 0
+  Label     Prefix
+ 302048      10.255.107.236/32
+            State: Active
+            Age: 1d 2:46:36
+            Standby binding state:
+                Map messages: 1
+                Release messages: 0
+  Label     Prefix
+ 302096      P2MP root-addr 10.255.107.230, lsp-id 16777217
+            State: Active
+            Age: 1d 2:46:36
++           Standby binding state:
++               Map messages: 1
++               Release messages: 0
+
+Output label database, 10.255.107.236:0--10.255.107.232:0
+  Label     Prefix
+ 299904      10.255.107.230/32
+            State: Active
+            Age: 1d 2:46:36
+ 299936      10.255.107.232/32
+            State: Active
+            Age: 1d 2:46:36
+ 299872      10.255.107.234/32
+            State: Active
+            Age: 1d 2:46:36
+      3      10.255.107.236/32
+            State: Active
+            Age: 1d 2:46:36
+      3      P2MP root-addr 10.255.107.232, lsp-id 1
+            State: Active
+            Age: 1d 2:46:36
+
+Input label database, 10.255.107.236:0--10.255.107.234:0
+  Label     Prefix
+ 299808      10.255.107.230/32
+            State: Active
+            Age: 1d 2:46:36
+            Standby binding state:
+                Map messages: 1         
+                Release messages: 0
+  Label     Prefix
+ 301136      10.255.107.232/32
+            State: Active
+            Age: 1d 2:46:36
+            Standby binding state:
+                Map messages: 1
+                Release messages: 0
+  Label     Prefix
+      3      10.255.107.234/32
+            State: Active
+            Age: 1d 2:46:36
+            Standby binding state:
+                Map messages: 1
+                Release messages: 0
+  Label     Prefix
+ 302480      10.255.107.236/32
+            State: Active
+            Age: 1d 2:46:36
+            Standby binding state:
+                Map messages: 1
+                Release messages: 0
+
+Output label database, 10.255.107.236:0--10.255.107.234:0
+  Label     Prefix
+ 299904      10.255.107.230/32
+            State: Active
+            Age: 1d 2:46:36
+ 299936      10.255.107.232/32
+            State: Active
+            Age: 1d 2:46:36
+ 299872      10.255.107.234/32
+            State: Active
+            Age: 1d 2:46:36             
+      3      10.255.107.236/32
+            State: Active
+            Age: 1d 2:46:36
+ 299952      P2MP root-addr 10.255.107.230, lsp-id 16777217
+            State: Active
+            Age: 1d 2:46:36
+
+
+regress@pro10-e1> show ldp database extensive | display xml 
+<rpc-reply xmlns:junos="http://xml.juniper.net/junos/12.3I0/junos">
+    <ldp-database-information xmlns="http://xml.juniper.net/junos/12.3I0/junos-routing">
+        <ldp-database>
+            <ldp-database-type>Input label database</ldp-database-type>
+            <ldp-session-id>10.255.107.236:0--10.255.107.232:0</ldp-session-id>
+            <ldp-binding>
+                <ldp-label>301664</ldp-label>
+                <ldp-prefix> 10.255.107.230/32</ldp-prefix>
+                <ldp-binding-state>Active</ldp-binding-state>
+                <ldp-binding-age>1d 2:49:36</ldp-binding-age>
+                <ldp-binding-standby>
+                    <ldp-binding-standby-map-count>1</ldp-binding-standby-map-count>
+                    <ldp-binding-standby-rel-count>0</ldp-binding-standby-rel-count>
+                </ldp-binding-standby>
+            </ldp-binding>
+            <ldp-binding>
+                <ldp-label>3</ldp-label>
+                <ldp-prefix> 10.255.107.232/32</ldp-prefix>
+                <ldp-binding-state>Active</ldp-binding-state>
+                <ldp-binding-age>1d 2:49:36</ldp-binding-age>
+                <ldp-binding-standby>
+                    <ldp-binding-standby-map-count>1</ldp-binding-standby-map-count>
+                    <ldp-binding-standby-rel-count>0</ldp-binding-standby-rel-count>
+                </ldp-binding-standby>
+            </ldp-binding>
+            <ldp-binding>
+                <ldp-label>301680</ldp-label>
+                <ldp-prefix> 10.255.107.234/32</ldp-prefix>
+                <ldp-binding-state>Active</ldp-binding-state>
+                <ldp-binding-age>1d 2:49:36</ldp-binding-age>
+                <ldp-binding-standby>
+                    <ldp-binding-standby-map-count>1</ldp-binding-standby-map-count>
+                    <ldp-binding-standby-rel-count>0</ldp-binding-standby-rel-count>
+                </ldp-binding-standby>
+            </ldp-binding>              
+            <ldp-binding>
+                <ldp-label>302048</ldp-label>
+                <ldp-prefix> 10.255.107.236/32</ldp-prefix>
+                <ldp-binding-state>Active</ldp-binding-state>
+                <ldp-binding-age>1d 2:49:36</ldp-binding-age>
+                <ldp-binding-standby>
+                    <ldp-binding-standby-map-count>1</ldp-binding-standby-map-count>
+                    <ldp-binding-standby-rel-count>0</ldp-binding-standby-rel-count>
+                </ldp-binding-standby>
+            </ldp-binding>
+            <ldp-binding>
+                <ldp-label>302096</ldp-label>
+                <ldp-prefix> P2MP root-addr 10.255.107.230, lsp-id 16777217</ldp-prefix>
+                <ldp-binding-state>Active</ldp-binding-state>
+                <ldp-binding-age>1d 2:49:36</ldp-binding-age>
+ +              <ldp-binding-standby>
+ +                  <ldp-binding-standby-map-count>1</ldp-binding-standby-map-count>
+ +                  <ldp-binding-standby-rel-count>0</ldp-binding-standby-rel-count>
+ +              </ldp-binding-standby>
+            </ldp-binding>
+        </ldp-database>
+        <ldp-database>
+            <ldp-database-type>Output label database</ldp-database-type>
+            <ldp-session-id>10.255.107.236:0--10.255.107.232:0</ldp-session-id>
+            <ldp-binding>
+                <ldp-label>299904</ldp-label>
+                <ldp-prefix> 10.255.107.230/32</ldp-prefix>
+                <ldp-binding-state>Active</ldp-binding-state>
+                <ldp-binding-age>1d 2:49:36</ldp-binding-age>
+            </ldp-binding>
+            <ldp-binding>
+                <ldp-label>299936</ldp-label>
+                <ldp-prefix> 10.255.107.232/32</ldp-prefix>
+                <ldp-binding-state>Active</ldp-binding-state>
+                <ldp-binding-age>1d 2:49:36</ldp-binding-age>
+            </ldp-binding>
+            <ldp-binding>
+                <ldp-label>299872</ldp-label>
+                <ldp-prefix> 10.255.107.234/32</ldp-prefix>
+                <ldp-binding-state>Active</ldp-binding-state>
+                <ldp-binding-age>1d 2:49:36</ldp-binding-age>
+            </ldp-binding>
+            <ldp-binding>
+                <ldp-label>3</ldp-label>
+                <ldp-prefix> 10.255.107.236/32</ldp-prefix>
+                <ldp-binding-state>Active</ldp-binding-state>
+                <ldp-binding-age>1d 2:49:36</ldp-binding-age>
+            </ldp-binding>
+            <ldp-binding>
+                <ldp-label>3</ldp-label>
+                <ldp-prefix> P2MP root-addr 10.255.107.232, lsp-id 1</ldp-prefix>
+                <ldp-binding-state>Active</ldp-binding-state>
+                <ldp-binding-age>1d 2:49:36</ldp-binding-age>
+            </ldp-binding>
+        </ldp-database>
+        <ldp-database>
+            <ldp-database-type>Input label database</ldp-database-type>
+            <ldp-session-id>10.255.107.236:0--10.255.107.234:0</ldp-session-id>
+            <ldp-binding>
+                <ldp-label>299808</ldp-label>
+                <ldp-prefix> 10.255.107.230/32</ldp-prefix>
+                <ldp-binding-state>Active</ldp-binding-state>
+                <ldp-binding-age>1d 2:49:36</ldp-binding-age>
+                <ldp-binding-standby>
+                    <ldp-binding-standby-map-count>1</ldp-binding-standby-map-count>
+                    <ldp-binding-standby-rel-count>0</ldp-binding-standby-rel-count>
+                </ldp-binding-standby>
+            </ldp-binding>
+            <ldp-binding>
+                <ldp-label>301136</ldp-label>
+                <ldp-prefix> 10.255.107.232/32</ldp-prefix>
+                <ldp-binding-state>Active</ldp-binding-state>
+                <ldp-binding-age>1d 2:49:36</ldp-binding-age>
+                <ldp-binding-standby>
+                    <ldp-binding-standby-map-count>1</ldp-binding-standby-map-count>
+                    <ldp-binding-standby-rel-count>0</ldp-binding-standby-rel-count>
+                </ldp-binding-standby>
+            </ldp-binding>
+            <ldp-binding>
+                <ldp-label>3</ldp-label>
+                <ldp-prefix> 10.255.107.234/32</ldp-prefix>
+                <ldp-binding-state>Active</ldp-binding-state>
+                <ldp-binding-age>1d 2:49:36</ldp-binding-age>
+                <ldp-binding-standby>
+                    <ldp-binding-standby-map-count>1</ldp-binding-standby-map-count>
+                    <ldp-binding-standby-rel-count>0</ldp-binding-standby-rel-count>
+                </ldp-binding-standby>
+            </ldp-binding>
+            <ldp-binding>
+                <ldp-label>302480</ldp-label>
+                <ldp-prefix> 10.255.107.236/32</ldp-prefix>
+                <ldp-binding-state>Active</ldp-binding-state>
+                <ldp-binding-age>1d 2:49:36</ldp-binding-age>
+                <ldp-binding-standby>
+                    <ldp-binding-standby-map-count>1</ldp-binding-standby-map-count>
+                    <ldp-binding-standby-rel-count>0</ldp-binding-standby-rel-count>
+                </ldp-binding-standby>
+            </ldp-binding>
+        </ldp-database>
+        <ldp-database>
+            <ldp-database-type>Output label database</ldp-database-type>
+            <ldp-session-id>10.255.107.236:0--10.255.107.234:0</ldp-session-id>
+            <ldp-binding>
+                <ldp-label>299904</ldp-label>
+                <ldp-prefix> 10.255.107.230/32</ldp-prefix>
+                <ldp-binding-state>Active</ldp-binding-state>
+                <ldp-binding-age>1d 2:49:36</ldp-binding-age>
+            </ldp-binding>
+            <ldp-binding>
+                <ldp-label>299936</ldp-label>
+                <ldp-prefix> 10.255.107.232/32</ldp-prefix>
+                <ldp-binding-state>Active</ldp-binding-state>
+                <ldp-binding-age>1d 2:49:36</ldp-binding-age>
+            </ldp-binding>
+            <ldp-binding>
+                <ldp-label>299872</ldp-label>
+                <ldp-prefix> 10.255.107.234/32</ldp-prefix>
+                <ldp-binding-state>Active</ldp-binding-state>
+                <ldp-binding-age>1d 2:49:36</ldp-binding-age>
+            </ldp-binding>
+            <ldp-binding>
+                <ldp-label>3</ldp-label>
+                <ldp-prefix> 10.255.107.236/32</ldp-prefix>
+                <ldp-binding-state>Active</ldp-binding-state>
+                <ldp-binding-age>1d 2:49:36</ldp-binding-age>
+            </ldp-binding>
+            <ldp-binding>
+                <ldp-label>299952</ldp-label>
+                <ldp-prefix> P2MP root-addr 10.255.107.230, lsp-id 16777217</ldp-prefix>
+                <ldp-binding-state>Active</ldp-binding-state>
+                <ldp-binding-age>1d 2:49:36</ldp-binding-age>
+            </ldp-binding>
+        </ldp-database>
+    </ldp-database-information>
+    <cli>
+        <banner>{standby}</banner>
+    </cli>
+</rpc-reply>
+
+2.6.1.7 show ldp database p2mp extensive
+
+Show ldp database p2mp will be modified on standby RE to show standby binding state.
+
+regress@pro10-e1> show ldp database p2mp extensive 
+Input label database, 10.255.107.236:0--10.255.107.232:0
+  Label     Prefix
+ 299968      P2MP root-addr 10.255.107.230, lsp-id 16777217
+            State: Active
+            Age: 4d 22:21:57
++           Standby binding state:
++               Map messages: 1
++               Release messages: 0
+
+Output label database, 10.255.107.236:0--10.255.107.232:0
+  Label     Prefix
+      3      P2MP root-addr 10.255.107.232, lsp-id 1
+            State: Active
+            Age: 4d 22:21:57
+
+Input label database, 10.255.107.236:0--10.255.107.234:0
+
+Output label database, 10.255.107.236:0--10.255.107.234:0
+  Label     Prefix
+ 300000      P2MP root-addr 10.255.107.230, lsp-id 16777217
+            State: Active
+            Age: 4d 22:21:57
+
+regress@pro10-e1> show ldp database p2mp extensive | display xml 
+<rpc-reply xmlns:junos="http://xml.juniper.net/junos/12.3I0/junos">
+    <ldp-database-information xmlns="http://xml.juniper.net/junos/12.3I0/junos-routing">
+        <ldp-database>
+            <ldp-database-type>Input label database</ldp-database-type>
+            <ldp-session-id>10.255.107.236:0--10.255.107.232:0</ldp-session-id>
+            <ldp-binding>
+                <ldp-label>299968</ldp-label>
+                <ldp-prefix> P2MP root-addr 10.255.107.230, lsp-id 16777217</ldp-prefix>
+                <ldp-binding-state>Active</ldp-binding-state>
+                <ldp-binding-age>4d 22:22:54</ldp-binding-age>
++               <ldp-binding-standby>
++                   <ldp-binding-standby-map-count>1</ldp-binding-standby-map-count>
++                   <ldp-binding-standby-rel-count>0</ldp-binding-standby-rel-count>
++               </ldp-binding-standby>
+            </ldp-binding>
+        </ldp-database>
+        <ldp-database>
+            <ldp-database-type>Output label database</ldp-database-type>
+            <ldp-session-id>10.255.107.236:0--10.255.107.232:0</ldp-session-id>
+            <ldp-binding>
+                <ldp-label>3</ldp-label>
+                <ldp-prefix> P2MP root-addr 10.255.107.232, lsp-id 1</ldp-prefix>
+                <ldp-binding-state>Active</ldp-binding-state>
+                <ldp-binding-age>4d 22:22:54</ldp-binding-age>
+            </ldp-binding>
+        </ldp-database>
+        <ldp-database>
+            <ldp-database-type>Input label database</ldp-database-type>
+            <ldp-session-id>10.255.107.236:0--10.255.107.234:0</ldp-session-id>
+        </ldp-database>
+        <ldp-database>
+            <ldp-database-type>Output label database</ldp-database-type>
+            <ldp-session-id>10.255.107.236:0--10.255.107.234:0</ldp-session-id>
+            <ldp-binding>
+                <ldp-label>300000</ldp-label>
+                <ldp-prefix> P2MP root-addr 10.255.107.230, lsp-id 16777217</ldp-prefix>
+                <ldp-binding-state>Active</ldp-binding-state>
+                <ldp-binding-age>4d 22:22:54</ldp-binding-age>
+            </ldp-binding>
+        </ldp-database>
+        <ldp-database>
+            <ldp-database-type>Input label database</ldp-database-type>
+            <ldp-session-id>10.255.107.236:0--10.255.107.238:0</ldp-session-id>
+        </ldp-database>
+        <ldp-database>                  
+            <ldp-database-type>Output label database</ldp-database-type>
+            <ldp-session-id>10.255.107.236:0--10.255.107.238:0</ldp-session-id>
+        </ldp-database>
+    </ldp-database-information>
+    <cli>
+        <banner>{backup}</banner>
+    </cli>
+</rpc-reply>
+
+2.7	JUNOScript
+
+Covered in section 2.6.
+
+
+2.8	J-Web Quick Configuration and Monitor Screen
+
+N/A.
+
+
+2.9 SNMP
+
+N/A.
+
+
+2.10	Syslog – ERRMSG
+
+N/A.
+
+
+2.11	Serviceability and diagnose-ability
+
+We could use these additional commands to debug mLDP NSR apart from the new replication 
+commands described in section 2.6.
+
+1) show system switchover 
+2) show task replication
+3) All LDP operational commands are available on both master and standby
+   RE except 'show ldp traffic-statistics'
+
+
+2.12	Assumptions
+
+It is assumed that whenever NG-MVPN and PIM NSR is supported, they will call in same APIs
+on standby RE as they call on master RE to re-construct TAI data structures on standby RE 
+for Ingress and Egress P2MP LSPs. 
+
+
+2.13	Constraints and Limitations
+
+N/A.
+
+
+2.14	Dependencies and Interactions with other Components in the System
+
+N/A
+
+
+2.15	Examples or Interaction Descriptions
+
+
+2.16	Free Software Considerations
+
+N/A.
+
+
+2.17	3rd party Software Considerations
+
+N/A.
+
+ 
+3.	Caveats
+
+1) No NSR support will be provided for Ingress P2MP LSPs used by either MVPN or
+   PIM. Should NSR be enabled in these scenarios, packet loss will occur during 
+   failover. However, the system must remain stable and should ultimately recover 
+   and resume packet forwarding. 
+
+2) When link-protection with dynamic-rsvp-lsp is in use for any of the P2MP 
+   branches (due to a primary link failure), the dynamic-rsvp-lsps for those 
+   branches will not be replicated. As a result, when NSR failover occurs in this 
+   situation, traffic on those branches will stop getting forwarded until either 
+   the failed interface comes back up or new master bring up a dynamic-rsvp-lsp. 
+
+3) If link protection with loop free alternate is active when a NSR switchover 
+   happens, link-protection timer will be started from scratch on the new master.  
+   Hence it may take a little longer (link protection expiry interval + link 
+   protection expiry timer time run on old master) for link-protection to expire.
+   So in the worst case, link protection expiry time interval could be twice as 
+   configured.  
+
+4) All the caveats listed in Reference [1] are applicable to mLDP NSR too.
+
+
+4.	Other Requirements
+
+None.
+
+
+5.	Resource Estimation
+
+A replication data structure will be allocated dynamically per P2MP FEC label 
+given to peers and per Ingress tunnel created by NG-MVPN on primary RE. 
+
+On standby RE, we will create new standby data structure per P2MP FEC, Per label 
+given to peer and also a reference structure binding these two. Generally mLDP 
+NSR will use more memory on standby RE as compared to primary RE. 
+
+
+6.	Performance 
+
+Ideally performance should not degrade with NSR. In reality primary need to 
+send all the control state to standby RE as well need to maintain more 
+data structures compared to no NSR, so we will see some effect on the performance. 
+So far we have tested 3000 P2MP FECs for mLDP. Expectation is that we would still 
+be able to support these number of FECs with NSR.
+
+We need to monitor CPU utilization before and after RE switchover on both master 
+and standby RE.
+
+
+6.1	Performance Related Resources
+
+N/A.
+
+6.2	Target Performance
+
+As described above.
+
+
+7.	Compatibility Issues
+
+N/A.
+
+
+8.	Security Issues
+
+N/A.
+
+9.	Platforms Supported
+
+This feature will be supported on all platforms with dual REs.
+
+
+10.	High Availability (HA)
+
+10.1	Graceful RE Switchover(GRES), ISSU and NSSU Impact
+
+New replication messages will be added in for mLDP NSR. Some additional TLVs will be included
+in flood nexthop replication message from KRT. This does not adversely impact ISSU as the IDL 
+message format is design to handle such cases.
+
+
+10.2 NSR Impact
+
+This feature is all about mLDP NSR.
+
+
+11.	Aggregated Ethernet/ SONET/ IRB Support
+
+N/A.
+
+
+12.	SDK Impact
+
+N/A.
+
+
+12.1 SDK Customer Usage
+
+N/A.
+
+
+13.	Services/JSF (JUNOS Services Framework) Impact 
+
+N/A.
+
+
+14.	JUNOS Ready Software considerations 
+
+N/A.
+
+
+16.	64-Bit Support
+
+This feature will have 64-bit support. 
+
+
+17. IPv6 Support
+
+N/A.
+
+
+18.	Logical System Support
+
+This feature will be supported in logical system.
+
+
+19.	Notes
+
+N/A.
+
+
+20.	Glossary
+
+NSR         : Non-Stop Routing.
+mLDP        : Multipoint extensions for LDP.
+RE          : Routing Engine.
+JSR         : Junos Replication Socket.
+ISR         : Internal routing socket.
+MBB         : Make Before Break.
+
+
+21.	Design Specification exception
+
+N/A
+
+
+22.	Review Comments
+
+<TODO: add pointer to DRT record here>
+
+
+22.1	Review stakeholder matrix
+
+Function			Name			Required?	Approval State
+---------------------------------------------------------------------------------------------------------------
+SW1 (kernel, RPD, PFE etc)				Yes/No/Optional	Approved/Rejected/Approved with actions
+SW2 (kernel, RPD, PFE etc)				Yes/No/Optional	Approved/Rejected/Approved with actions
+SW3 (kernel, RPD, PFE etc)				Yes/No/Optional	Approved/Rejected/Approved with actions
+SW Manager						Yes/No/Optional	Approved/Rejected/Approved with actions
+JAB							Yes/No/Optional	Approved/Rejected/Approved with actions
+Systest							Yes/No/Optional	Approved/Rejected/Approved with actions
+Tech-pubs						Yes/No/Optional	Approved/Rejected/Approved with actions
+JTAC							Yes/No/Optional	Approved/Rejected/Approved with actions
+HW							Yes/No/Optional	Approved/Rejected/Approved with actions
+
+
+
+© Copyright 2010 Juniper Networks, Inc. -- Proprietary and Confidential –  
+Do not distribute outside of the company without the permission of Juniper Networks engineering
+Printed copies are for reference only!
+ 

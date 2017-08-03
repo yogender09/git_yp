@@ -1,0 +1,931 @@
+                    BFD NSR unit-test plan
+
+               Nitin Bahadur <nitinb@juniper.net>
+
+  $Id: bfd-nsr-unit-test-plan.txt,v 1.4 2007/05/23 23:40:46 nitinb Exp $
+
+S3.02.P05.T02
+{Standard Unit Test Plan Template}
+
+Copyright (C) 2007, Juniper Networks, Inc.
+
+NOTICE: This document contains the proprietary and confidential
+information of Juniper Networks, Inc., and must not be
+distributed outside of the company without the
+permission of Juniper Engineering.
+
+
+1.  INTRODUCTION
+
+This document is the unit test plan for BFD NSR. The goal of unit-test
+is to test bfd session state replication and seamless operation in case of RE
+switchover. Kindly see the funtional spec for a detailed list of features 
+supported/not-supported by the RLI.
+
+
+Tracks:
+        RLI 2726: NSR: BFD state replication
+        PR: 94592
+        Functional Spec: sw-projects/os/nsr/bfd-nsr-funcspec.txt
+
+
+2.  SETUP
+
+For testing the basic functionality, the following 2 router setups shall be
+used. 
+
+Topology 1
+----------
+The 2 routers shall be connected over multiple interfaces over which
+multiple BFD sessions shall be run. The 2 routers can be any dual-RE
+M-series -RE boxes.
+
+                         -----         -----
+                        |  R1 |<----> |  R2 |
+                        |____ |       |_____|
+
+
+Topology 2
+----------
+The 2 routers shall be connected over multiple interfaces over which
+multiple BFD sessions shall be run. The 2 routers will be one of M320,
+T-series or M120. This topology shall be used for testing BFD NSR with
+distributed ppmd (bfd running on the pfe).
+
+                         -----         -----
+                        |  R1 |<----> |  R2 |
+                        |____ |       |_____|
+
+
+To enable distributed ppmd, set the following:
+
+    set routing-options ppm delegate-processing
+
+
+Topology 3
+----------
+In this topology, the DUT shall be connected to 2 other helper routers to
+simulate a large number of BFD sessions. This topology will be mainly used to
+test session scaling. All the routers will be either M320,M120 or T-series.
+
+                 -----         -----         -----
+                |  R1 |<----> | DUT | <---> | R2  |
+                |____ |       |_____|       |_____|
+
+
+3. FUNCTIONAL TEST CASES
+
+This section covers the functional test cases executed as part of unit-testing
+the RLI functionality. The tests assume that nonstop-routing was configured
+under routing-options. All tests were run on dual-RE machines as no session
+replication happens in single RE machines.
+
+3.1 Session replication tests
+-----------------------------
+
+The following test cases cover the basic session replication scenarios.
+
+
+3.1.1   Simple session state replication
+
+  Goal: Confirm that session replication works for a bfd session
+  Test Steps: 
+    1. Configure a BFD session between 2 peers.
+    2. Do a show bfd session extensive on the master RE.
+    3. Do a show bfd session extensive on the backup RE.
+  Success Criteria:
+    The output of the show command  on the backup RE matches the output on the
+    master RE.
+  Result: Pass
+
+3.1.2   Additional replication of sessions
+
+  Goal: Confirm that when a new session is configured, it gets replicated
+        correctly and this does not affect the existing replicated session.
+  Test Steps:
+    1.  Configure a BFD session between 2 peers.
+    2.  Do a show bfd session on backup RE to confirm it has got replicated.
+    3.  Turn on nsr-packet knob in the bfd traceoptions.
+    3.  Configure another BFD session between the 2 peers.
+    4.  Do a show bfd session on backup RE to confirm it too got replicated.
+    5.  Check the traceoptions to confirm that only information regarding the
+        new session was exchanged between the 2 REs.
+  Success Criteria:
+        The output of the show command on the master RE matches the output on
+        the backup RE.
+  Result: Pass
+    
+        
+3.1.3   Deletion of bfd session and it's replication state
+
+  Goal: Confirm that deconfiguring a bfd session makes it go away from both
+        master and backup RE.
+  Test Steps:
+    1.  Configure a BFD session between 2 peers.
+    2.  Do a show bfd session on backup RE to confirm it has got replicated.
+    3.  Deconfigure the BFD session.
+    4.  Do a show bfd session on backup RE to confirm that it has been deleted
+        from the backup also.
+  Success Criteria:
+        The output of the show command on the master RE matches the output on
+        the backup RE.
+  Result: Pass
+
+3.1.4   Reconfiguration of bfd sessions
+
+  Goal: Confirm that reconfiguration of bfd sessions results in similar state
+        on backup RE.
+  Test Steps:
+    1.  Repeat all steps from steps 3.1.3
+    2.  Configur the BFD session again.
+    3.  Do a show bfd session on backup RE to confirm it has got replicated.
+  Success Criteria:
+        The output of the show command on the master RE matches the output on
+        the backup RE.
+  Result: Pass
+
+3.1.5   Change of bfd session state on peer
+
+  Goal: Confirm that a change in bfd session state by the peer causes the
+        change to get propagated to the backup RE.
+  Test Steps:
+    1.  Configure a BFD session between 2 peers.
+    2.  Do a clear bfd session on the peer. The session should go down and come
+        up.
+    3.  Use show bfd session to see the session state transition between DOWN 
+        and UP on the master RE.
+    4.  Do a clear bfd session again on the peer.
+    5.  Now observe the session state transitions on the backup RE.
+  Success Criteria:
+        The output of the show command on the master RE matches the output on
+        the backup RE.
+  Result: Pass
+
+3.1.6   Change of bfd session state on DUT
+  
+  Goal: Confirm that a change in bfd session state on the DUT causes the
+        change to get propagated to the backup RE.
+  Test Steps:
+    1.  Configure a BFD session between 2 peers.
+    2.  Do a clear bfd session on the master RE. The session should go down and
+        come up.
+    3.  Use show bfd session to see the session state transition between DOWN 
+        and UP on the master RE.
+    4.  Do a clear bfd session again on the master RE.
+    5.  Now observe the session state transitions on the backup RE.
+  Success Criteria:
+        The output of the show command on the master RE matches the output on
+        the backup RE.
+  Result: Pass
+
+
+3.2 BFD client related test cases
+---------------------------------
+
+This set of tests are related to testing bfdd client behavior on the backup
+RE.
+
+3.2.1   Creation of bfdd sessions on the backup RE.
+  
+  Goal: Confirm that bfdd client programs the bfd session on the backup RE.
+  Test Steps:
+    1.  Configure bfd-liveliness-detection under an OSPF interface.
+    2.  Do a show bfd session detail on the backup RE. You should see a client
+        entry for OSPF
+  Success Criteria:
+        An OSPF client is associated with the BFD session on the backup RE.
+  Result: Pass
+
+  Repeat the above test by configuring bfd-liveliness-detection under the
+  following protocols:
+
+    1.  ISIS
+    2.  RIP
+    3.  I-BGP
+    4.  E-BGP
+    5.  Static single-hop
+    6.  Static multi-hop
+
+
+3.2.2   Session failure and no negative impact on the backup RE.
+  
+  Goal: Confirm that a bfd session failure does not cause churn on the backup
+        RE.
+  Test Steps:
+    1.  Configure bfd-liveliness-detection under an OSPF interface.
+    2.  Do a show bfd session detail on the backup RE and make sure session is
+        in UP state.
+    3.  Configure all ospf traceoptions   
+    4.  Deconfigure the bfd session from the peer. The session should go down.
+    5.  Observe OSPF logs on backup.
+  Success Criteria:
+        BFD session failure notification on backup RE does not cause any OSPF 
+        churn.
+  Result: Pass
+
+  Repeat the above test by configuring bfd-liveliness-detection under the
+  following protocols:
+
+    1.  ISIS
+    2.  RIP
+    3.  I-BGP
+    4.  E-BGP
+
+
+3.2.3   Session failure and impact on the backup RE for static routes.
+  
+  Goal: Confirm that a bfd session failure results in static route being
+        withdrawn on backup RE also.
+  Test Steps:
+    1.  Configure bfd-liveliness-detection under routing-options static route
+    2.  Do a show bfd session detail on the backup RE and make sure session is
+        in UP state.
+    3.  Do a show route protocol static <ip-addr> on backup RE, to confirm 
+        route is installed.
+    4.  Deconfigure the bfd session from the peer. The session should go down.
+    5.  Do a show route protocol static <ip-addr> on backup RE to confirm
+        route is withdrawn.
+  Success Criteria:
+        Static route gets withdrawn on backup RE on bfd session failure.
+  Result: Pass
+
+  Repeat the above test by configuring bfd-liveliness-detection for a
+  multi-hop static route.
+
+
+3.3 Config mistmatch test cases
+-------------------------------
+
+This set of test cases tests BFD NSR operation under mismatched config cases.
+
+3.3.1   BFD session replication for session configured only on master RE.
+
+  Goal: Confirm that BFD replication works even if there is no client on
+        backup RE.
+  Test Steps:
+    1.  Configure bfd-liveliness-detection under routing-options static route
+    2.  Perform a commit, not a commit-synchronize
+    3.  Do a show bfd session on master RE to see the session.
+    4.  Do a show bfd session on backup RE extensive to confirm that session
+        got replicated.
+  Success Criteria:
+        BFD session gets replicated to backup RE and has no client associated
+        with it.
+  Result: Pass
+        
+
+3.3.2   BFD client getting attached to a previously replicated bfd session on
+        backup.
+
+  Goal: Confirm that if a bfd client is configured on the backup, it gets
+        attached to an existing clientless bfd session.
+  Test Steps:
+    1.  Configure bfd-liveliness-detection under routing-options static route
+    2.  Perform a commit, not a commit-synchronize
+    3.  Do a show bfd session extensive on backup RE to see the session. The
+        session should be clientless.
+    4.  Now perform a commit sync on the master RE.
+    5.  Do a show bfd session extensive again.
+  Success Criteria:
+        BFD session on backup now has a client attached to it.
+  Result: Pass
+
+3.3.3   BFD session configured only on the backup.
+
+  Goal: Confirm that a BFD session configured only on the backup comes up on
+        RE switchover.
+  Test Steps:
+    1.  Configure a bfd session only on the backup RE.
+    2.  Do a show bfd session extensive. You should see this session with a
+        zero local discriminator.
+    3.  Now perform a RE switchover.
+    4.  Do a show bfd session extensive again.
+  Success Criteria:
+        BFD session on the new master comes up with a valid local
+        discriminator.
+  Result: Pass
+
+3.3.4   BFD session deletion for session configured only on the master.
+
+  Goal: Confirm that a BFD session configured only on the master goes down on
+        RE switchover.
+  Test Steps:
+    1.  Configure a BFD session only on the master RE by doing a commit.
+    2.  Do a show bfd session on the backup RE. You should see the replicated
+        session on the backup.
+    3.  Perform a RE switchover.
+    4.  After some seconds, do a show bfd session on the new master.
+  Success Criteria:
+        The BFD session on the new master goes down and eventually disappears.
+  Result: Pass
+
+3.3.5   BFD session configured only on the master and configured on backup
+        after switchover.
+
+  Goal: Confirm that if a BFD session is quickly configured on the new master
+        after a RE switchover, it gets attached to an existing replicated 
+        session.
+  Test Steps:
+    1.  Configure a BFD session only on the master RE by doing a commit.
+    2.  Do a show bfd session on the backup RE. You should see the replicated
+        session on the backup.
+    3.  Perform a RE switchover.
+    4.  Quickly configure the BFD session on the new master.
+    5.  Do a show bfd session on the new master.
+  Success Criteria:
+        The replicated BFD session on the new master does not go down and gets
+        attached to the newly configured bfd client.
+  Result: Pass
+
+3.3.6   BFD session configured with different versions on the 2 REs.
+        
+  Goal: Confirm that if a BFD session is configured with different versions on
+        the 2 REs, the session does not flap on switchover.
+  Test Steps:
+    1.  Configure a BFD session with version 1 on the master RE.
+    2.  Configure a BFD session with version 0 on the backup RE.
+    3.  Do a show bfd session extensive on the peer. The session version
+        should be 1.
+    4.  Perform a RE switchover.
+    5.  Do a show bfd session extensive on the peer.
+  Success Criteria:
+        The peer should not see a session flap on switchover and the session
+        version should continue to be 1. 
+  Result: Pass
+  
+3.3.7   BFD session configured first on the backup and then replicated from
+        the master.
+
+  Goal: Confirm that if the session replication happens after the session gets
+        created on the backup (via the client), the linking of the session to
+        the replicated data works correctly.
+  Test Steps:
+    1.  Configure a bfd session only on the backup RE.
+    2.  Do a show bfd session extensive. You should see this session with a
+        zero local discriminator.
+    3.  Configure the session on the master RE now.
+    4.  Do a show bfd session extensive on the backup RE. 
+  Success Criteria:
+        The bfd session on the backup should now have a non-zero discriminator
+        and state information as replicated from the master.
+        
+Note that in 8.5, if nonstop-routing is configured, then one cannot have
+mismatched configs. This was a recently added change.
+
+
+3.4 BFD state machine test cases
+--------------------------------
+
+This set of test cases test the accuracy of bfd state machine replication.
+
+3.4.1   DUT bfd session held in INIT state.
+
+  Goal: Confirm that if the bfd session is in INIT state, then the same state
+        is reflected on the backup RE also.
+  Test Steps:
+    1.  Configure a bfd session on the peer.
+    2.  Construct a firewall filter on the peer so that it blocks all incoming
+        packets destinated for port 3784.
+    3.  Configure the bfd session on the DUT. Now the DUT's packets will be
+        dropped by the filter on the peer.
+    4.  Do a show bfd session extensive on the peer. Peer should be in down
+        state.
+    5.  Do a show bfd session extensive on the master RE and the backup RE.
+  Success Criteria:
+        The BFD session information should match on the 2 REs. Both RE's
+        should show the session in the INIT state.
+  Result: Pass
+
+3.4.2   Peer BFD session held in INIT state.
+
+  Goal: Confirm that if the bfd session is in DOWN state, then the same state
+        is reflected on the backup RE also.
+  Test Steps:
+    1.  Configure a bfd session on the DUT.
+    2.  Construct a firewall filter on the DUT so that it blocks all incoming
+        packets destinated for port 3784.
+    3.  Configure the bfd session on the peer. Now the peer's packets will be
+        dropped by the filter on the DUT.
+    4.  Do a show bfd session extensive on the peer. Peer should be in INIT
+        state.
+    5.  Do a show bfd session extensive on the master RE and the backup RE.
+  Success Criteria:
+        The BFD session information should match on the 2 REs. Both RE's
+        should show the session in the DOWN state.
+  Result: Pass
+
+3.4.3   Detection time threshold exceeded trap sending
+
+  Goal: Confirm that detection time threshold exceeded trap is sent only on
+        the master RE.
+  Test Steps:
+    1.  Configure a BFD session with a detection time threshold value. The BFD
+        session must be on a GE/FE link.
+    2.  Flap the bfd session on the peer by repeatedly (for some time) by doing
+        "ifconfig <if-name> down" and "ifconfig <if-name> up. 
+    3.  Do a show bfd session on DUT. The detection time should have adapted
+        to a higher value. It it hasn't, repeat step 2.
+    4.  View the syslog messages file on the master and backup RE.
+  Success Criteria:  
+        The detection time threshold exceeded trap should be present only in
+        the messages file on the master RE.
+  Result: Pass
+
+3.4.4   Transmit interval threshold exceeded trap sending
+
+  Goal: Confirm that transmit interval threshold exceeded trap is sent only on
+        the master RE.
+  Test Steps:
+    1.  Configure a BFD session with a detection time threshold value. The BFD
+        session must be on a GE/FE link.
+    2.  Flap the bfd session on the DUT by repeatedly (for some time) by doing
+        "ifconfig <if-name> down" and "ifconfig <if-name> up.
+    3.  Do a show bfd session on DUT. The transmit interval should have adapted
+        to a higher value. It it hasn't, repeat step 2.
+    4.  View the syslog messages file on the master and backup RE.
+  Success Criteria:  
+        The transmit interval threshold exceeded trap should be present only in
+        the messages file on the master RE.
+  Result: Pass
+
+3.4.5   Change in BFD minimum-interval by the peer
+
+  Goal: Confirm that BFD session state is correctly replicated when the peer
+        changes it's minimum-interval.
+  Test Steps:
+    1.  Configure a BFD session
+    2.  Change the minimum-interval on the peer.
+    3.  Do a show bfd session extensive on the peer and the DUT.
+  Success Criteria:
+        The various intervals should match on the master and backup RE of the
+        DUT.
+
+3.4.6   Change in BFD minimum-interval on the DUT
+
+  Goal: Confirm that BFD session state is correctly replicated when we change
+        the minimum-interval on the DUT.
+  Test Steps:
+    1.  Configure a BFD session
+    2.  Change the minimum-interval on the DUT.
+    3.  Do a show bfd session extensive on the peer and the DUT.
+  Success Criteria:
+        The various intervals should match on the master and backup RE of the
+        DUT.
+
+3.4.7   Change in BFD multiplier by the peer
+
+  Goal: Confirm that BFD session state is correctly replicated when the peer
+        changes it's multiplier
+  Test Steps:
+    1.  Configure a BFD session
+    2.  Change the multipler on the peer.
+    3.  Do a show bfd session extensive on the peer and the DUT.
+  Success Criteria:
+        The detection should should be the same on the master and backup RE.
+
+
+3.5 Hold-down interval test cases
+---------------------------------
+
+This section of tests validate that hold-down interval settings are maintained
+across RE switchover.
+
+3.5.1   Static route in holddown and BFD session in DOWN state.
+
+  Goal: Confirm that static route comes up only after BFD session has been UP
+        for the specified interval.
+  Test Steps:
+    1.  Configure a BFD session under routing-options static. Associate with
+        the bfd session a holddown-interval. Do not configure the BFD session
+        on the peer. The session will be in DOWN state as a result.
+    2.  Perform a RE switchover
+    3.  Configure the BFD session on the peer. The session should start coming
+        up.
+    4.  Do a "show route protocol static <destination>". This should not show
+        anything since the BFD session is under holddown.
+    5.  Wait until the holddown interval expires.
+    6.  Do a "show route protocol static <destination>" on the master.
+  Success Criteria:
+        The static route should get advertised after the BFD session has been
+        up for the holddown-interval.
+  Result: Pass
+
+3.5.2   Static route in holddown with RE switchover
+
+  Goal: Confirm that static route comes up only after BFD session is UP for
+        the holddown interval.
+  Test Steps:
+    1.  Configure a BFD session under routing-options static. Associate with
+        the bfd session a high holddown-interval (say 30 seconds).
+    2.  Do a show bfd session on the master. The BFD session should be UP.
+    3.  Do a "show route protocol static <destination>". This should not show
+        anything since the BFD session is under holddown.
+    4.  Perform a RE switchover.
+    5.  Do a "show route protocol static <destination>" on the new master.
+  Success Criteria:
+        The static route should get advertised after the BFD session has been
+        up for the holddown-interval.
+  Result: Pass
+
+3.5.3   Static route in holddown and multiple RE switchovers
+
+  Goal: Confirm that static route comes up only after BFD session is UP for
+        the holddown interval. The condition should hold true even if we do
+        multiple RE switchovers.
+  Test Steps:
+    1.  Configure a BFD session under routing-options static. Associate with
+        the bfd session a high holddown-interval (say 120 seconds).
+    2.  Do a show bfd session on the master. The BFD session should be UP.
+    3.  Do a "show route protocol static <destination>". This should not show
+        anything since the BFD session is under holddown.
+    4.  Perform 6 RE switchovers in succession.
+    5.  Do a "show route protocol static <destination>" on the master.
+  Success Criteria:
+        The static route should get advertised after the BFD session has been
+        up for the holddown-interval. The BFD session should not have flapped
+        during the switchovers.
+  Result: Pass
+
+    
+3.6 Switchover test cases
+-------------------------
+
+These set of tests validate bfd protocol operation across RE switchovers.
+
+3.6.1   Session state maintenance across RE switchover.
+
+  Goal: Confirm that a RE switchover does not change the state of a BFD
+        session.
+  Test Steps:
+    1.  Configure a BFD session and wait till it comes up.
+    2.  Do a show bfd session extensive on the master.
+    3.  Perform a RE switchover.
+    4.  Do a show bfd session extensive on the new master.
+  Success Criteria:
+        The output of the show commands in the 2 cases should be the same.
+        The session UP time in Step 4 should be greater than that observed in
+        Step 2.
+  Result: Pass
+
+  Perform the above case with BFD sessions on the PFE.
+
+3.6.2   Peer BFD session held in INIT state and RE switchover
+
+  Goal: Confirm that if the bfd session is in DOWN state and peer is in INIT
+        state, then on RE switchover, the peer should not transition to DOWN
+        state.
+  Test Steps:
+    1.  Configure a bfd session on the DUT.
+    2.  Construct a firewall filter on the DUT so that it blocks all incoming
+        packets destinated for port 3784.
+    3.  Configure the bfd session on the peer. Now the peer's packets will be
+        dropped by the filter on the DUT.
+    4.  Do a show bfd session on the peer. Peer should be in INIT state.
+    5.  Perform a RE switchover.
+    6.  Do a show bfd session on the peer. 
+  Success Criteria:
+        Peer should still be in INIT state after RE switchover and peer's
+        session should not have flapped between INIT and DOWN.
+  Result: Pass
+
+  Note: On RE switchover, the peer's session will flap if bfd minimum-interval
+        is small (less than a few seconds). This will happen even with 
+        distributed ppmd (BFD on PFE) since sessions don't get distributed 
+        until they are in UP state.
+
+3.6.3   DUT BFD session held in INIT state and RE switchover
+
+  Goal: Confirm that if the bfd session is in INIT state and peer is in DOWN 
+        state, then on RE switchover, the DUT should not transition to DOWN
+        state.
+  Test Steps:
+    1.  Configure a bfd session.
+    2.  Construct a firewall filter on the peer so that it blocks all incoming
+        packets destinated for port 3784. Now the DUT's packets will be
+        dropped by the filter on the peer.
+    4.  Do a show bfd session on the DUT. Session should be in INIT state.
+    5.  Perform a RE switchover.
+    6.  Do a show bfd session on the new master. 
+  Success Criteria:
+        DUT should still be in INIT state after RE switchover and DUT's
+        session should not have flapped between INIT and DOWN.
+  Result: Pass
+
+3.6.4   Clear bfd session state on DUT and RE switchover
+
+  Goal: Confirm that after we do a clear bfd session, the session comes up
+        cleanly again and then on switchover the session continues to stay UP.
+        This will validate replication across session going down and coming up.
+  Test Steps:
+    1.  Configure a bfd session.
+    2.  Do clear bfd session on DUT.
+    3.  Wait for session to come up. Note the session UP time by doing show
+        bfd session extensive.
+    3.  Perform a RE switchover.
+    4.  Do a show bfd session extensive on new master.
+  Success Criteria:
+        The bfd session should not flap after the switchover. After RE 
+        switchover, the session UP time on the new master should be
+        greater than that observed in Step 2.
+  Result: Pass
+
+  Perform the above case with BFD sessions on the PFE.
+
+3.6.5   Clear bfd session state on peer and RE switchover
+
+  Goal: Confirm that after we do a clear bfd session, the session comes up
+        cleanly again and then on switchover the session continues to stay UP.
+        This will validate replication across session going down and coming up.
+  Test Steps:
+    1.  Configure a bfd session.
+    2.  Do clear bfd session on the peer.
+    3.  Wait for session to come up. Note the session UP time by doing show
+        bfd session extensive.
+    3.  Perform a RE switchover.
+    4.  Do a show bfd session extensive on new master.
+  Success Criteria:
+        The bfd session should not flap after the switchover. After RE 
+        switchover, the session UP time on the new master should be
+        greater than that observed in Step 2.
+  Result: Pass
+
+  Perform the above case with BFD sessions on the PFE.
+
+3.6.6   PFE state cleanup after switchover with mismatched config
+
+  Goal: Confirm that if a BFD session is not configured on the backup and a RE
+        switchover takes place, then that session is deleted from the PFE
+        also.
+  Test Steps:
+    1.  Configure delegate-processing knob to enable distribution to PFE.
+    2.  Configure a BFD session only on the master RE by doing a commit.
+    3.  Do a show ppm connection detail. In the PFE row, you should see a
+        non-zero counts.
+    4.  Perform a RE switchover. Wait for sometime.
+    5.  Do a show ppm connection detail on the new master.
+  Success Criteria:
+        In the PFE row, all counts should be 0. The session should have gotten
+        cleaned up from the PFE.
+  Result: Pass
+    
+
+3.7 Failure test cases
+----------------------
+
+This section deals with catastrophic failures and how bfd nsr reacts in such
+conditions.
+
+3.7.1   BFDD restart on backup RE.
+
+  Goal: Confirm that bfdd restart on backup RE has no effect on master RE and
+        that replication proceeds as normal after the restart.
+  Test Steps:
+    1.  Configure multiple BFD sessions
+    2.  Do show bfd session extensive on backup RE. The replicated sessions 
+        should be there.
+    3.  Restart bfdd on backup RE. Wait for a short time.
+    4.  Do show bfd session extensive on backup RE. 
+  Success Criteria:
+        All sessions should have got replicated again. The UP time for all
+        sessions must be greater than that observed in Step 2.
+  Result: Pass
+       
+3.7.2   RPD restart on backup RE.
+
+  Goal: Confirm that rpd restart on backup RE has no effect on bfdd
+  Test Steps:
+    1.  Configure multiple BFD sessions
+    2.  Do show bfd session extensive on backup RE. The replicated sessions 
+        should be there.
+    3.  Restart routing on backup RE.
+    4.  Do show bfd session extensive on backup RE.
+  Success Criteria:
+        All sessions should be there The UP time for all sessions must be 
+        greater than that observed in Step 2.
+  Result: Pass
+       
+3.7.3   PPMD restart on backup RE.
+
+  Goal: Confirm that ppmd restart on backup RE has no effect on BFD sessions.
+  Test Steps:
+    1.  Configure multiple BFD sessions
+    2.  Do show ppm connections detail. See the numbers associated with BFD.
+    3.  Restart ppmd on backup RE.
+    4.  Wait for a while. Do a show ppm connections detail.
+  Success Criteria:
+        The BFD row of the output in Step 2 and Step 4 should be identical.
+  Result: Pass
+
+3.7.4   Master RE crash
+
+  Goal: Confirm that bfd sessions stay alive in case of master RE crash.
+  Test Steps:
+    1.  Configure multiple pfe-based bfd sessions.
+    2.  Do a show bfd session extensive.
+    3.  Panic the master RE kernel. One way would be to "send break" at the
+        telnet prompt to the DUT console and then type panic.
+    4.  Do a show bfd session extensive on the new master RE.    
+  Success Criteria:
+        BFD sessions do not flap and the session up time obtained in Step 4 is
+        greater than that seen in Step 2.
+  Result: Pass
+
+3.7.4   Master RE power failure
+
+  Goal: Confirm that bfd sessions stay alive in case of master RE power
+        failure.
+  Test Steps:
+    1.  Configure multiple pfe-based bfd sessions.
+    2.  Do a show bfd session extensive.
+    3.  Manually switch off the power to the master RE.
+    4.  Do a show bfd session extensive on the new master RE.    
+  Success Criteria:
+        BFD sessions do not flap and the session up time obtained in Step 4 is
+        greater than that seen in Step 2.
+  Result: Pass
+
+
+3.8 Stability test cases
+------------------------
+
+These set of cases test the stability of the bfdd/ppmd daemons across repeated
+long-running operations. The goal of these tests case is that there should be
+no bfdd or ppmd core on both the master and the backup RE.
+
+3.8.1   Restart bfdd on backup in a loop
+3.8.2   Deactivate/activate interfaces on peer in a loop
+3.8.3   Deactivate/activate interfaces on DUT in a loop
+3.8.4   clear bfd session on peer in a loop      
+3.8.5   clear bfd session on DUT in a loop      
+3.8.6   Perform RE switchover in a loop. Should not cause bfd session failures
+        on peer (if using PFE based BFD or high minimum-intervals)
+
+  Run the above tests with PFE based BFD sessions.
+
+
+3.9 Unsupported scenario test cases
+-----------------------------------
+
+The following test cases are invalid test cases for this RLI (as per Section 2
+and Section 2 and Section 3 of the functional spec:
+
+* With RE-based BFD session and low minimum-interval (less than 5 sec), 
+  perform a switchover. The peer will complain of session going down.
+* Configure BFD for LDP OAM. On switchover, LDP-OAM on peer will complain of 
+  the session going down.
+* Configure BFD for RSVP OAM. On switchover, RSVP on peer will complain of the
+  session going down.
+* Configure BFD for PIM. On switchover, PIM on peer will complain of the 
+  session going down.
+* Restart bfdd on master RE. BFD sessions will flap.
+* Restart ppmd on master RE. BFD sessions will flap.
+
+
+3.10 Scaling
+------------
+
+Scaling tests measure the system stability and replication capability when a
+large number of BFD sessions are configured. All tests in this section will
+make use of Topology 3 in Section 2.
+
+3.10.1  Replication time for 1000 BFD sessions
+
+  Goal: Measure the replication time for 1000 BFD sessions to make sure
+        that replication isn't a bottleneck.
+  Test Steps:
+    1.  Configure 1000 bfd sessions.
+    2.  Do a clear log bfd on the 2 REs
+    3.  Set the nsr-synchronization traceoptions under protocol bfd
+    4.  Restart bfdd on the backup RE
+    5.  After a few seconds, grep for "Initial" in the bfd log file on master
+        RE.
+  Success Criteria:
+        BFD log will show the initial sync time for 1000 sessions. This should
+        be within a few seconds.
+  Result: Pass, Initial sync time - 150 msec, 452K replication bytes
+
+3.10.2  Replication time for 2000 BFD sessions
+
+  Goal: Measure the replication time for 2000 BFD sessions to make sure
+        that replication isn't a bottleneck.
+  Test Steps:
+    1.  Configure 2000 bfd pfe based sessions.
+    2.  Do a clear log bfd on the 2 REs
+    3.  Set the nsr-synchronization traceoptions under protocol bfd
+    4.  Restart bfdd on the backup RE
+    5.  After a few seconds, grep for "Initial" in the bfd log file on master
+        RE.
+  Success Criteria:
+        BFD log will show the initial sync time for 2000 sessions. This should
+        be within a few seconds.
+  Result: Pass, Initial sync time - 300 msec, 905K replication bytes
+
+3.10.3  BFD PFE session maintenance across RE switchover
+
+  Goal: Ensure that PFE-BFD sessions across a single PFE do not flap
+        on RE switchover
+  Test Steps:
+    1.  Configure 1200 bfd pfe based sessions (across 1 FPC/2-interfaces).
+    2.  Wait for a minute after all sessions are up.
+    3.  Perform a RE switchover
+    4.  After 15 seconds, do a "show bfd session extensive|match Session"
+        on the the new master RE.
+  Success Criteria:
+        The session UP time displayed in the output of the show should be
+        greater than 1 minute, indicating that the BFD sessions didn't flap
+        during the switchover.
+  Result: Pass
+
+3.10.4  BFD PFE session maintenance across RE switchover with multiple PFEs
+
+  Goal: Ensure that PFE-BFD sessions across multiple PFEs do not flap
+        on RE switchover
+  Test Steps:
+    1.  Configure 2000 bfd pfe based sessions (across 2 FPCs)
+    2.  Wait for a minute after all sessions are up.
+    3.  Perform a RE switchover
+    4.  After 15 seconds, do a "show bfd session extensive|match Session"
+        on the the new master RE.
+  Success Criteria:
+        The session UP time displayed in the output of the show should be
+        greater than 1 minute, indicating that the BFD sessions didn't flap
+        during the switchover.
+  Result: Pass
+
+3.10.5  BFD RE session maintenance across RE switchover
+
+  Goal: When a large number of RE-BFD sessions are configured, ensure that 
+        none of them flap on RE switchover
+  Test Steps:
+    1.  Configure 2000 bfd re-based sessions (sessions with high detection
+        times, 2000 msec minimum-interval)
+    2.  Wait for a minute after all sessions are up.
+    3.  Perform a RE switchover
+    4.  After 15 seconds, do a "show bfd session extensive|match Session"
+        on the new master RE.
+  Success Criteria:
+        The session UP time displayed in the output of the show should be
+        greater than 1 minute, indicating that the BFD sessions didn't flap
+        during the switchover.
+  Result: Pass
+
+3.10.6  BFD session replication overhead
+  
+  Goal: To measure the over in BFD session setup due to replication
+  Test Steps:
+    1.  Make sure BFD is not running on backup RE
+            # mv /usr/sbin/bfdd /usr/sbin/bfdd.orig
+            # ps -x|grep bfdd
+            # kill -9 <bfdd-pid>
+    2.  Configure 2000 bfd PFE-based sessions
+    3.  Note the time taken for sessions to come up
+    4.  Deconfigure the BFD sessions
+    5.  Now restart bfdd on backup RE
+            # mv /usr/sbin/bfdd.orig to /usr/sbin/bfdd, 
+            # kill -1 1
+    6.  Reconfigure the 2000 bfd sessions
+    7.  Note the time taken for sessions to come up
+  Success Criteria:
+        The test is to measures the time difference when replication is going
+        on versus when replication is not going on.
+  Result: 
+        There is no perceptible difference in session setup times. The
+        difference, if any is of the order of a few seconds.
+
+3.10.7  BFD session session and RE switchover
+
+  Goal: To measure the impact (if any) of a RE switchover during the
+        bringup of 2000 BFD sessions 
+  Test Steps:
+    1.  Configure 2000 bfd PFE-based sessions
+    2.  While the sessions are coming up, perform a RE switchover
+    3.  Wait for a while for sessions to come up.
+    4.  Perform the above test a few times
+  Success Criteria:
+        The sessions all come up after the RE switchover
+  Result: 
+        No impact. Sessions come up as expected.
+
+
+4.  BOUNDARY TEST CASES
+
+
+5.  REGRESSION TEST CASES
+
+BFD Regression test were run to make sure none of existing bfd
+functionality was broken.
+
+
+6.  INTEROP TEST CASES
+
+There are no protocol changes to warrant interop testing. But systest should
+perform some basic interop testing with other vendors in switchover scenarios.
+
+7.  MIGRATION & COMPATIBILITY TEST CASES
+
+
+8.  TEST COVERAGE REMAINING
+
+
+9.  DEFECTS REMAINING
+

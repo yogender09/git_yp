@@ -1,0 +1,865 @@
+$Id :$
+
+PIM NSR support for IGMP-Only-Interfaces Unit Test Plan
+
+Auther: Vikram Nagarajan <vikramna@juniper.net>
+
+Copyright (C) 2011, Juniper Networks, Inc.
+
+NOTICE: This document contains proprietary and confidential
+information of Juniper Networks, Inc. and must not be distributed
+outside of the company without the permission of Juniper Networks
+engineering.
+
+
+1.  INTRODUCTION
+
+This document describes the unit test plan for NSR support for IGMP-only
+and MLD-only enabled interfaces. 
+The tests are focus on the following goals:
+   - Seamless RE switchover for functionality with IGMP-only enabled interfaces.
+     There should be no traffic loss after the RE switchover.
+   - All PIM states for IGMP-only enabled interfaces  should be replicated 
+     to the backup RE.
+   - All multicast routes for IGMP-only enabled interfaces should be replicated to 
+     the backup RE. 
+
+This document lists the test-cases, success criterias, and testing results 
+for above functionalities. 
+
+1.1 RLI List
+
+Reference: 
+  RLI 8275: NSR for IGMP-only enabled interfaces
+  PR: 694463
+  FS: sw-projects/os/nsr/pim-nsr-for-igmp-only-interfaces-funcspec.txt
+  DS: sw-projects/os/nsr/pim-nsr-for-igmp-only-interfaces-design-spec.txt
+
+Related RLI:
+  #2728:  PIM NSR phase-1
+  #6259:  PIM NSR phase-2
+  #11800: PIM NSR phase-3
+  #14680: NSR mirroring for RPF
+  #7235:  pseudo gmp interfaces RLI
+
+1.2 Document Revision History
+
+Revision: 1.1
+  Author: Vikram Nagarajan
+  Date: 12/07/2011
+  Description: Initial draft.
+  
+2.  SCOPE
+
+2.1 Function Coverage
+
+The main features that are supported in IGMP-only NSR are listed below.
+  1) PIM Join state mirroring
+  2) Multicast route state to be in sync with master
+  3) Upstream interface and neighbor information to be in sync with master
+  4) Combination of PIM enabled interface and IGMP/MLD-only interface 
+  9) No change in CLI. The backup CLI output should be the same as master
+     for PIM joins and multicast routes except timer values. 
+
+2.2 Software Change Description
+
+2.2.1 PIM NSR Module
+
+Major data structure:
+  New: pim_pseudo_gmp_mstr_rdb_t
+       pim_pseudo_gmp_bkup_rdb_t
+
+New APIs:
+
+The following functions are used on master to mirror group add/del to backup
+
+         Master RE                                         
+      pim_pseudo_gmp_mstr_nsr_group_add_processing
+      pim_pseudo_gmp_mstr_nsr_group_del_processing
+      pim_pseudo_gmp_mstr_nsr_intf_down_processing
+      
+
+The following functions are used to populate RDB and poke xif on backup
+
+         Backup RE                   
+      pim_pseudo_gmp_populate_bkup_rdb
+      pim_pseudo_gmp_bkup_process_mirror_msg
+
+2.3 Feature Intersection
+
+IGMP only NSR interacts with common PIM module, PIM RPF module, xif and mirroring module. 
+
+2.4 Platform and HW Coverage Scope
+
+This RLI is platform independent. 
+
+3.  SETUP
+
+3.1 Topology 
+
+       
+    +--------------------+                +----------+         +-----------+
+    |                    |                |          |         |           |
+    |    DUT            f+----------------+          |         |           |      +------+
+    | pro-bng-mc2-a     g+----------------+    RP    +---------+   FHR     +------|  Src |
+    |                   h+----------------+          |         |           |      +------+
+    |    a b c d e       |                |          |         |           |      pro-bng-mc2-bsd5
+    +----+-+-+-+-+-------+                +----------+         +-----------+
+         | | | | |                        pro-bng-mc2-a        pro-bng-mc2-j
+         | | | | |
+         | | | | |
+         | | | | |
+         | | | | |
+    +----+-+-+-+-+-------+
+    |    a b c d e       |
+    |                    |
+    |    Router with     |
+    |     Jtools enabled |
+    |                    |
+    |  pro-bng-mc2-d     |
+    |                    |
+    +--------------------+
+
+On DUT, there are 5 physical interfaces (a b c d e) which are connected to 
+a router downstream.  The router downstream has Jtools enabled with which it 
+can perform IGMP host functionality.  Installation of jtools helps in 
+sending Reports/Leaves for both IGMPv2 and IGMP v3 functionality.
+Also for MLDv1 and MLDv2.
+
+The DUT is connected to RP over multiple ECMP links to test Join-load balancing. 
+
+The RP is connected to FHR and FHR is connected to the source which is sending 
+traffic for the groups.
+
+
+3.2 Hardware
+
+All routers are m10i.
+The source to send traffic is a VMware virtual host.
+
+
+4. FUNCTIONAL TEST CASES
+
+4.1 NSR Functionality Test cases
+
+4.1.1 verify PIM NSR for IGMP only Interfaces for IGMPv2 
+
+    Goal: PIM NSR should work for igmp only interfaces for IGMPv2 
+
+    Test Steps: 
+       1. Configure PIM and PIM RP on RP router
+       2. Configure PIM on FHR
+       3. Configure PIM on upstream interfaces of DUT (f g h)
+       4. Configure igmp on downstream interfaces of DUT (a b c d e) 
+       5. Configure PIM NSR on DUT
+       6. Configure igmp-host on router with jtools on (a b c d e)
+       7. Send Traffic from pro-bng-mc2-bsd5 for group 
+
+       8. Send IGMPv2 reports for group G1 from IGMP client on a b c d e 
+
+    Success Criteria:
+       1. PIM Join state should be created for G1 on master with 
+          downstream as Pseudo gmp listing the interfaces (a b c d e)
+       2. Multicast routes state should be created for G1 on master with 
+          nexthop listing the interfaces (a b c d e) and state in forwarding
+       3. PIM Join state should be created for G1 on backup with 
+          downstream as Pseudo gmp listing the interfaces (a b c d e)
+       4. Multicast routes state should be created for G1 on backup with 
+          nexthop listing the interfaces (a b c d e) and state in forwarding
+
+    Result: Pass.
+
+
+4.1.2 verify PIM NSR for IGMP only Interfaces for IGMPv3 
+
+    Goal: PIM NSR should work for igmp only interfaces for IGMPv3  
+
+    Test Steps: 
+       1. Configure PIM and PIM RP on RP router
+       2. Configure PIM on FHR
+       3. Configure PIM on upstream interfaces of DUT (f g h)
+       4. Configure igmp on downstream interfaces of DUT (a b c d e) 
+       5. Configure PIM NSR on DUT
+       6. Configure igmp-host on router with jtools on (a b c d e)
+       7. Send Traffic from pro-bng-mc2-bsd5 for group 
+
+       8. Send IGMPv3 reports for group S2,G2 from IGMP client on a b c d e 
+
+    Success Criteria:
+       1. PIM Join state should be created for G2 on master with 
+          downstream as Pseudo gmp listing the interfaces (a b c d e)
+       2. Multicast routes state should be created for G2 on master with 
+          nexthop listing the interfaces (a b c d e) and state in forwarding
+       3. PIM Join state should be created for G2 on backup with 
+          downstream as Pseudo gmp listing the interfaces (a b c d e)
+       4. Multicast routes state should be created for G2 on backup with 
+          nexthop listing the interfaces (a b c d e) and state in forwarding
+
+    Result: Pass.
+
+
+4.1.3 verify PIM NSR for IGMP only Interfaces for MLDv1
+
+    Goal: PIM NSR should work for igmp only interfaces for MLDv1
+
+    Test Steps: 
+       1. Configure PIM and PIM RP on RP router
+       2. Configure PIM on FHR
+       3. Configure PIM on upstream interfaces of DUT (f g h)
+       4. Configure igmp on downstream interfaces of DUT (a b c d e) 
+       5. Configure PIM NSR on DUT
+       6. Configure igmp-host on router with jtools on (a b c d e)
+       7. Send Traffic from pro-bng-mc2-bsd5 for group 
+
+       8. Send MLDv1 reports for group G3 from MLD client on a b c d e
+
+    Success Criteria:
+       1. PIM Join state should be created for G3 on master with 
+          downstream as Pseudo gmp listing the interfaces (a b c d e)
+       2. Multicast routes state should be created for G3 on master with 
+          nexthop listing the interfaces (a b c d e) and state in forwarding
+       3. PIM Join state should be created for G3 on backup with 
+          downstream as Pseudo gmp listing the interfaces (a b c d e)
+       4. Multicast routes state should be created for G3 on backup with 
+          nexthop listing the interfaces (a b c d e) and state in forwarding
+
+    Result: Pass.
+
+
+4.1.4 verify PIM NSR for IGMP only Interfaces for MLDv2
+
+    Goal: PIM NSR should work for igmp only interfaces for MLDv2
+
+    Test Steps: 
+       1. Configure PIM and PIM RP on RP router
+       2. Configure PIM on FHR
+       3. Configure PIM on upstream interfaces of DUT (f g h)
+       4. Configure igmp on downstream interfaces of DUT (a b c d e) 
+       5. Configure PIM NSR on DUT
+       6. Configure igmp-host on router with jtools on (a b c d e)
+       7. Send Traffic from pro-bng-mc2-bsd5 for group 
+
+       8. Send MLDv2 reports for group S4,G4 from MLD client on a b c d e
+
+    Success Criteria:
+       1. PIM Join state should be created for G4 on master with 
+          downstream as Pseudo gmp listing the interfaces (a b c d e)
+       2. Multicast routes state should be created for G4 on master with 
+          nexthop listing the interfaces (a b c d e) and state in forwarding
+       3. PIM Join state should be created for G4 on backup with 
+          downstream as Pseudo gmp listing the interfaces (a b c d e)
+       4. Multicast routes state should be created for G4 on backup with 
+          nexthop listing the interfaces (a b c d e) and state in forwarding
+
+    Result: Pass.
+
+
+4.1.5 verify states after RE switchover
+
+    Goal: There shouldn't be traffic loss after RE switchover (<1%)
+
+    Test Steps: 
+       1. Configure PIM and PIM RP on RP router
+       2. Configure PIM on FHR
+       3. Configure PIM on upstream interfaces of DUT (f g h)
+       4. Configure igmp on downstream interfaces of DUT (a b c d e) 
+       5. Configure PIM NSR on DUT
+       6. Configure igmp-host on router with jtools on (a b c d e)
+       7. Send Traffic from pro-bng-mc2-bsd5 for group 
+
+       8. Send IGMPv2 reports for group G1 from MLD client on a b c d e
+       9. Send IGMPv3 reports for group S2,G2 from MLD client on a b c d e
+       10 Send MLDv2 reports for group G3 from MLD client on a b c d e
+       11. Send MLDv1 reports for group S4,G4 from MLD client on a b c d e
+
+       12. Trigger RE switchover
+
+    Success Criteria:
+       1. PIM Join state should be created for all source group pairs on master 
+          with downstream as Pseudo gmp listing the interfaces (a b c d e)
+       2. Multicast routes state should be created for all source group pairs  
+          on master with nexthop listing the interfaces (a b c d e) 
+          and state in forwarding
+       3. PIM Join state should be created for all source group pairs on backup 
+          with downstream as Pseudo gmp listing the interfaces (a b c d e)
+       4. Multicast routes state should be created for all source group pairs  
+          on backup with nexthop listing the interfaces (a b c d e) 
+          and state in forwarding
+
+       5. After switchover, the PIM states and multicast route states should be
+          retained after switchover.
+       6. After switchover, there shouldn't be traffic loss (<1$)
+
+    Result: Pass.
+
+4.1.6 verify PIM states and multicast routes on receiving host leave
+
+    Goal: On receiving leave on master, entry should be removed on both REs
+
+    Test Steps: 
+       1. Configure PIM and PIM RP on RP router
+       2. Configure PIM on FHR
+       3. Configure PIM on upstream interfaces of DUT (f g h)
+       4. Configure igmp on downstream interfaces of DUT (a b c d e) 
+       5. Configure PIM NSR on DUT
+       6. Configure igmp-host on router with jtools on (a b c d e)
+       7. Send Traffic from pro-bng-mc2-bsd5 for group 
+
+       8. Send IGMPv2 reports for group G1 from MLD client on a b c d e
+       9. Send IGMPv3 reports for group S2,G2 from MLD client on a b c d e
+       10 Send MLDv2 reports for group G3 from MLD client on a b c d e
+       11. Send MLDv1 reports for group S4,G4 from MLD client on a b c d e
+
+       12. Send Leaves from the above IGMP clients.
+
+    Success Criteria:
+       1. The SG entries should be removed from both master and backup RE
+       2. The multicast route entries should be removed from both master and backup RE
+
+    Result: Pass.
+
+
+4.1.7 verify PIM states and multicast routes on 'cli>clear igmp membership <group G1>'
+
+    Goal: When clear igmp membership command is executed on master, SGs and 
+          multicast route entries should be deleted on both REs
+
+    Test Steps: 
+       1. Configure PIM and PIM RP on RP router
+       2. Configure PIM on FHR
+       3. Configure PIM on upstream interfaces of DUT (f g h)
+       4. Configure igmp on downstream interfaces of DUT (a b c d e) 
+       5. Configure PIM NSR on DUT
+       6. Configure igmp-host on router with jtools on (a b c d e)
+       7. Send Traffic from pro-bng-mc2-bsd5 for group 
+
+       8. Send IGMPv2 reports for group G1 from MLD client on a b c d e
+       9. Send IGMPv3 reports for group S2,G2 from MLD client on a b c d e
+       10 Send MLDv2 reports for group G3 from MLD client on a b c d e
+       11. Send MLDv1 reports for group S4,G4 from MLD client on a b c d e
+
+       12. Run clear igmp membership <group G1> command on the master
+
+    Success Criteria:
+       1. The SG entries corresponding to group G1 should be removed from 
+          both master and backup RE
+       2. The multicast route entries corresponding to group G1 
+          should be removed from both master and backup RE
+
+    Result: Pass.
+
+
+4.1.8 verify PIM states and multicast routes on 'cli>clear igmp membership <interface a>'
+
+    Goal: When clear igmp membership command is executed on master, SGs and 
+          multicast route entries should be deleted on both REs
+
+    Test Steps: 
+       1. Configure PIM and PIM RP on RP router
+       2. Configure PIM on FHR
+       3. Configure PIM on upstream interfaces of DUT (f g h)
+       4. Configure igmp on downstream interfaces of DUT (a b c d e) 
+       5. Configure PIM NSR on DUT
+       6. Configure igmp-host on router with jtools on (a b c d e)
+       7. Send Traffic from pro-bng-mc2-bsd5 for group 
+
+       8. Send IGMPv2 reports for group G1 from MLD client on a b c d e
+       9. Send IGMPv3 reports for group S2,G2 from MLD client on a b c d e
+       10 Send MLDv2 reports for group G3 from MLD client on a b c d e
+       11. Send MLDv1 reports for group S4,G4 from MLD client on a b c d e
+
+       12. Run clear igmp membership <interface a> command on the master
+
+    Success Criteria:
+       1. The SG entries corresponding to interface a should be removed from 
+          both master and backup RE
+       2. The multicast route entries corresponding to interface a 
+          should be removed from both master and backup RE
+
+    Result: Pass.
+
+4.1.9 verify PIM states and multicast routes on 'cli>clear igmp membership'
+
+    Goal: When clear igmp membership command is executed on master, SGs and 
+          multicast route entries should be deleted on both REs
+
+    Test Steps: 
+       1. Configure PIM and PIM RP on RP router
+       2. Configure PIM on FHR
+       3. Configure PIM on upstream interfaces of DUT (f g h)
+       4. Configure igmp on downstream interfaces of DUT (a b c d e) 
+       5. Configure PIM NSR on DUT
+       6. Configure igmp-host on router with jtools on (a b c d e)
+       7. Send Traffic from pro-bng-mc2-bsd5 for group 
+
+       8. Send IGMPv2 reports for group G1 from MLD client on a b c d e
+       9. Send IGMPv3 reports for group S2,G2 from MLD client on a b c d e
+       10 Send MLDv2 reports for group G3 from MLD client on a b c d e
+       11. Send MLDv1 reports for group S4,G4 from MLD client on a b c d e
+
+       12. Run clear igmp membership command on the master
+
+    Success Criteria:
+
+       1. All SG entries should be removed from both master and backup RE
+       2. All multicast route entries should be removed from both REs
+
+    Result: Pass.
+
+4.1.10 Downstream IGMP/MLD interface down events
+
+    Goal: with downstream intf down, the SG entries should be removed on both REs 
+
+    Test Steps: 
+       1. Configure PIM and PIM RP on RP router
+       2. Configure PIM on FHR
+       3. Configure PIM on upstream interfaces of DUT (f g h)
+       4. Configure igmp on downstream interfaces of DUT (a b c d e) 
+       5. Configure PIM NSR on DUT
+       6. Configure igmp-host on router with jtools on (a b c d e)
+       7. Send Traffic from pro-bng-mc2-bsd5 for group 
+
+       8. Send IGMPv2 reports for group G1 from MLD client on a b c d e
+       9. Send IGMPv3 reports for group S2,G2 from MLD client on a b c d e
+       10 Send MLDv2 reports for group G3 from MLD client on a b c d e
+       11. Send MLDv1 reports for group S4,G4 from MLD client on a b c d e
+
+       12. Bring the downstream IGMP/MLD interfaces down with chassis cmd
+
+    Success Criteria:
+       1. The SG entries should be removed from both master and backup RE
+       2. The multicast route entries should be removed from both master and backup RE
+
+    Result: Pass.
+
+4.1.11 Upstream PIM interface flap events
+
+    Goal: with multiple upstream intf, the SG entries' and mroutes' upstream 
+          state should same in master and backup REs
+
+    Test Steps: 
+       1. Configure PIM and PIM RP on RP router
+       2. Configure PIM on FHR
+       3. Configure PIM on upstream interfaces of DUT (f g h)
+       4. Configure igmp on downstream interfaces of DUT (a b c d e) 
+       5. Configure PIM NSR on DUT
+       6. Configure igmp-host on router with jtools on (a b c d e)
+       7. Send Traffic from pro-bng-mc2-bsd5 for group 
+
+       8. Send IGMPv2 reports for group G1 from MLD client on a b c d e
+       9. Send IGMPv3 reports for group S2,G2 from MLD client on a b c d e
+       10 Send MLDv2 reports for group G3 from MLD client on a b c d e
+       11. Send MLDv1 reports for group S4,G4 from MLD client on a b c d e
+
+       12. Configure PIM Join Load Balance on DUT
+
+       13. Flap the upstream interfaces f g h.
+
+    Success Criteria:
+       1. The upstream state of SGs should be same on master and backup
+       2. The upstream state of multicast routes should be same on master and backup
+
+    Result: Pass.
+
+4.1.12 Combination of PIM and IGMP-only enabled interfaces
+
+    Goal: downstream interfaces states should be created appropriately for PIM and IGMP-only
+
+    Test Steps: 
+       1. Configure PIM and PIM RP on RP router
+       2. Configure PIM on FHR
+       3. Configure PIM on upstream interfaces of DUT (f g h)
+       4. Configure igmp on downstream interfaces of DUT (a b c d e) 
+       5. Configure PIM NSR on DUT
+       6. Configure igmp-host on router with jtools on (a b c d e)
+       7. Send Traffic from pro-bng-mc2-bsd5 for group 
+
+       8. Send IGMPv2 reports for group G1 from MLD client on a b c d e
+       9. Send IGMPv3 reports for group S2,G2 from MLD client on a b c d e
+       10 Send MLDv2 reports for group G3 from MLD client on a b c d e
+       11. Send MLDv1 reports for group S4,G4 from MLD client on a b c d e
+
+       12. Configure PIM on downstream interfaces of DUT (a b c ) 
+
+    Success Criteria:
+       1. The SG entries with downstream as a b c should be created as PIM
+       2. The SG entries with downstream as de should be created as Pseudo-GMP
+       3. The above should be the same for both master and backup REs
+
+    Result: Pass.
+
+
+4.1.13 Restart routing on master RE
+
+    Goal: Backup should clear states and relearn states from the master
+
+    Test Steps: 
+       1. Configure PIM and PIM RP on RP router
+       2. Configure PIM on FHR
+       3. Configure PIM on upstream interfaces of DUT (f g h)
+       4. Configure igmp on downstream interfaces of DUT (a b c d e) 
+       5. Configure PIM NSR on DUT
+       6. Configure igmp-host on router with jtools on (a b c d e)
+       7. Send Traffic from pro-bng-mc2-bsd5 for group 
+
+       8. Send IGMPv2 reports for group G1 from MLD client on a b c d e
+       9. Send IGMPv3 reports for group S2,G2 from MLD client on a b c d e
+       10 Send MLDv2 reports for group G3 from MLD client on a b c d e
+       11. Send MLDv1 reports for group S4,G4 from MLD client on a b c d e
+
+       12. Run cli>restart routing on master RE
+
+    Success Criteria:
+       1. The backup should clear all its SG entries and multicast routes 
+       2. As master learns new SG entries and mroutes, backup should learn from master
+
+    Result: Pass.
+
+4.1.14 Restart routing on backup RE
+
+    Goal: Master should re-mirror the states when backup comes up
+
+    Test Steps: 
+       1. Configure PIM and PIM RP on RP router
+       2. Configure PIM on FHR
+       3. Configure PIM on upstream interfaces of DUT (f g h)
+       4. Configure igmp on downstream interfaces of DUT (a b c d e) 
+       5. Configure PIM NSR on DUT
+       6. Configure igmp-host on router with jtools on (a b c d e)
+       7. Send Traffic from pro-bng-mc2-bsd5 for group 
+
+       8. Send IGMPv2 reports for group G1 from MLD client on a b c d e
+       9. Send IGMPv3 reports for group S2,G2 from MLD client on a b c d e
+       10 Send MLDv2 reports for group G3 from MLD client on a b c d e
+       11. Send MLDv1 reports for group S4,G4 from MLD client on a b c d e
+
+       12. Run cli>restart routing on backup RE
+
+    Success Criteria:
+       1. The master should mirror the PIM and mroute states that it has learnt to backup
+
+    Result: Pass.
+
+4.1.15 deactivate NSR on the DUT
+
+    Goal: Backup should die down gracefully
+
+    Test Steps: 
+       1. Configure PIM and PIM RP on RP router
+       2. Configure PIM on FHR
+       3. Configure PIM on upstream interfaces of DUT (f g h)
+       4. Configure igmp on downstream interfaces of DUT (a b c d e) 
+       5. Configure PIM NSR on DUT
+       6. Configure igmp-host on router with jtools on (a b c d e)
+       7. Send Traffic from pro-bng-mc2-bsd5 for group 
+
+       8. Send IGMPv2 reports for group G1 from MLD client on a b c d e
+       9. Send IGMPv3 reports for group S2,G2 from MLD client on a b c d e
+       10 Send MLDv2 reports for group G3 from MLD client on a b c d e
+       11. Send MLDv1 reports for group S4,G4 from MLD client on a b c d e
+
+       12. conf#delete routing options nonstop-routing
+
+    Success Criteria:
+       1. backup rpd should exit gracefully. 
+
+    Result: Pass.
+
+4.1.16 activate NSR on the DUT
+
+    Goal: Backup should come up and learn states from master 
+
+    Test Steps: 
+       1. Configure PIM and PIM RP on RP router
+       2. Configure PIM on FHR
+       3. Configure PIM on upstream interfaces of DUT (f g h)
+       4. Configure igmp on downstream interfaces of DUT (a b c d e) 
+       5. Configure PIM NSR on DUT
+       6. Configure igmp-host on router with jtools on (a b c d e)
+       7. Send Traffic from pro-bng-mc2-bsd5 for group 
+
+       8. Send IGMPv2 reports for group G1 from MLD client on a b c d e
+       9. Send IGMPv3 reports for group S2,G2 from MLD client on a b c d e
+       10 Send MLDv2 reports for group G3 from MLD client on a b c d e
+       11. Send MLDv1 reports for group S4,G4 from MLD client on a b c d e
+
+       12. conf#set routing options nonstop-routing
+
+    Success Criteria:
+       1. backup rpd should come up and learn states from master.
+       2. PIM Join state should be created for G1 on master with 
+          downstream as Pseudo gmp listing the interfaces (a b c d e)
+       3. Multicast routes state should be created for G1 on master with 
+          nexthop listing the interfaces (a b c d e) and state in forwarding
+       4. PIM Join state should be created for G1 on backup with 
+          downstream as Pseudo gmp listing the interfaces (a b c d e)
+       5. Multicast routes state should be created for G1 on backup with 
+          nexthop listing the interfaces (a b c d e) and state in forwarding
+
+    Result: Pass.
+
+
+4.1.17 disable 'PIM NSR' alone
+
+    Goal: backup PIM task should exit gracefully
+
+    Test Steps: 
+       1. Configure PIM and PIM RP on RP router
+       2. Configure PIM on FHR
+       3. Configure PIM on upstream interfaces of DUT (f g h)
+       4. Configure igmp on downstream interfaces of DUT (a b c d e) 
+       5. Configure PIM NSR on DUT
+       6. Configure igmp-host on router with jtools on (a b c d e)
+       7. Send Traffic from pro-bng-mc2-bsd5 for group 
+
+       8. Send IGMPv2 reports for group G1 from MLD client on a b c d e
+       9. Send IGMPv3 reports for group S2,G2 from MLD client on a b c d e
+       10 Send MLDv2 reports for group G3 from MLD client on a b c d e
+       11. Send MLDv1 reports for group S4,G4 from MLD client on a b c d e
+
+       12. conf#set protocols pim nonstop-routing disable
+
+    Success Criteria:
+       1. PIM task on backup RE should exit gracefully
+
+    Result: Pass.
+
+
+4.1.18 re-enable 'PIM NSR' alone
+
+    Goal: backup PIM task should come up and learn states from master
+
+    Test Steps: 
+       1. Configure PIM and PIM RP on RP router
+       2. Configure PIM on FHR
+       3. Configure PIM on upstream interfaces of DUT (f g h)
+       4. Configure igmp on downstream interfaces of DUT (a b c d e) 
+       5. Configure PIM NSR on DUT
+       6. Configure igmp-host on router with jtools on (a b c d e)
+       7. Send Traffic from pro-bng-mc2-bsd5 for group 
+
+       8. Send IGMPv2 reports for group G1 from MLD client on a b c d e
+       9. Send IGMPv3 reports for group S2,G2 from MLD client on a b c d e
+       10 Send MLDv2 reports for group G3 from MLD client on a b c d e
+       11. Send MLDv1 reports for group S4,G4 from MLD client on a b c d e
+
+       12. conf#delete protocols pim nonstop-routing disable
+
+    Success Criteria:
+       1. backup pim task should come up and learn states from master.
+       2. PIM Join state should be created for G1 on master with 
+          downstream as Pseudo gmp listing the interfaces (a b c d e)
+       3. Multicast routes state should be created for G1 on master with 
+          nexthop listing the interfaces (a b c d e) and state in forwarding
+       4. PIM Join state should be created for G1 on backup with 
+          downstream as Pseudo gmp listing the interfaces (a b c d e)
+       5. Multicast routes state should be created for G1 on backup with 
+          nexthop listing the interfaces (a b c d e) and state in forwarding
+
+    Result: Pass.
+
+
+4.1.19 disable host interface at time of switchover
+
+    Goal: new master should timeout entries after 205 seconds
+
+    Test Steps: 
+       1. Configure PIM and PIM RP on RP router
+       2. Configure PIM on FHR
+       3. Configure PIM on upstream interfaces of DUT (f g h)
+       4. Configure igmp on downstream interfaces of DUT (a b c d e) 
+       5. Configure PIM NSR on DUT
+       6. Configure igmp-host on router with jtools on (a b c d e)
+       7. Send Traffic from pro-bng-mc2-bsd5 for group 
+
+       8. Send IGMPv2 reports for group G1 from MLD client on a b c d e
+       9. Send IGMPv3 reports for group S2,G2 from MLD client on a b c d e
+       10 Send MLDv2 reports for group G3 from MLD client on a b c d e
+       11. Send MLDv1 reports for group S4,G4 from MLD client on a b c d e
+
+       12. cause switchover to occur
+       13. at the same time, disable IGMP client host interface. This will
+           cause the entries to be timed out on the DUT if it were standalone.
+           Since the DUT has moved to new master, the new master RE should
+           timeout the entry after 205 seconds. 
+
+    Success Criteria:
+       1.  The new master RE should timeout the stale entry after 205 seconds. 
+
+    Result: Pass.
+
+
+5.  BOUNDARY TEST CASES
+
+None.
+
+6.  GRES TEST CASES
+
+None.
+
+7.  ISSU TEST CASES
+
+7.1 ISSU test
+
+    Goal: Verify that ISSU succeeds from an old version image.
+
+    Test Steps:
+       1. Load configurations with IGMP only enabled interface.
+       2. Configure NSR, with PIM NSR disabled. 
+       3. Perform ISSU with cmd "request system software in-service-upgrade".
+       4. Enable PIM NSR.
+
+    Success Criteria:
+       1. ISSU should be complete without error.
+       2. NSR for IGMP-only enabled interface should work after PIM NSR is enabled.
+
+    Result: Pass
+
+8. TX TEST CASES
+
+None.
+
+9.  AGGREGATED ETHERNET/SONET TEST CASES
+ 
+None.
+ 
+10.  REGRESSION TEST CASES
+
+{As necessary.  As with functional tests but for regression tests.
+Include references to regression requests, who is performing them,
+etc.}
+
+
+11.  INTEROPERABILITY TEST CASES
+
+None.
+
+12.  MIGRATION & COMPATIBILITY TEST CASES
+
+None.
+
+13.  TEST COVERAGE REMAINING
+
+None.
+
+14.  DEFECTS REMAINING
+
+None.
+
+15. SCALING AND PERFORMANCE
+
+
+15.1 verify PIM NSR for IGMP/MLD only Interfaces with highly scaled interfaces (64K)
+
+    Goal: PIM NSR should work for igmp/mld only with scaled interfaces 
+
+    Test Steps: 
+       1. Configure PIM and PIM RP on RP router
+       2. Configure PIM on FHR
+       3. Configure PIM on upstream interfaces of DUT (f g h)
+       4. Configure igmp on downstream interfaces of DUT with 64K interfaces
+       5. Configure PIM NSR on DUT
+       6. Configure igmp-host on router with jtools on 64K interfaces
+       7. Send Traffic from pro-bng-mc2-bsd5 for group G1  
+
+       8. Send IGMPv2 reports for group G1 from IGMP client on 64K interfaces
+
+       9. Perform RE switchover
+       10. Repeat the scaling test for IGMPv3, MLDv1 and MLDv2.
+
+    Success Criteria:
+       1. PIM Join state should be created for all source group pairs on master 
+          with downstream as Pseudo gmp listing the 64K interfaces 
+       2. PIM Join state should be created for all source group pairs on backup 
+          with downstream as Pseudo gmp listing the 64K interfaces 
+       3. Multicast routes state should be created for all source group pairs on
+          master with nexthop listing all 64K the interfaces and state in forwarding
+       4. Multicast routes state should be created for all source group pairs on
+          backup with nexthop listing all 64K the interfaces and state in forwarding
+
+       5. After switchover, the PIM states and multicast route states should be
+          retained after switchover for all 64K interfaces
+       6. After switchover, there shouldn't be traffic loss (<1$) for the 64K interfaces
+
+
+    Result: Pass.
+
+
+15.1 verify PIM NSR for IGMP/MLD only Interfaces with highly scaled SGs (64K SGs)
+
+    Goal: PIM NSR should work for igmp/mld only with scaled SGs 
+
+    Test Steps: 
+       1. Configure PIM and PIM RP on RP router
+       2. Configure PIM on FHR
+       3. Configure PIM on upstream interfaces of DUT (f g h)
+       4. Configure igmp on downstream interfaces of DUT with a b c d e interfaces
+       5. Configure PIM NSR on DUT
+       6. Configure igmp-host on router with jtools on a b c d e interfaces 
+       7. Send Traffic from pro-bng-mc2-bsd5 for group 64K SG pairs  
+
+       8. Send IGMPv2 reports for 64K SG group pairs from IGMP client on a b c d e 
+
+       9. Perform RE switchover
+       10. Repeat the scaling test for IGMPv3, MLDv1 and MLDv2.
+
+    Success Criteria:
+       1. PIM Join state should be created for all 64K source group pairs on master 
+          with downstream as Pseudo gmp listing corresponding a b c d e interfaces 
+       2. PIM Join state should be created for all 64K source group pairs on backup 
+          with downstream as Pseudo gmp listing corresponding a b c d e interfaces
+       3. Multicast routes state should be created for all 64K source group pairs on
+          master with nexthop listing the interfaces a b c d e and state in forwarding
+       4. Multicast routes state should be created for all 64K source group pairs on
+          backup with nexthop listing the interfaces a b c d e and state in forwarding
+
+       5. After switchover, the PIM states and multicast route states should be
+          retained after switchover for all 64K source group pairs 
+       6. After switchover, there shouldn't be traffic loss (<1$) for the 64K SGs
+
+
+    Result: Pass.
+
+16. STATIC ANALYSIS 
+
+Coverity Report with RLI code changes:
+No errors found.
+
+Analysis summary report:
+------------------------
+Files analyzed                 : 4
+Total LoC input to cov-analyze : 291175
+Functions analyzed             : 53
+Paths analyzed                 : 473
+New defects found              : 0
+
+Elapsed time: 00:00:01
+**********
+Analysis summary report:
+------------------------
+Files analyzed                 : 4
+Total LoC input to cov-analyze : 291175
+Functions analyzed             : 53
+Paths analyzed                 : 554
+New defects found              : 0
+
+Elapsed time: 00:00:01
+**********
+Analysis summary report:
+------------------------
+Files analyzed                 : 4
+Total LoC input to cov-analyze : 291175
+Functions analyzed             : 53
+Paths analyzed                 : 715
+New defects found              : 0
+
+
+17. CODE COVERAGE
+
+18. AUTOMATION
+
+Have written the JCML scripts. They will be checked in 
+src/functional-tests/apps/rpd/multicast/pim/pseudo-gmp-nsr
+
+19. UNIT TEST PLAN REVIEW FEEDBACK
+
